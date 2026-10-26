@@ -74,6 +74,18 @@ Lindt/Toblerone ; aucun contrat inventé ; isolation inter-tenants (API **et** R
 rate-limit ; exports filtrés.
 CI : `.github/workflows/ci.yml` (ruff, migrations, pytest, eslint, tsc, vitest, build).
 
+## Design system (apps/web)
+Tokens centralisés dans `apps/web/src/styles/tokens.css` (couleurs clair/sombre, typographie, espacements, rayons, ombres,
+niveaux de verre, palette de 10 marques) ; composants dans `src/styles/components.css` et `src/components/ui/`
+(Button, Badge, Card, Field, Modal basée sur `<dialog>`, Toast, Tooltip, Skeleton, EmptyState, ErrorState, Callout,
+Ring/BarList, ShiftCard). Thème automatique/clair/sombre posé avant hydratation. Le flou est limité aux grands panneaux ;
+repli opaque sans `backdrop-filter`, avec `prefers-reduced-transparency` et en contraste forcé ; `prefers-reduced-motion`
+respecté. Les contrastes WCAG AA des tokens sont vérifiés par `src/styles/tokens.test.ts`.
+
+**Réaffectation sécurisée** : tout changement de collaborateur (fiche, sélecteur du mode Jour, glisser-déposer) ouvre une
+confirmation obligatoire (`useReassign`, seul point d'appel de `PUT /assignments/{id}` côté web, garde-fou testé). Focus initial
+sur « Annuler », Échap/clic extérieur = annulation, aucun « ne plus demander ». « Annuler/Rétablir » rejouent une réaffectation déjà confirmée.
+
 ## Sécurité (résumé)
 Argon2id ; cookie de session `HttpOnly` + `SameSite=Lax` (+ `Secure` via `SESSION_COOKIE_SECURE=true` en HTTPS) ;
 sessions serveur ; CSRF (double jeton) ; RBAC par rôle (propriétaire, admin, manager, planificateur, collaborateur,

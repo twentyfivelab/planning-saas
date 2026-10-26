@@ -1,0 +1,88 @@
+/* ==========================================================================
+   Design tokens — source unique des valeurs visuelles.
+   Le thème est piloté par l'attribut data-theme (light | dark) posé avant hydratation (voir layout.tsx).
+   ========================================================================== */
+:root {
+  color-scheme: light;
+  /* Typographie */
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --text-xs: 0.75rem; --text-sm: 0.875rem; --text-md: 1rem; --text-lg: 1.125rem; --text-xl: 1.375rem; --text-2xl: 1.75rem;
+  --text-display: clamp(1.75rem, 1.2rem + 1.6vw, 2.5rem);
+  /* Espacements, rayons */
+  --sp-1: 0.25rem; --sp-2: 0.5rem; --sp-3: 0.75rem; --sp-4: 1rem; --sp-5: 1.5rem; --sp-6: 2rem;
+  --radius-sm: 0.5rem; --radius-md: 0.75rem; --radius-lg: 1.25rem; --radius-pill: 999px;
+  /* Mouvement */
+  --ease: cubic-bezier(0.2, 0.7, 0.2, 1); --dur-fast: 120ms; --dur: 220ms;
+  /* Verre */
+  --blur: 18px; --blur-strong: 28px;
+
+  /* Surfaces (mode clair) */
+  --bg-base: #eef1fb;
+  --bg-halo-1: #c9d3ff; --bg-halo-2: #f3c9f0; --bg-halo-3: #bfeee2;
+  --glass-1: rgba(255, 255, 255, 0.58);      /* panneaux */
+  --glass-2: rgba(255, 255, 255, 0.78);      /* éléments surélevés */
+  --solid-1: #ffffff; --solid-2: #f5f7fe; --solid-3: #e8ecf9;   /* repli opaque et cellules denses */
+  --edge-hi: rgba(255, 255, 255, 0.95); --edge-lo: rgba(120, 130, 190, 0.28);
+  --line: rgba(30, 41, 90, 0.14);
+  --shadow-1: 0 1px 2px rgba(30, 41, 90, 0.08), 0 8px 24px rgba(30, 41, 90, 0.08);
+  --shadow-2: 0 2px 4px rgba(30, 41, 90, 0.1), 0 18px 44px rgba(30, 41, 90, 0.16);
+
+  /* Texte */
+  --fg: #0f172a; --fg-muted: #475467; --fg-faint: #667085;
+
+  /* Accent */
+  --accent: #4338ca; --accent-hover: #3730a3; --accent-ink: #ffffff; --accent-soft: rgba(67, 56, 202, 0.12);
+  --focus: #4f46e5;
+
+  /* États */
+  --ok: #047857; --ok-soft: rgba(4, 120, 87, 0.12);
+  --warn: #b45309; --warn-soft: rgba(180, 83, 9, 0.13);
+  --bad: #b91c1c; --bad-soft: rgba(185, 28, 28, 0.11);
+  --info: #0369a1; --info-soft: rgba(3, 105, 161, 0.12);
+
+  /* Marques : fond plein (barres), fond doux (cartes), encre (texte) */
+  --brand-1: #4f46e5; --brand-1-soft: rgba(79, 70, 229, 0.14);  --brand-1-ink: #3730a3;
+  --brand-2: #0e7490; --brand-2-soft: rgba(14, 116, 144, 0.14); --brand-2-ink: #155e75;
+  --brand-3: #a16207; --brand-3-soft: rgba(202, 138, 4, 0.17); --brand-3-ink: #854d0e;
+  --brand-4: #be123c; --brand-4-soft: rgba(225, 29, 72, 0.13);  --brand-4-ink: #9f1239;
+  --brand-5: #c026d3; --brand-5-soft: rgba(192, 38, 211, 0.13); --brand-5-ink: #86198f;
+  --brand-6: #0f766e; --brand-6-soft: rgba(13, 148, 136, 0.15); --brand-6-ink: #115e59;
+  --brand-7: #c2410c; --brand-7-soft: rgba(234, 88, 12, 0.14); --brand-7-ink: #9a3412;
+  --brand-8: #0369a1; --brand-8-soft: rgba(2, 132, 199, 0.14); --brand-8-ink: #075985;
+  --brand-9: #4d7c0f; --brand-9-soft: rgba(101, 163, 13, 0.17); --brand-9-ink: #3f6212;
+  --brand-10: #475569; --brand-10-soft: rgba(71, 85, 105, 0.14); --brand-10-ink: #334155;
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg-base: #080b17;
+  --bg-halo-1: #2a2f8f; --bg-halo-2: #5b1f62; --bg-halo-3: #0b5a55;
+  --glass-1: rgba(28, 34, 66, 0.55);
+  --glass-2: rgba(40, 48, 88, 0.68);
+  --solid-1: #141a33; --solid-2: #1a2142; --solid-3: #232b55;
+  --edge-hi: rgba(255, 255, 255, 0.2); --edge-lo: rgba(255, 255, 255, 0.05);
+  --line: rgba(190, 200, 255, 0.18);
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.4), 0 10px 28px rgba(0, 0, 0, 0.35);
+  --shadow-2: 0 2px 6px rgba(0, 0, 0, 0.5), 0 24px 56px rgba(0, 0, 0, 0.5);
+
+  --fg: #f4f6ff; --fg-muted: #c3cae6; --fg-faint: #a6aed0;
+
+  --accent: #a5b4fc; --accent-hover: #c7d2fe; --accent-ink: #0b1030; --accent-soft: rgba(165, 180, 252, 0.16);
+  --focus: #c7d2fe;
+
+  --ok: #6ee7b7; --ok-soft: rgba(110, 231, 183, 0.14);
+  --warn: #fcd34d; --warn-soft: rgba(252, 211, 77, 0.14);
+  --bad: #fca5a5; --bad-soft: rgba(252, 165, 165, 0.14);
+  --info: #7dd3fc; --info-soft: rgba(125, 211, 252, 0.14);
+
+  --brand-1: #818cf8; --brand-1-soft: rgba(129, 140, 248, 0.2);  --brand-1-ink: #c7d2fe;
+  --brand-2: #22d3ee; --brand-2-soft: rgba(34, 211, 238, 0.17);  --brand-2-ink: #a5f3fc;
+  --brand-3: #facc15; --brand-3-soft: rgba(250, 204, 21, 0.17); --brand-3-ink: #fef08a;
+  --brand-4: #fb7185; --brand-4-soft: rgba(251, 113, 133, 0.19); --brand-4-ink: #fecdd3;
+  --brand-5: #e879f9; --brand-5-soft: rgba(232, 121, 249, 0.19); --brand-5-ink: #f5d0fe;
+  --brand-6: #2dd4bf; --brand-6-soft: rgba(45, 212, 191, 0.17);  --brand-6-ink: #99f6e4;
+  --brand-7: #fb923c; --brand-7-soft: rgba(251, 146, 60, 0.19); --brand-7-ink: #fed7aa;
+  --brand-8: #38bdf8; --brand-8-soft: rgba(56, 189, 248, 0.17); --brand-8-ink: #bae6fd;
+  --brand-9: #a3e635; --brand-9-soft: rgba(163, 230, 53, 0.16); --brand-9-ink: #d9f99d;
+  --brand-10: #94a3b8; --brand-10-soft: rgba(148, 163, 184, 0.2); --brand-10-ink: #e2e8f0;
+}

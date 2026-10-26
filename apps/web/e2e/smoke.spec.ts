@@ -4,6 +4,8 @@ import { expect, test } from "@playwright/test";
 // E2E_EMAIL / E2E_PASSWORD fournis par l'environnement (aucun secret dans le dépôt).
 const email = process.env.E2E_EMAIL, password = process.env.E2E_PASSWORD;
 
+test.use({ storageState: { cookies: [], origins: [] } }); // ces tests partent sans session
+
 test("redirige vers la connexion sans session", async ({ page }) => {
   await page.goto("/planning");
   await expect(page).toHaveURL(/\/login/);
@@ -16,10 +18,10 @@ test("connexion, planning, verrouillage et déconnexion", async ({ page }) => {
   await page.getByLabel("Mot de passe").fill(password!);
   await page.getByRole("button", { name: "Se connecter" }).click();
   await expect(page.getByRole("heading", { name: /Tableau de bord/ })).toBeVisible();
-  await page.getByRole("link", { name: "Planning" }).click();
+  await page.getByRole("navigation", { name: "Navigation principale" }).getByRole("link", { name: "Planning", exact: true }).click();
   await expect(page.getByRole("tab", { name: "Semaine" })).toBeVisible();
   await page.getByRole("tab", { name: "Jour" }).click();
   await expect(page.getByLabel("Vue journalière")).toBeVisible();
-  await page.getByRole("link", { name: "Budgets" }).click();
+  await page.getByRole("navigation", { name: "Navigation principale" }).getByRole("link", { name: "Budgets", exact: true }).click();
   await expect(page.getByText("À renseigner").first()).toBeVisible();
 });
