@@ -1,0 +1,48 @@
+name: planning
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?}
+      POSTGRES_DB: ${POSTGRES_DB:-planning}
+    ports: ["5432:5432"]
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 3s
+      retries: 20
+  redis:
+    image: redis:7
+    ports: ["6379:6379"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      retries: 20
+  api:
+    build: {context: .., dockerfile: infra/api.Dockerfile}
+    env_file: ../.env
+    environment:
+      DATABASE_URL: postgresql+psycopg://${APP_DB_USER}:${APP_DB_PASSWORD}@postgres:5432/${POSTGRES_DB:-planning}
+      MIGRATION_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-planning}
+      REDIS_URL: redis://redis:6379/0
+    depends_on: {postgres: {condition: service_healthy}, redis: {condition: service_healthy}}
+    command: sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000"
+    ports: ["8000:8000"]
+  worker:
+    build: {context: .., dockerfile: infra/api.Dockerfile}
+    env_file: ../.env
+    environment:
+      DATABASE_URL: postgresql+psycopg://${APP_DB_USER}:${APP_DB_PASSWORD}@postgres:5432/${POSTGRES_DB:-planning}
+      REDIS_URL: redis://redis:6379/0
+    depends_on: {api: {condition: service_started}}
+    command: rq worker optimization exports --url redis://redis:6379/0
+  web:
+    build:
+      context: ..
+      dockerfile: infra/web.Dockerfile
+      args: {NEXT_PUBLIC_API_URL: "${NEXT_PUBLIC_API_URL:-http://localhost:8000}"}
+    depends_on: [api]
+    ports: ["3000:3000"]
+volumes:
+  pgdata:
