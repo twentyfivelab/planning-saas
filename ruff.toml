@@ -1,0 +1,9 @@
+line-length = 120
+extend-exclude = [".venv", "apps/web"]
+[lint]
+select = ["E", "F", "I"]
+ignore = ["E501", "E701", "E702", "E741", "I001"]
+
+[lint.per-file-ignores]
+"apps/api/tests/*" = ["E402"]
+"apps/api/alembic/*" = ["E402"]

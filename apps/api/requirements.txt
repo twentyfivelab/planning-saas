@@ -1,0 +1,14 @@
+fastapi>=0.115
+uvicorn[standard]>=0.30
+sqlalchemy>=2.0
+psycopg[binary]>=3.2
+alembic>=1.13
+argon2-cffi>=23
+redis>=5
+rq>=1.16
+python-multipart>=0.0.9
+pydantic-settings>=2
+email-validator>=2
+openpyxl>=3.1
+reportlab>=4
+ortools>=9.10

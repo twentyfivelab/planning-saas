@@ -1,0 +1,43 @@
+name: CI
+on:
+  push: {branches: [main]}
+  pull_request:
+jobs:
+  api:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env: {POSTGRES_USER: planning_owner, POSTGRES_PASSWORD: ci-owner-pw, POSTGRES_DB: planning}
+        ports: ["5432:5432"]
+        options: --health-cmd "pg_isready -U planning_owner" --health-interval 3s --health-retries 20
+    env:
+      POSTGRES_USER: planning_owner
+      POSTGRES_PASSWORD: ci-owner-pw
+      APP_DB_USER: planning_app
+      APP_DB_PASSWORD: ci-app-pw
+      MIGRATION_DATABASE_URL: postgresql+psycopg://planning_owner:ci-owner-pw@localhost:5432/planning
+      DATABASE_URL: postgresql+psycopg://planning_app:ci-app-pw@localhost:5432/planning
+      OPT_EXECUTION: inline
+      APP_ENV: test
+      PYTHONPATH: apps/api:packages/solver
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12"}
+      - run: pip install -r apps/api/requirements-dev.txt
+      - run: ruff check apps/api packages/solver
+      - run: cd apps/api && alembic upgrade head
+      - run: pytest packages/solver apps/api -q
+  web:
+    runs-on: ubuntu-latest
+    defaults: {run: {working-directory: apps/web}}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: {node-version: 22, cache: npm, cache-dependency-path: apps/web/package-lock.json}
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build

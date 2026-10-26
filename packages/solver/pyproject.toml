@@ -1,0 +1,15 @@
+[project]
+name = "planning-solver"
+version = "0.1.0"
+description = "Moteur d'optimisation (OR-Tools CP-SAT) isolé du reste de l'application"
+requires-python = ">=3.9"
+dependencies = ["ortools>=9.10"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[tool.setuptools.packages.find]
+include = ["planning_solver*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
