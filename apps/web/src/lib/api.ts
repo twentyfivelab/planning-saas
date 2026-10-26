@@ -13,7 +13,9 @@ export async function api<T = any>(path: string, init: RequestInit & { json?: un
   if (init.json !== undefined) headers["Content-Type"] = "application/json";
   const m = (init.method ?? "GET").toUpperCase();
   if (m !== "GET") headers["X-CSRF-Token"] = loadCsrf();
-  const res = await fetch(BASE + path, { ...init, headers, credentials: "include", body: init.json !== undefined ? JSON.stringify(init.json) : init.body });
+  let res: Response;
+  try { res = await fetch(BASE + path, { ...init, headers, credentials: "include", body: init.json !== undefined ? JSON.stringify(init.json) : init.body }); }
+  catch { throw new ApiError(0, "Le serveur est injoignable. Vérifiez votre connexion puis réessayez."); }
   if (res.status === 204) return undefined as T;
   const ct = res.headers.get("content-type") ?? "";
   const data = ct.includes("json") ? await res.json() : await res.text();
@@ -22,7 +24,8 @@ export async function api<T = any>(path: string, init: RequestInit & { json?: un
 }
 
 export async function download(path: string, filename: string) {
-  const res = await fetch(BASE + path, { credentials: "include" });
+  let res: Response;
+  try { res = await fetch(BASE + path, { credentials: "include" }); } catch { throw new ApiError(0, "Le serveur est injoignable. Vérifiez votre connexion puis réessayez."); }
   if (!res.ok) throw new ApiError(res.status, "Export refusé");
   const url = URL.createObjectURL(await res.blob());
   const a = document.createElement("a"); a.href = url; a.download = filename; a.click(); URL.revokeObjectURL(url);

@@ -93,9 +93,10 @@ def test_versions_compare_and_publish_refused_when_exploratory(demo):
     assert v1["exploratory"] is True
     s = p.get(f"/periods/{demo['pid']}/schedule").json()
     a = next(x for x in s["assignments"] if x["slot_key"].startswith("GVA3") and not x["locked"])
-    emps = p.get("/employees").json()
-    alt = next(e for e in emps if e["id"] != a["employee_id"] and e["code"] == "michael")
-    p.put(f"/assignments/{a['assignment_id']}", json={"employee_id": alt["id"]})
+    emps = sorted(p.get("/employees").json(), key=lambda e: e["code"])
+    alt = next(e for e in emps if e["id"] != a["employee_id"])  # n'importe quel autre collaborateur : pas d'hypothèse sur un prénom
+    moved = p.put(f"/assignments/{a['assignment_id']}", json={"employee_id": alt["id"]})
+    assert moved.status_code == 200, moved.text
     v2 = p.post(f"/periods/{demo['pid']}/versions").json()
     cmp_ = p.get("/versions/compare", params={"a": v1["id"], "b": v2["id"]}).json()
     assert len(cmp_["changed"]) == 1
