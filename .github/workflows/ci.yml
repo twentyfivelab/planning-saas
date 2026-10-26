@@ -20,7 +20,7 @@ jobs:
       DATABASE_URL: postgresql+psycopg://planning_app:ci-app-pw@localhost:5432/planning
       OPT_EXECUTION: inline
       APP_ENV: test
-      PYTHONPATH: apps/api:packages/solver
+      PYTHONPATH: "${{ github.workspace }}/apps/api:${{ github.workspace }}/packages/solver"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
