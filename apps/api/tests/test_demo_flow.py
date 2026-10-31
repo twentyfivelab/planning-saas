@@ -52,7 +52,9 @@ def test_schedule_matches_solver_demo(demo):
     keys = [a["slot_key"].split("|")[0] for a in s["assignments"]]
     assert sum(k.startswith("GVA3") for k in keys) == 90 and sum(k.startswith("GVA9") for k in keys) == 60
     assert sum(k.startswith("CARTIER") for k in keys) == 8
-    assert sum(a["effective_minutes"] for a in s["assignments"]) == 1624 * 60
+    # 1 624 h budgétées + 80 h de Pilar (10 shifts du dimanche, sans budget fourni)
+    assert sum(a["effective_minutes"] for a in s["assignments"]) == 1704 * 60
+    assert sum(k.startswith("PILAR") for k in keys) == 10
     cn = [a for a in s["assignments"] if a["slot_key"].startswith("CN-")]
     assert len(cn) == 17 and all(a["allocations"] == {"Cellcosmet": 240, "Nuxe": 240} for a in cn)
     assert s["uncovered"] == []
@@ -143,27 +145,49 @@ def test_shift_edit_recomputes_hours_server_side(demo):
     p = demo["planner"]
     s = p.get(f"/periods/{demo['pid']}/schedule").json()
     a = next(x for x in s["assignments"] if x["slot_key"].startswith("CN-") and not x["locked"])
-    r = p.patch(f"/shifts/{a['shift_id']}", json={"start_time": "09:00:00", "end_time": "19:00:00",
-                                                  "break_minutes": 60})
-    assert r.status_code == 200 and r.json()["presence_minutes"] == 600 and r.json()["effective_minutes"] == 540
+    # horaire autorisé (09h-18h) avec une pause de 90 min : durées recalculées par le serveur
+    r = p.patch(f"/shifts/{a['shift_id']}", json={"start_time": "09:00:00", "end_time": "18:00:00", "break_minutes": 90})
+    assert r.status_code == 200 and r.json()["presence_minutes"] == 540 and r.json()["effective_minutes"] == 450
     again = p.get(f"/periods/{demo['pid']}/schedule").json()
     cn = next(x for x in again["assignments"] if x["assignment_id"] == a["assignment_id"])
-    assert sum(cn["allocations"].values()) == 540 and set(cn["allocations"]) == {"Cellcosmet", "Nuxe"}
-    assert p.patch(f"/shifts/{a['shift_id']}", json={"start_time": "09:00", "end_time": "10:00",
-                                                     "break_minutes": 120}).status_code == 422
+    assert sum(cn["allocations"].values()) == 450 and set(cn["allocations"]) == {"Cellcosmet", "Nuxe"}
+    assert p.patch(f"/shifts/{a['shift_id']}", json={"start_time": "09:00", "end_time": "18:00",
+                                                     "break_minutes": 700}).status_code == 422
+    # remise à l'état initial
+    assert p.patch(f"/shifts/{a['shift_id']}", json={"start_time": "09:00:00", "end_time": "18:00:00", "break_minutes": 60}).status_code == 200
 
 
-def test_assumed_schedules_flagged_everywhere(demo):
+def test_schedule_outside_allowed_hours_rejected_for_planner_allowed_for_admin_override(demo):
+    p, owner = demo["planner"], demo["owner"]
+    s = p.get(f"/periods/{demo['pid']}/schedule").json()
+    a = next(x for x in s["assignments"] if x["slot_key"].startswith("CARTIER") and not x["locked"])
+    info = p.get(f"/shifts/{a['shift_id']}/allowed-times").json()
+    assert [(x["start"][:5], x["end"][:5]) for x in info["allowed"]] == [("08:00", "17:00")] and info["can_override"] is False
+    bad = p.patch(f"/shifts/{a['shift_id']}", json={"start_time": "09:00:00", "end_time": "18:00:00", "break_minutes": 60})
+    assert bad.status_code == 422 and "Horaires autorisés : 08:00–17:00" in bad.json()["detail"]
+    assert owner.get(f"/shifts/{a['shift_id']}/allowed-times").json()["can_override"] is True
+    ok = owner.patch(f"/shifts/{a['shift_id']}", json={"start_time": "09:00:00", "end_time": "18:00:00", "break_minutes": 60})
+    assert ok.status_code == 200
+    assert owner.patch(f"/shifts/{a['shift_id']}", json={"start_time": "08:00:00", "end_time": "17:00:00", "break_minutes": 60}).status_code == 200
+    assert any(x["action"] == "shift.schedule_override" for x in owner.get("/audit").json())
+
+
+def test_provided_schedules_are_not_hypotheses_and_limits_stay_flagged(demo):
     p = demo["planner"]
     tpl = {t["code"]: t for t in p.get("/shift-templates").json()}
-    assert tpl["CAILLER-09"]["is_hypothesis"] and tpl["CN-09"]["is_hypothesis"]
-    assert not tpl["VALMONT-08"]["is_hypothesis"] and not tpl["GVA3-06"]["is_hypothesis"]
+    # Cailler, Nuxe/Cellcosmet, Valmont, GVA3, Pilar : horaires fournis -> plus d'hypothèse
+    for code in ("CAILLER-09", "CN-09", "VALMONT-08", "GVA3-06", "PILAR-06", "PILAR-11"):
+        assert not tpl[code]["is_hypothesis"], code
+    assert {t["code"] for t in tpl.values() if t["scope_code"] == "Nuxe/Cellcosmet"} == {"CN-09"}  # un seul horaire autorisé
+    assert {(t["start_time"][:5], t["end_time"][:5]) for t in tpl.values() if t["scope_code"] == "Pilar"} == {("06:00", "15:00"), ("11:00", "20:00")}
+    assert {t["code"] for t in tpl.values() if t["scope_type"] == "group"} == {"ALCOOL-09"}
     report = p.get(f"/runs/{demo['run']}/diagnostic").json()["report"]
     hyp = [i["message"] for i in report["missing_data"] if i["code"] == "HYPOTHESIS"]
-    assert any("CAILLER-09" in h and "NON VALIDÉ" in h for h in hyp) and any("CN-09" in h for h in hyp)
+    assert any("Pilar" in h and "NON VALIDÉ" in h for h in hyp)
     legal = next(i for i in report["missing_data"] if i["code"] == "LEGAL_REVIEW")
     assert "Non commercialisable" in legal["message"]
+    codes = {i["code"] for i in report["missing_data"]}
+    assert {"BRAND_BUDGET_MISSING", "SUNDAY_QUOTAS"} <= codes
     wb = load_workbook(io.BytesIO(p.get(f"/periods/{demo['pid']}/export.xlsx").content))
     rows = [r[0] for r in wb["Hypothèses"].iter_rows(values_only=True)]
-    assert any("HYPOTHÈSE NON VALIDÉE" in str(r) and "CAILLER-09" in str(r) for r in rows)
     assert any("non commercialisable" in str(r) for r in rows)

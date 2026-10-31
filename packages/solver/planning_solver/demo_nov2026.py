@@ -14,21 +14,31 @@ BUDGET_HOURS = {"Ploom GVA3": 720, "Ploom GVA9": 480, "Cartier": 64, "Valmont": 
                 "Nuxe": 68, "Cailler": 88, "Lindt": 64, "Toblerone": 64}
 TOTAL_HOURS = 1752
 
-# Horaires NON FOURNIS par le client : valeurs supposées, paramétrables, NON VALIDÉES.
-# Valmont (08-17, 09-18, 10-19) est fourni ; Nuxe/Cellcosmet et Cailler ne le sont pas.
-VALMONT_TEMPLATES = [(time(8), time(17)), (time(9), time(18)), (time(10), time(19))]
-ASSUMED_CN_TEMPLATES = [(time(8), time(17)), (time(9), time(18)), (time(10), time(19))]
-ASSUMED_CAILLER_TEMPLATE = (time(9), time(18))
-HYPOTHETICAL_TEMPLATES = {
-    **{f"CN-{a:%H}": "Horaire Nuxe/Cellcosmet supposé (non fourni), non validé" for a, _ in ASSUMED_CN_TEMPLATES},
-    "CAILLER-09": "Horaire Cailler supposé (non fourni), non validé",
+# Horaires autorisés par boutique / marque (fournis par le client). Chaque shift = 1 h de pause non travaillée (8 h effectives).
+SITE_SCHEDULES: Dict[str, List[tuple]] = {
+    "GVA3": [(time(6), time(15)), (time(10), time(19)), (time(12), time(21))],
+    "Pilar": [(time(6), time(15)), (time(11), time(20))],
+    "GVA9": [(time(7), time(16)), (time(12, 30), time(21, 30))],
+    "Cailler": [(time(9), time(18))], "Lindt": [(time(9), time(18))], "Toblerone": [(time(9), time(18))],
+    "ALCOOL": [(time(9), time(18))],  # marques d'alcool : aucune marque nommée dans les données, aucune n'est créée
+    "Valmont": [(time(8), time(17)), (time(9), time(18)), (time(10), time(19))],
+    "Cartier": [(time(8), time(17))],
+    "Nuxe/Cellcosmet": [(time(9), time(18))],
 }
+VALMONT_TEMPLATES = SITE_SCHEDULES["Valmont"]
+CN_TEMPLATES = SITE_SCHEDULES["Nuxe/Cellcosmet"]
+CAILLER_TEMPLATE = SITE_SCHEDULES["Cailler"][0]
+# Plus aucun horaire supposé pour les marques : tous sont fournis. (Conservé vide pour l'API de graine.)
+HYPOTHETICAL_TEMPLATES: Dict[str, str] = {}
+# Dimanche : Ploom seul. GVA3 3 + Pilar 2 + GVA9 2 = 7 shifts par dimanche ; 5 dimanches en novembre 2026 = 35.
+SUNDAY_SHIFTS_PER_DAY = 7
+SUNDAYS = [date(2026, 11, d) for d in (1, 8, 15, 22, 29)]
+SUNDAY_TOTAL = SUNDAY_SHIFTS_PER_DAY * len(SUNDAYS)  # 35
 
 HYPOTHESES = [
-    "HYPOTHÈSE NON VALIDÉE — horaires Nuxe/Cellcosmet : mêmes modèles que Valmont (08-17, 09-18, 10-19), non fournis.",
-    "HYPOTHÈSE NON VALIDÉE — horaire Cailler : 09:00-18:00 (1 h de pause), non fourni.",
     "HYPOTHÈSE NON VALIDÉE — collaborateurs sans marque indiquée (Mila, Abdu, Sabrina, Kristina, Florian, Simona D, Yasmine, Michael, "
-    "Adam) : supposés éligibles Ploom uniquement ; Aziza : chocolat (Cailler, Lindt, Toblerone) uniquement.",
+    "Adam) : supposés éligibles Ploom uniquement (GVA3, GVA9 et Pilar) ; Aziza : chocolat (Cailler, Lindt, Toblerone) uniquement.",
+    "HYPOTHÈSE NON VALIDÉE — Ploom Pilar : seuls les 2 shifts du dimanche sont fournis ; besoins hors dimanche et budget non fournis.",
     "HYPOTHÈSE NON VALIDÉE — poids d'attribution : 1.25 pour Sahra, Mila, Abdu ; 0.75 pour Yasmine ; valeurs de paramétrage, pas des contrats.",
     "HYPOTHÈSE NON VALIDÉE — un seul collaborateur par shift (effectif requis = 1) ; aucun historique avant le 1er novembre.",
 ]
@@ -51,10 +61,10 @@ def _slot(sid, day, site, start, end, alloc_brands, tag="day", tpl="", mandatory
 
 
 def build_slots(cn_split: Optional[Dict[str, float]] = None, cn_templates=None, cailler_template=None) -> List[Slot]:
-    """cn_templates / cailler_template : horaires supposés, surchargeables (configurables)."""
+    """cn_templates / cailler_template : horaires paramétrables (par défaut ceux fournis)."""
     cn_split = cn_split or {"Cellcosmet": 1, "Nuxe": 1}
-    cn_templates = cn_templates or ASSUMED_CN_TEMPLATES
-    cailler_start, cailler_end = cailler_template or ASSUMED_CAILLER_TEMPLATE
+    cn_templates = cn_templates or CN_TEMPLATES
+    cailler_start, cailler_end = cailler_template or CAILLER_TEMPLATE
     out: List[Slot] = []
     cos = VALMONT_TEMPLATES
     for d in all_days():
@@ -62,6 +72,9 @@ def build_slots(cn_split: Optional[Dict[str, float]] = None, cn_templates=None, 
         for st, en, tag, tpl in ((6, 15, "open", "GVA3-06"), (10, 19, "mid", "GVA3-10"),
                                  (12, 21, "close", "GVA3-12")):
             out.append(_slot(f"GVA3|{k}|{tpl}", d, "GVA3", time(st), time(en), ["Ploom GVA3"], tag, tpl))
+        if d.weekday() == SUN:  # Pilar : uniquement le dimanche (seul besoin fourni)
+            out.append(_slot(f"PILAR|{k}|PILAR-06", d, "Pilar", time(6), time(15), ["Ploom Pilar"], "open", "PILAR-06"))
+            out.append(_slot(f"PILAR|{k}|PILAR-11", d, "Pilar", time(11), time(20), ["Ploom Pilar"], "mid", "PILAR-11"))
         out.append(_slot(f"GVA9|{k}|GVA9-07", d, "GVA9", time(7), time(16), ["Ploom GVA9"], "open", "GVA9-07"))
         out.append(_slot(f"GVA9|{k}|GVA9-1230", d, "GVA9", time(12, 30), time(21, 30), ["Ploom GVA9"], "close",
                          "GVA9-1230"))
@@ -83,8 +96,8 @@ def build_slots(cn_split: Optional[Dict[str, float]] = None, cn_templates=None, 
 
 
 def build_employees() -> List[Employee]:
-    P3, P9 = "Ploom GVA3", "Ploom GVA9"
-    ploom = {P3: PRIORITY, P9: PRIORITY}
+    P3, P9, PP = "Ploom GVA3", "Ploom GVA9", "Ploom Pilar"
+    ploom = {P3: PRIORITY, P9: PRIORITY, PP: PRIORITY}
     cosm = {"Valmont": REINFORCE, "Cellcosmet": REINFORCE, "Nuxe": REINFORCE}
     E = Employee
     return [
@@ -101,12 +114,12 @@ def build_employees() -> List[Employee]:
         E("yasmine", "Yasmine", dict(ploom), available_weekdays={MON, TUE, WED}, weight=0.75),
         E("michael", "Michael", dict(ploom)),
         E("adam", "Adam", dict(ploom)),
-        E("valerie", "Valérie", {"Cailler": PRIORITY, P3: REINFORCE, P9: REINFORCE, "Cartier": REINFORCE,
+        E("valerie", "Valérie", {"Cailler": PRIORITY, P3: REINFORCE, P9: REINFORCE, PP: REINFORCE, "Cartier": REINFORCE,
                                  "Lindt": REINFORCE, "Toblerone": REINFORCE}),
         E("pierre", "Pierre", {"Lindt": PRIORITY, "Toblerone": PRIORITY, "Cailler": REINFORCE,
-                               P3: REINFORCE, P9: REINFORCE}),
+                               P3: REINFORCE, P9: REINFORCE, PP: REINFORCE}),
         E("aziza", "Aziza", {"Cailler": PRIORITY, "Lindt": PRIORITY, "Toblerone": PRIORITY}),
-        E("ying", "Ying", {"Valmont": PRIORITY, P3: REINFORCE, P9: REINFORCE}, max_days_per_week=3,
+        E("ying", "Ying", {"Valmont": PRIORITY, P3: REINFORCE, P9: REINFORCE, PP: REINFORCE}, max_days_per_week=3,
           preferred_times={(time(8), time(17)), (time(9), time(18))}),
         E("chloe", "Chloé", {"Valmont": PRIORITY, "Cartier": REINFORCE}, unavailable_weekdays={WED, SAT},
           preferred_times={(time(10), time(19))}),
@@ -119,4 +132,5 @@ def build_input(cn_split: Optional[Dict[str, float]] = None, config: Optional[So
     budgets = [BrandBudget(b, h * 60, requirements_defined=b not in ("Lindt", "Toblerone"))
                for b, h in BUDGET_HOURS.items()]
     return SolverInput(START, END, build_slots(cn_split, cn_templates, cailler_template), build_employees(), budgets,
-                       config or SolverConfig(), hypotheses=list(HYPOTHESES))
+                       config or SolverConfig(), hypotheses=list(HYPOTHESES),
+                       site_starts={k: [a for a, _ in v] for k, v in SITE_SCHEDULES.items()}, allowed_times=dict(SITE_SCHEDULES))

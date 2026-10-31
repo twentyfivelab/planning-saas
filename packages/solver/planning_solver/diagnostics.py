@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from datetime import timedelta
 from typing import Dict, List
 
-from .model import Issue, SolverInput
+from .model import Issue, SolverInput, site_start_times, slot_category
+from .sundays import sunday_summary, sundays_in
 
 
 NON_EXECUTED_LEGAL_RULES = (
@@ -41,6 +43,30 @@ def missing_data(inp: SolverInput) -> List[Issue]:
                 "Ces heures ne peuvent pas être planifiées définitivement (rien n'a été inventé).",
                 constraints=[f"besoins journaliers {b.brand}"],
                 suggestions=[f"Renseigner les jours et horaires de {b.brand} (besoins journaliers)."]))
+    # semaines à cheval sur deux périodes : limites hebdomadaires partielles sans historique voisin
+    boundary = []
+    d0, d1 = inp.period_start, inp.period_end
+    if d0.weekday() != 0:
+        boundary.append(f"semaine du {d0 - timedelta(days=d0.weekday()):%d/%m}")
+    if d1.weekday() != 6:
+        boundary.append(f"semaine du {d1 - timedelta(days=d1.weekday()):%d/%m}")
+    limited = [e.name for e in inp.employees if e.max_days_per_week is not None or (e.max_days_count is not None and e.max_days_period == "week")]
+    if boundary and limited and not inp.history_provided:
+        out.append(Issue(
+            "WEEK_BOUNDARY_HISTORY_MISSING", "warning",
+            f"Limites hebdomadaires de jours ({', '.join(limited)}) : les {' et '.join(boundary)} chevauchent une autre période et aucun planning voisin n'est fourni ; "
+            "seuls les jours de la période sont comptés (jours hors période non supposés).",
+            suggestions=["Créer ou importer le planning de la période voisine pour que ses jours soient comptés."]))
+    budgeted = {b.brand for b in inp.budgets}
+    unbudgeted = sorted({b for s in inp.slots for b in s.brands} - budgeted)
+    for b in unbudgeted:
+        out.append(Issue("BRAND_BUDGET_MISSING", "warning",
+                         f"{b} : shifts planifiés sans budget horaire saisi ; ses heures ne sont comptées dans aucun budget (rien n'a été supposé).",
+                         suggestions=[f"Saisir le budget mensuel de {b} et ses besoins hors des jours déjà définis."]))
+    sun = sunday_summary(inp)
+    if sundays_in(inp):
+        for al in sun["alerts"]:
+            out.append(Issue("SUNDAY_QUOTAS", "warning" if al["level"] == "warning" else "info", al["text"]))
     out.append(Issue("LEGAL_REVIEW", "warning",
                      "Seuls le repos quotidien (défaut 11 h) et le maximum de jours consécutifs (défaut 6) sont "
                      "exécutés, comme valeurs de référence NON validées juridiquement. Non exécutées : " +
@@ -65,6 +91,11 @@ def _candidates(inp: SolverInput, slot) -> Dict[str, List[str]]:
             stages["indisponible / absent"].append(e.name)
         elif slot.tag in e.forbidden_tags:
             stages["règle dure individuelle (shift interdit)"].append(e.name)
+        elif e.sunday_quota == 0 and slot.day.weekday() == 6:
+            stages["quota de 0 dimanche"].append(e.name)
+        elif e.time_pref and e.time_pref_strict and (
+                slot_category(slot, site_start_times(inp)) not in (None, e.time_pref)):
+            stages["préférence horaire stricte"].append(e.name)
         else:
             stages["candidat"].append(e.name)
     return stages

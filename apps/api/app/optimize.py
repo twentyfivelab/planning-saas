@@ -71,6 +71,14 @@ def run_optimization(tenant_id: str, run_id: str) -> None:
             report["weights_used"] = res.weights
             db.add(m.OptimizationResult(tenant_id=run.tenant_id, run_id=run.id, status=res.status, mode=res.mode,
                                         duration_s=res.duration_s, report=report))
+            # garde-fou : un planning qui enfreint une contrainte dure n'est JAMAIS enregistré (vérification indépendante)
+            if res.hard_violations:
+                report["blocked_by_verification"] = res.hard_violations
+                db.add(m.Conflict(tenant_id=run.tenant_id, run_id=run.id, code="PLAN_REJECTED", severity="blocking",
+                                  message="Planning refusé par la vérification automatique : " + "; ".join(res.hard_violations[:5]),
+                                  slots=[]))
+                run.status, run.finished_at = "erreur", datetime.now(timezone.utc)
+                return
             if res.status in ("optimal", "faisable", "partiellement_couvert") or (
                     res.status == "interrompu" and res.assignments):
                 persist_result(db, run.tenant_id, period, inp, res, run.id)

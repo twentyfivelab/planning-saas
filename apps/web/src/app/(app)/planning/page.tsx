@@ -8,6 +8,8 @@ import { Modal } from "@/components/ui/Modal";
 import { ShiftCard } from "@/components/ui/ShiftCard";
 import { useToast } from "@/components/ui/Toast";
 import { useReassign } from "@/components/planning/useReassign";
+import { SundayStrip } from "@/components/planning/SundayCounter";
+import { computeCounter, type SundaySummary } from "@/lib/sundays";
 import { api } from "@/lib/api";
 import { brandColor, brandVars } from "@/lib/brand";
 import { budgetProgress, plannedByBrand, splitShares, type BudgetRow } from "@/lib/metrics";
@@ -17,7 +19,7 @@ import {
 } from "@/lib/schedule";
 
 type Schedule = { assignments: Assignment[]; uncovered: { shift_id: string; slot_key: string; day: string; site: string; start: string; end: string }[] };
-type Emp = { id: string; code: string; name: string; brands?: Record<string, string> };
+type Emp = { id: string; code: string; name: string; brands?: Record<string, string>; sunday_quota?: number | null; sunday_mode?: "max" | "exact" };
 const VIEWS = [["month", "Mois"], ["week", "Semaine"], ["day", "Jour"], ["employee", "Collaborateur"], ["brand", "Marque / site"]] as const;
 type View = (typeof VIEWS)[number][0];
 const KIND_ICON = { open: "sunrise", day: "briefcase", close: "sunset" } as const;
@@ -33,6 +35,7 @@ export default function PlanningPage() {
   const confl = useApi<{ hard_violations: string[] }>(period ? `/periods/${period.id}/conflicts` : null);
   const emps = useApi<Emp[]>("/employees");
   const budgets = useApi<BudgetRow[]>("/budgets");
+  const sunday = useApi<SundaySummary>(period ? `/periods/${period.id}/sunday-summary` : null);
 
   const [view, setView] = useState<View>("week");
   const [focusState, setFocus] = useState("");
@@ -51,7 +54,7 @@ export default function PlanningPage() {
     const filtersActive = !!(text || site || brand || empF);
   const week = useMemo(() => weekOf(focus), [focus]);
   const inPeriod = (d: string) => days.includes(d);
-  const refresh = () => { sched.reload(); confl.reload(); };
+  const refresh = () => { sched.reload(); confl.reload(); sunday.reload(); };
 
   const reassign = useReassign({ all, emps: emps.data ?? [], refresh, getSchedule: async () => (await api<Schedule>(`/periods/${period!.id}/schedule`)).assignments });
 
@@ -130,6 +133,10 @@ export default function PlanningPage() {
         </div>
       </Card>
 
+      {period && (sunday.loading || emps.loading) && !sunday.data && <div className="glass skeleton" style={{ minHeight: "3.4rem" }} aria-hidden="true" />}
+      {sunday.data && sunday.data.total > 0 && emps.data && (
+        <SundayStrip counter={computeCounter(sunday.data, emps.data.map((e) => ({ code: e.code, sunday_quota: e.sunday_quota ?? null, sunday_mode: e.sunday_mode ?? "max" })))} onDetails={() => { window.location.href = "/employees"; }} />
+      )}
       <Legend brands={brands} />
 
       {(confl.data?.hard_violations.length ?? 0) > 0 && (
@@ -340,9 +347,16 @@ function BrandView({ days, list, budgets }: { days: string[]; list: Assignment[]
   );
 }
 
+type Allowed = { allowed: { template: string; start: string; end: string; break_minutes: number }[]; can_override: boolean };
+
 function ShiftModal({ a, onClose, canEdit, emps, alerts, onReassign, onLock, onTimes }: { a: Assignment | null; onClose: () => void; canEdit: boolean; emps: Emp[]; alerts: string[]; onReassign: (a: Assignment, to: string) => void; onLock: (a: Assignment) => void; onTimes: (a: Assignment, f: FormData) => void }) {
   const [to, setTo] = useState("");
-  useEffect(() => setTo(a?.employee_id ?? ""), [a]);
+  const [allowed, setAllowed] = useState<Allowed | null>(null);
+  const [slotSel, setSlotSel] = useState("");
+  useEffect(() => { setTo(a?.employee_id ?? ""); setAllowed(null); setSlotSel("");
+    if (a) api<Allowed>(`/shifts/${a.shift_id}/allowed-times`).then((r) => { setAllowed(r); const cur = r.allowed.find((x) => x.start.slice(0, 5) === a.start.slice(0, 5) && x.end.slice(0, 5) === a.end.slice(0, 5)); setSlotSel(cur ? `${cur.start}|${cur.end}` : r.can_override ? "custom" : ""); }).catch(() => setAllowed({ allowed: [], can_override: false }));
+  }, [a]);
+  const restricted = !!allowed && allowed.allowed.length > 0;
   return (
     <Modal open={!!a} onClose={onClose} title={a ? `${a.employee} · ${a.site}` : ""} description={a ? `${dayLabel(a.day)} · ${timeShort(a.start)}–${timeShort(a.end)}` : undefined}>
       {a && (
@@ -371,10 +385,24 @@ function ShiftModal({ a, onClose, canEdit, emps, alerts, onReassign, onLock, onT
                 <Button variant="primary" disabled={a.locked || to === a.employee_id} onClick={() => onReassign(a, to)}>Réaffecter</Button>
               </div>
               <form className="row" style={{ alignItems: "flex-end" }} onSubmit={(e) => { e.preventDefault(); onTimes(a, new FormData(e.currentTarget)); }}>
-                <Field label="Début">{(p) => <Input {...p} name="s" type="time" defaultValue={timeShort(a.start)} disabled={a.locked} />}</Field>
-                <Field label="Fin">{(p) => <Input {...p} name="e" type="time" defaultValue={timeShort(a.end)} disabled={a.locked} />}</Field>
+                {restricted ? (
+                  <>
+                    <Field label="Horaire autorisé" help={`Horaires de ${a.site}`}>{(p) => (
+                      <Select {...p} value={slotSel} disabled={a.locked} onChange={(e) => setSlotSel(e.target.value)} style={{ minWidth: "10rem" }}>
+                        {allowed!.allowed.map((x) => <option key={x.template} value={`${x.start}|${x.end}`}>{x.start.slice(0, 5)}–{x.end.slice(0, 5)}</option>)}
+                        {allowed!.can_override && <option value="custom">Autre horaire (administrateur)</option>}
+                      </Select>)}</Field>
+                    {slotSel !== "custom" && <><input type="hidden" name="s" value={slotSel.split("|")[0] ?? ""} /><input type="hidden" name="e" value={slotSel.split("|")[1] ?? ""} /></>}
+                  </>
+                ) : null}
+                {(!restricted || slotSel === "custom") && (
+                  <>
+                    <Field label="Début">{(p) => <Input {...p} name="s" type="time" defaultValue={timeShort(a.start)} disabled={a.locked} />}</Field>
+                    <Field label="Fin">{(p) => <Input {...p} name="e" type="time" defaultValue={timeShort(a.end)} disabled={a.locked} />}</Field>
+                  </>
+                )}
                 <Field label="Pause (min)">{(p) => <Input {...p} name="b" type="number" min={0} max={480} defaultValue={a.break_minutes} disabled={a.locked} style={{ width: "6rem" }} />}</Field>
-                <Button type="submit" disabled={a.locked}>Modifier l&apos;horaire</Button>
+                <Button type="submit" disabled={a.locked || (restricted && !slotSel)}>Modifier l&apos;horaire</Button>
               </form>
               <div className="row"><Button icon="lock" onClick={() => onLock(a)}>{a.locked ? "Déverrouiller" : "Verrouiller"}</Button>
                 <p className="help">{a.locked ? "Déverrouillez pour réaffecter ou modifier." : "Un shift verrouillé n'est jamais déplacé par la réoptimisation."}</p></div>

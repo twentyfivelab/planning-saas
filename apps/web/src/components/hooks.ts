@@ -14,7 +14,7 @@ export function useApi<T>(path: string | null) {
     api<T>(path).then((d) => { setData(d); setError(null); }).catch((e) => setError(String(e.message ?? e))).finally(() => setLoading(false));
   }, [path]);
   useEffect(reload, [reload]);
-  return { data, error, loading, reload };
+  return { data, error, loading, reload, mutate: setData };
 }
 
 export function usePeriod() {

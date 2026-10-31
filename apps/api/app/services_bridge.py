@@ -8,7 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from planning_solver.model import (Assignment as SAssign, BrandBudget, Contract, DEFAULT_WEIGHTS,
-                                   Employee as SEmployee, Slot, SolverConfig, SolverInput)
+                                   Employee as SEmployee, OutsideShift, Slot, SolverConfig, SolverInput)
 from planning_solver.timecalc import shift_hours, split_allocation
 
 from . import models as m
@@ -82,6 +82,9 @@ def build_input(db: Session, period: m.PlanningPeriod, cfg_overrides: Optional[d
     for e in db.scalars(select(m.Employee).where(m.Employee.active.is_(True)).order_by(m.Employee.code)):
         se = SEmployee(e.code, e.name, dict(e.brands or {}), skills={s for s in emp_skills[e.id] if s},
                        weight=e.allocation_weight,
+                       max_days_count=e.max_days_count, max_days_period=e.max_days_period,
+                       time_pref=e.time_pref, time_pref_strict=e.time_pref_strict,
+                       sunday_quota=e.sunday_quota, sunday_mode=e.sunday_mode or "max",
                        available_weekdays=set(avail[e.id]) if avail.get(e.id) else None,
                        unavailable_weekdays=set(unav_wd[e.id]), unavailable_dates=set(unav_dt[e.id]),
                        opposite_of=codes.get(rel.get(e.id)) if e.id in rel else None)
@@ -126,15 +129,44 @@ def build_input(db: Session, period: m.PlanningPeriod, cfg_overrides: Optional[d
         elif k in ("time_limit_s", "workers", "strict_coverage", "seed"):
             setattr(cfg, k, v)
 
-    budgets = [BrandBudget(b.brand_code, b.target_minutes, b.requirements_defined)
+    budgets = [BrandBudget(b.brand_code, b.target_minutes, b.requirements_defined, strict=b.strict)
                for b in db.scalars(select(m.MonthlyBudget).where(
                    m.MonthlyBudget.month == start.replace(day=1)))]
     used = {r.template_id for r in reqs}
     hyp = [f"Horaire supposé NON VALIDÉ : modèle {t.code} {t.start_time:%H:%M}-{t.end_time:%H:%M}"
            f"{' — ' + t.hypothesis_note if t.hypothesis_note else ''}. À confirmer ou modifier (paramétrable)."
            for t in templates.values() if t.is_hypothesis and t.id in used]
-    inp = SolverInput(start, end, slots, emps, budgets, cfg, leaves_provided=bool(leaves), hypotheses=sorted(hyp))
+    hyp += [r.params["text"] for r in rules if r.code == "hypothesis" and r.params.get("text")]  # hypothèses saisies par le tenant
+    # horaires autorisés par boutique / marque (modèles de shifts à portée) -> contrôle et catégories matin/middle/soir
+    allowed: Dict[str, list] = defaultdict(list)
+    group_brands: Dict[str, list] = defaultdict(list)
+    for b in brands.values():
+        if b.group_code:
+            group_brands[b.group_code].append(b.code)
+    for t in templates.values():
+        if not t.scope_code:
+            continue
+        keys = [t.scope_code] + (group_brands.get(t.scope_code, []) if t.scope_type == "group" else [])
+        for k in keys:
+            if (t.start_time, t.end_time) not in allowed[k]:
+                allowed[k].append((t.start_time, t.end_time))
+    site_starts = {k: sorted({a for a, _ in v}) for k, v in allowed.items()}
+    outside = _outside_shifts(db, period)
+    inp = SolverInput(start, end, slots, emps, budgets, cfg, leaves_provided=bool(leaves), hypotheses=sorted(hyp),
+                      outside_shifts=outside, history_provided=bool(outside), site_starts=site_starts,
+                      allowed_times=dict(allowed))
     return inp
+
+
+def _outside_shifts(db: Session, period: m.PlanningPeriod) -> List[OutsideShift]:
+    """Shifts déjà planifiés dans les périodes voisines (±7 jours) : semaines à cheval, repos et jours consécutifs."""
+    lo, hi = period.start_date - timedelta(days=7), period.end_date + timedelta(days=7)
+    codes = {e.id: e.code for e in db.scalars(select(m.Employee))}
+    rows = db.execute(
+        select(m.Shift, m.Assignment).join(m.Assignment, m.Assignment.shift_id == m.Shift.id)
+        .where(m.Shift.period_id != period.id, m.Shift.day >= lo, m.Shift.day <= hi)).all()
+    return [OutsideShift(codes[a.employee_id], sh.day, sh.start_time, sh.end_time) for sh, a in rows
+            if a.employee_id in codes and not (period.start_date <= sh.day <= period.end_date)]
 
 
 def current_assignments(db: Session, period: m.PlanningPeriod) -> Tuple[Dict[str, str], Dict[str, str]]:

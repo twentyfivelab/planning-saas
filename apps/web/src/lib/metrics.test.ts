@@ -23,10 +23,10 @@ describe("métriques du tableau de bord", () => {
     expect(equityIndicator([100, 100, 100])?.cv).toBe(0);
     const e = equityIndicator([60, 120, 180])!; expect(e.min).toBe(60); expect(e.max).toBe(180); expect(e.cv).toBeGreaterThan(0.4);
   });
-  it("palette marques : stable, bornée à 10 teintes, marques connues distinctes (Cellcosmet ≠ Nuxe)", () => {
+  it("palette marques : stable, 10 marques connues distinctes + teintes neutres pour les inconnues, marques connues distinctes (Cellcosmet ≠ Nuxe)", () => {
     expect(brandIndex("Cellcosmet")).not.toBe(brandIndex("Nuxe"));
     expect(new Set(KNOWN_BRANDS.map(brandIndex)).size).toBe(KNOWN_BRANDS.length);
-    const n = brandIndex("Marque inconnue"); expect(n).toBeGreaterThanOrEqual(1); expect(n).toBeLessThanOrEqual(10); expect(brandIndex("Marque inconnue")).toBe(n);
+    const n = brandIndex("Marque inconnue"); expect(n).toBeGreaterThanOrEqual(11); expect(n).toBeLessThanOrEqual(12); expect(brandIndex("Marque inconnue")).toBe(n);
     expect(brandVars("Cartier")["--c"]).toBe("var(--brand-3)");
   });
 });

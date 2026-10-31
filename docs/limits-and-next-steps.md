@@ -16,6 +16,11 @@ Tant que les lignes « non exécuté » ne sont pas implémentées et validées 
 l'application ne doit être ni commercialisée ni utilisée en production.
 
 ## Limites
+- Les limites de jours par semaine sur les semaines à cheval ne sont exactes que si le planning de la période voisine existe ; sinon un
+  avertissement (`WEEK_BOUNDARY_HISTORY_MISSING`) l'indique.
+- Ploom Pilar : seuls les 2 shifts du dimanche sont fournis (pas de budget ni de besoins hors dimanche) ; ses 80 h de novembre ne sont comptées dans aucun budget.
+- Quota de dimanches « objectif exact » : plafond dur, manque pénalisé (jamais un conflit avec une contrainte dure) ; le manque est signalé.
+- Budgets : « strict » (défaut, plafond jamais dépassé) ou souple ; pas d'écran de saisie du mode (API uniquement).
 - Les contrats, disponibilités complètes, congés et besoins Lindt/Toblerone ne sont pas fournis : la simulation est
   exploratoire et non publiable ; 1 624 h planifiées sur 1 752 h.
 - Hypothèses à confirmer : horaires Cailler (09–18) et Nuxe/Cellcosmet (08-17/09-18/10-19) ; éligibilité marque des

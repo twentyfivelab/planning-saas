@@ -10,15 +10,22 @@ from typing import Dict, List, Optional
 from ortools.sat.python import cp_model
 
 from .diagnostics import diagnose_uncovered, missing_data, core_issue
-from .model import (Assignment, REINFORCE, Employee, Slot, SolverInput, SolverResult)
+from .model import (Assignment, REINFORCE, Employee, Slot, SolverInput, SolverResult, site_start_times, slot_category)
+from .sundays import sunday_summary, sundays_in
 from .validator import validate
 
 
 _UNIT_TERMS = ("fairness", "overtime", "budget")  # termes comptés en unités, pondérés à l'assemblage
 
 
-def _eligible(e: Employee, s: Slot, locked_slots: Dict[str, str]) -> bool:
+def _eligible(e: Employee, s: Slot, starts_by_site: Dict[str, list]) -> bool:
     if e.blocked(s.day) or s.tag in e.forbidden_tags:
+        return False
+    if e.time_pref and e.time_pref_strict:  # préférence horaire stricte = contrainte dure
+        cat = slot_category(s, starts_by_site)
+        if cat is not None and cat != e.time_pref:
+            return False
+    if e.sunday_quota == 0 and s.day.weekday() == 6:  # 0 dimanche : interdiction dure
         return False
     if any(b not in e.brands for b in s.brands):
         return False
@@ -59,11 +66,26 @@ def solve(inp: SolverInput, cancel: Optional[threading.Event] = None) -> SolverR
     emps = {e.id: e for e in inp.employees}
     days = _days(inp)
 
+    starts_by_site = site_start_times(inp)
+    rest_td = timedelta(hours=cfg.rest_hours)
+    outside: Dict[str, list] = defaultdict(list)
+    for o in inp.outside_shifts:
+        from .timecalc import shift_bounds
+        outside[o.employee_id].append(shift_bounds(o.day, o.start, o.end))
+
+    def clashes_outside(e: Employee, s: Slot) -> bool:
+        """Chevauchement ou repos insuffisant avec un shift d'une période voisine."""
+        b0, b1 = s.bounds
+        for o0, o1 in outside.get(e.id, ()):
+            if o0 < b1 + rest_td and b0 < o1 + rest_td:
+                return True
+        return False
+
     x: Dict[tuple, cp_model.IntVar] = {}
     by_emp: Dict[str, List[Slot]] = defaultdict(list)
     for e in inp.employees:
         for s in inp.slots:
-            if _eligible(e, s, inp.locked):
+            if _eligible(e, s, starts_by_site) and not clashes_outside(e, s):
                 x[e.id, s.id] = m.NewBoolVar(f"x_{e.id}_{s.id}")
                 by_emp[e.id].append(s)
 
@@ -117,30 +139,52 @@ def solve(inp: SolverInput, cancel: Optional[threading.Event] = None) -> SolverR
     def wk(e_id, d):
         return worked.get((e_id, d))
 
+    # Jours travaillés hors période (périodes voisines) + jours consécutifs déjà en cours avant la période
+    out_days: Dict[str, set] = defaultdict(set)
+    for o in inp.outside_shifts:
+        if not (inp.period_start <= o.day <= inp.period_end):
+            out_days[o.employee_id].add(o.day)
+    for e in inp.employees:
+        for k in range(1, e.prior_consecutive_days + 1):
+            out_days[e.id].add(inp.period_start - timedelta(days=k))
+
+    def wterm(e_id, d):
+        """Variable « jour travaillé » dans la période, constante 0/1 hors période, None si aucun shift possible."""
+        if inp.period_start <= d <= inp.period_end:
+            return wk(e_id, d)
+        return 1 if d in out_days[e_id] else 0
+
     terms: Dict[str, list] = defaultdict(list)
 
     for e in inp.employees:
-        # jours consécutifs (fenêtre glissante)
+        # jours consécutifs (fenêtre glissante, y compris sur la frontière avec les périodes voisines)
         L = cfg.max_consecutive_days
-        for i in range(len(days) - L):
-            win = [wk(e.id, d) for d in days[i:i + L + 1]]
-            win = [v for v in win if v is not None]
-            if len(win) > L:
-                m.Add(sum(win) <= L)
-        if e.prior_consecutive_days:
-            k = L - e.prior_consecutive_days
-            head = [wk(e.id, d) for d in days[:k + 1]]
-            head = [v for v in head if v is not None]
-            if k >= 0 and len(head) > k:
-                m.Add(sum(head) <= k)
-        # semaines ISO
+        span = [inp.period_start + timedelta(days=k) for k in range(-L, (inp.period_end - inp.period_start).days + 1 + L)]
+        for i in range(len(span) - L):
+            win = span[i:i + L + 1]
+            if not any(inp.period_start <= d <= inp.period_end for d in win):
+                continue
+            terms_w = [wterm(e.id, d) for d in win]
+            vs_ = [t for t in terms_w if t is not None and not isinstance(t, int)]
+            const = sum(t for t in terms_w if isinstance(t, int))
+            if len(vs_) + const > L and vs_:
+                m.Add(sum(vs_) <= max(0, L - const))
+        # semaines ISO (y compris les semaines à cheval sur deux périodes) : limite de jours par semaine
         weeks: Dict[tuple, list] = defaultdict(list)
         for d in days:
             weeks[d.isocalendar()[:2]].append(d)
+        week_cap = e.max_days_per_week
+        if e.max_days_count is not None and e.max_days_period == "week":
+            week_cap = e.max_days_count if week_cap is None else min(week_cap, e.max_days_count)
         for wkey, wdays in weeks.items():
             vs = [wk(e.id, d) for d in wdays if wk(e.id, d) is not None]
-            if e.max_days_per_week is not None and len(vs) > e.max_days_per_week:
-                m.Add(sum(vs) <= e.max_days_per_week)
+            if week_cap is not None and vs:
+                full = [d0 for d0 in (min(wdays) - timedelta(days=min(wdays).weekday()) + timedelta(days=k) for k in range(7))]
+                terms_w = [wterm(e.id, d0) for d0 in full]
+                vs_w = [t for t in terms_w if t is not None and not isinstance(t, int)]
+                const = sum(t for t in terms_w if isinstance(t, int))
+                if vs_w:
+                    m.Add(sum(vs_w) <= max(0, week_cap - const))
             if e.weekly_rest_days_pref is not None and len(wdays) == 7 and vs:
                 cap = 7 - e.weekly_rest_days_pref
                 if e.weekly_rest_days_hard:
@@ -153,6 +197,26 @@ def solve(inp: SolverInput, cancel: Optional[threading.Event] = None) -> SolverR
             if c and c.weekly_max_minutes is not None:
                 m.Add(sum(x[e.id, s.id] * s.effective_minutes for s in by_emp[e.id]
                           if s.day in wdays) <= c.weekly_max_minutes)
+        if e.max_days_count is not None and e.max_days_period == "month":
+            vs_m = [wk(e.id, d) for d in days if wk(e.id, d) is not None]
+            if len(vs_m) > e.max_days_count:
+                m.Add(sum(vs_m) <= e.max_days_count)
+        # quota de dimanches : plafond dur ; « objectif exact » = manque pénalisé ; jamais 2 shifts le même dimanche
+        suns = sundays_in(inp)
+        if suns and e.sunday_quota is not None:
+            sv = [wk(e.id, d) for d in suns if wk(e.id, d) is not None]
+            cap = min(e.sunday_quota, len(suns))
+            if sv:
+                m.Add(sum(sv) <= cap)
+                if e.sunday_mode == "exact" and cap > 0:
+                    # le manque est borné par les dimanches réellement possibles (disponibilités) pour ne pas fausser le coût
+                    short = m.NewIntVar(0, cap, f"sunq_{e.id}")
+                    m.Add(short >= cap - sum(sv))
+                    terms["sunday_quota"].append(W["sunday_quota"] * short)
+        for d in suns:
+            xs_d = [x[e.id, s.id] for s in by_emp[e.id] if s.day == d]
+            if len(xs_d) > 1:
+                m.AddAtMostOne(xs_d)
         c = e.contract
         tot = sum(x[e.id, s.id] * s.effective_minutes for s in by_emp[e.id])
         if c and c.monthly_max_minutes is not None and not c.overtime_allowed:
@@ -188,7 +252,12 @@ def solve(inp: SolverInput, cancel: Optional[threading.Event] = None) -> SolverR
     optional_brands = {b for s in inp.slots if not s.mandatory for b in s.brands}
     for b in inp.budgets:
         planned = sum(y[s.id] * s.allocations[b.brand] for s in inp.slots if b.brand in s.allocations)
-        m.Add(planned <= b.target_minutes)
+        if b.strict:
+            m.Add(planned <= b.target_minutes)  # budget strict : jamais dépassé
+        else:
+            over = m.NewIntVar(0, 100000, f"over_{b.brand}")  # heures au-delà du budget (souple)
+            m.Add(60 * over >= planned - b.target_minutes)
+            terms["budget_over"].append(W["budget_over"] * over)
         if b.brand in optional_brands:
             sh = m.NewIntVar(0, b.target_minutes // 60 + 1, f"short_{b.brand}")  # heures
             m.Add(60 * sh >= b.target_minutes - planned)
@@ -206,6 +275,14 @@ def solve(inp: SolverInput, cancel: Optional[threading.Event] = None) -> SolverR
             for _code, ok, force in preference_checks(e, s):
                 if not ok:
                     terms["preference"].append(W["preference"] * force * x[e.id, s.id])
+
+    # Préférence horaire souple (matin / middle / soir) : pénalité par shift hors catégorie
+    for e in inp.employees:
+        if e.time_pref and not e.time_pref_strict:
+            for s in by_emp[e.id]:
+                cat = slot_category(s, starts_by_site)
+                if cat is not None and cat != e.time_pref:
+                    terms["time_pref"].append(W["time_pref"] * max(1, e.preference_strength) * x[e.id, s.id])
 
     # Équité relative : cible proportionnelle au poids x disponibilité (ou cible contrat si renseignée)
     supply = sum(s.effective_minutes for s in inp.slots if s.mandatory)
@@ -343,7 +420,7 @@ def solve(inp: SolverInput, cancel: Optional[threading.Event] = None) -> SolverR
             diag = []
         return SolverResult(status=st, mode=mode, validable=False, assignments=[], uncovered_slots=[],
                             budgets=[], objective={}, preferences={}, avoided_violations={},
-                            hard_violations=[], employee_hours={}, diagnostics=diag, **base)
+                            hard_violations=[], employee_hours={}, diagnostics=diag, sunday=sunday_summary(inp), **base)
 
     assigns: List[Assignment] = []
     for (eid, sid), v in x.items():
@@ -395,7 +472,7 @@ def solve(inp: SolverInput, cancel: Optional[threading.Event] = None) -> SolverR
                                                           and not viol),
                         assignments=assigns, uncovered_slots=uncovered, budgets=budgets, objective=objective,
                         preferences=dict(prefs), avoided_violations=avoided, hard_violations=viol,
-                        employee_hours=dict(hours), diagnostics=diag, **base)
+                        employee_hours=dict(hours), diagnostics=diag, sunday=sunday_summary(inp, assigns), **base)
 
 
 def _count_conflict_pairs(inp: SolverInput, x: dict) -> int:

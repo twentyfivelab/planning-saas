@@ -116,6 +116,13 @@ class Employee(TenantOwned, Base):
     brands: Mapped[Any] = mapped_column(JSONB, default=dict)  # {brand_code: priority|reinforce}
     allocation_weight: Mapped[float] = mapped_column(Float, default=1.0)  # préférence souple
     active: Mapped[bool] = mapped_column(Boolean, default=True)
+    # --- fiche collaborateur : limites et préférences transmises au moteur ---
+    max_days_count: Mapped[Optional[int]] = mapped_column(Integer)  # NULL = pas de préférence
+    max_days_period: Mapped[Optional[str]] = mapped_column(String(8))  # week | month
+    time_pref: Mapped[Optional[str]] = mapped_column(String(8))  # matin | middle | soir
+    time_pref_strict: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    sunday_quota: Mapped[Optional[int]] = mapped_column(Integer)  # NULL = pas de préférence
+    sunday_mode: Mapped[str] = mapped_column(String(8), default="max", server_default="max")  # max | exact
     __table_args__ = (UniqueConstraint("tenant_id", "code"),)
 
 
@@ -177,6 +184,9 @@ class ShiftTemplate(TenantOwned, Base):
     # horaire supposé, non fourni par le client : signalé comme hypothèse non validée partout (alertes, exports)
     is_hypothesis: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     hypothesis_note: Mapped[Optional[str]] = mapped_column(String(300))
+    # portée des horaires autorisés : site (code de boutique), marque, ou groupe de marques (ex. ALCOOL)
+    scope_type: Mapped[Optional[str]] = mapped_column(String(8))
+    scope_code: Mapped[Optional[str]] = mapped_column(String(64))
     __table_args__ = (UniqueConstraint("tenant_id", "code"),)
 
 
@@ -201,6 +211,7 @@ class MonthlyBudget(TenantOwned, Base):
     month: Mapped[date] = mapped_column(Date)  # 1er du mois
     target_minutes: Mapped[int] = mapped_column(Integer)  # travail effectif
     requirements_defined: Mapped[bool] = mapped_column(Boolean, default=True)
+    strict: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")  # strict = plafond jamais dépassé
     __table_args__ = (UniqueConstraint("tenant_id", "brand_code", "month"),)
 
 

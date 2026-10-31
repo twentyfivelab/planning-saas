@@ -103,12 +103,31 @@ CSV/Excel ; aucune donnée sensible dans les logs ni les erreurs ; endpoints RGP
 4. *Versions* : enregistrer, comparer, publier. Une version issue d'une **simulation exploratoire** ne peut pas être publiée.
 5. *Import/Export* : PDF, Excel (Planning, Collaborateurs, Budgets, Alertes, Hypothèses), CSV, ICS par collaborateur.
 
+## Horaires, fiches collaborateurs et dimanches
+**Horaires autorisés** (fournis, 1 h de pause non travaillée = 8 h effectives) : Ploom GVA3 06–15 / 10–19 / 12–21 ; Ploom Pilar 06–15 / 11–20 ;
+Ploom GVA9 07–16 / 12h30–21h30 ; Cailler, Lindt, Toblerone et marques d'alcool 09–18 ; Valmont 08–17 / 09–18 / 10–19 ; Cartier 08–17 ;
+Nuxe/Cellcosmet 09–18. Ils sont enregistrés comme modèles de shifts à portée (`scope_type` : site, marque ou groupe) et proposés lors de la
+modification d'un shift ; seul un administrateur peut déroger (tracé dans le journal d'audit). Aucune marque d'alcool n'étant nommée,
+aucune n'est créée (groupe `ALCOOL` prêt).
+
+**Fiche collaborateur** (colonnes de `employees`, transmises au moteur) :
+- *Jours maximum* : nombre (1–7 par semaine, 1–31 par mois) + période ; contrainte dure, y compris sur les semaines à cheval sur deux périodes
+  (les jours déjà planifiés dans une période voisine sont comptés ; sans planning voisin, le manque est signalé, jamais supposé).
+- *Préférence horaire* : matin (début avant 9 h), middle shift (9 h–11 h 59), soir (dès 12 h), souple (pénalité) ou stricte (contrainte dure).
+  Une boutique à horaire unique reste ouverte à tous.
+- *Dimanches* : 0 à 5 par période, en *maximum* (plafond dur) ou *objectif exact* (plafond dur + manque pénalisé, qui réserve les dimanches).
+- « Pas de préférence » = aucune limite (valeur `null`). Rien n'est appliqué par défaut.
+
+**Dimanches de novembre 2026** : GVA3 3 + Pilar 2 + GVA9 2 = 7 shifts × 5 dimanches (1, 8, 15, 22, 29) = **35 shifts**. Le compteur
+(`GET /periods/{id}/sunday-summary`, recalculé côté client en direct) distingue *à couvrir*, *réservés* (quotas exacts), *planifiés* (affectations
+réelles) et *restant à attribuer* (à couvrir − réservés) ; il alerte si les quotas ne peuvent pas tout couvrir.
+Chaque planning est contrôlé par un vérificateur indépendant ; un planning qui enfreint une contrainte dure n'est jamais enregistré.
+
 ## Hypothèses non validées (paramétrables)
-Horaires **Cailler** (09:00–18:00) et **Nuxe/Cellcosmet** (08-17, 09-18, 10-19) : non fournis, supposés pour la
-simulation. Ce sont des modèles de shifts marqués `is_hypothesis` (modifiables via `/shift-templates`, ou via les
-paramètres `cn_templates` / `cailler_template` de `build_slots`), signalés comme **hypothèses non validées** dans les
-alertes, le diagnostic et l'export Excel. Idem : éligibilité marque des collaborateurs sans marque indiquée, poids
-d'attribution (1,25 / 0,75), effectif requis = 1.
+Les horaires de toutes les marques sont désormais fournis (voir ci-dessus) ; ils restent modifiables (`/shift-templates`, ou `cn_templates` /
+`cailler_template` de `build_slots`). Restent des **hypothèses non validées**, signalées dans les alertes, le diagnostic et l'export Excel :
+éligibilité marque des collaborateurs sans marque indiquée (Ploom GVA3, GVA9 et Pilar), Pilar sans budget ni besoin hors dimanche,
+poids d'attribution (1,25 / 0,75), effectif requis = 1. Lindt et Toblerone : horaires 09–18 enregistrés, mais jours toujours non définis (128 h non planifiables).
 
 ## Comptes de démonstration
 `python -m app.seed` est **refusé** sauf si `APP_ENV` vaut `development` ou `test` (défaut : `production`) ;

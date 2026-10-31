@@ -205,18 +205,22 @@ def test_preference_never_overrides_hard_rule():
     assert res.assignments == []
 
 
-def test_assumed_schedules_are_configurable_and_flagged_as_unvalidated_hypotheses():
+def test_provided_schedules_are_configurable_and_remaining_assumptions_flagged():
     from datetime import time as t
-    from planning_solver.demo_nov2026 import ASSUMED_CAILLER_TEMPLATE, HYPOTHETICAL_TEMPLATES, build_slots
-    assert ASSUMED_CAILLER_TEMPLATE == (t(9), t(18)) and "CAILLER-09" in HYPOTHETICAL_TEMPLATES
-    slots = build_slots(cn_templates=[(t(9), t(18))], cailler_template=(t(10), t(19)))
+    from planning_solver.demo_nov2026 import CAILLER_TEMPLATE, CN_TEMPLATES, HYPOTHETICAL_TEMPLATES, SITE_SCHEDULES, build_slots
+    # horaires fournis : plus aucun modèle de marque n'est une hypothèse
+    assert CAILLER_TEMPLATE == (t(9), t(18)) and CN_TEMPLATES == [(t(9), t(18))] and HYPOTHETICAL_TEMPLATES == {}
+    assert SITE_SCHEDULES["Pilar"] == [(t(6), t(15)), (t(11), t(20))]
+    assert SITE_SCHEDULES["Cartier"] == [(t(8), t(17))] and SITE_SCHEDULES["ALCOOL"] == [(t(9), t(18))]
+    # et ils restent paramétrables
+    slots = build_slots(cn_templates=[(t(10), t(19))], cailler_template=(t(10), t(19)))
     assert {(x.start, x.end) for x in slots if x.id.startswith("CAILLER")} == {(t(10), t(19))}
-    assert {x.start for x in slots if x.id.startswith("CN|")} == {t(9)}
+    assert {x.start for x in slots if x.id.startswith("CN|")} == {t(10)}
     from planning_solver.demo_nov2026 import build_input
     from planning_solver.diagnostics import missing_data
-    hyp = [i for i in missing_data(build_input()) if i.code == "HYPOTHESIS"]
-    assert hyp and all(i.severity == "warning" and "NON VALIDÉE" in i.message for i in hyp)
-    assert any("Cailler" in i.message for i in hyp) and any("Nuxe/Cellcosmet" in i.message for i in hyp)
+    hyp = [i.message for i in missing_data(build_input()) if i.code == "HYPOTHESIS"]
+    assert hyp and all("NON VALIDÉE" in m for m in hyp)
+    assert any("Pilar" in m for m in hyp) and not any("Cailler : 09:00" in m for m in hyp)
 
 
 def test_non_executed_legal_rules_are_declared_not_commercialisable():

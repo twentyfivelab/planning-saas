@@ -1,7 +1,7 @@
 """Référentiels du tenant : CRUD générique, validation stricte (Pydantic extra=forbid), RBAC et audit."""
 import uuid
 from datetime import date, time
-from typing import List, Optional, Type
+from typing import List, Literal, Optional, Type
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -51,6 +51,25 @@ class EmployeeIn(S):
     brands: dict = {}
     allocation_weight: float = Field(1.0, gt=0, le=5)
     active: bool = True
+    # fiche collaborateur : null = « pas de préférence »
+    max_days_count: Optional[int] = Field(None, ge=1, le=31)
+    max_days_period: Optional[Literal["week", "month"]] = None
+    time_pref: Optional[Literal["matin", "middle", "soir"]] = None
+    time_pref_strict: bool = False
+    sunday_quota: Optional[int] = Field(None, ge=0, le=5)
+    sunday_mode: Literal["max", "exact"] = "max"
+
+    @model_validator(mode="after")
+    def _rules(self):
+        if (self.max_days_count is None) != (self.max_days_period is None):
+            raise ValueError("nombre de jours et période vont ensemble (ou « pas de préférence » dans les deux)")
+        if self.max_days_period == "week" and self.max_days_count > 7:
+            raise ValueError("une semaine compte au plus 7 jours")
+        if self.time_pref_strict and self.time_pref is None:
+            raise ValueError("une préférence horaire stricte exige une préférence choisie")
+        if self.sunday_quota is None:
+            self.sunday_mode = "max"
+        return self
 
     @field_validator("brands")
     @classmethod
@@ -131,6 +150,16 @@ class TemplateIn(S):
     tag: str = Field("day", pattern="^(open|day|mid|close)$")
     is_hypothesis: bool = False
     hypothesis_note: Optional[str] = Field(None, max_length=300)
+    scope_type: Optional[Literal["site", "brand", "group"]] = None
+    scope_code: Optional[str] = Field(None, max_length=64)
+
+    @model_validator(mode="after")
+    def _scope(self):
+        if (self.scope_type is None) != (self.scope_code is None):
+            raise ValueError("portée : type et code vont ensemble")
+        if self.end_time <= self.start_time:
+            raise ValueError("fin avant le début (horaires de nuit non gérés ici)")
+        return self
 
 
 class RequirementIn(S):
@@ -166,6 +195,7 @@ class BudgetIn(S):
     month: date
     target_minutes: int = Field(ge=0)
     requirements_defined: bool = True
+    strict: bool = True  # strict : plafond jamais dépassé ; sinon dépassement autorisé mais pénalisé
 
 
 class PreferenceIn(S):

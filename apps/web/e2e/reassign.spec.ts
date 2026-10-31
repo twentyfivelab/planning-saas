@@ -91,8 +91,10 @@ test("8. l'action « Annuler » de la notification restaure l'affectation préc�
 });
 
 test("6. le glisser-déposer demande aussi une confirmation", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 2400 }); // source et cible visibles ensemble : un glisser-déposer natif ne défile pas
   await page.goto("/planning");
   await expect(page.getByText("Lun 2 nov. – Dim 8 nov.")).toBeVisible();
+  await expect(page.getByRole("group", { name: "Compteur des dimanches" })).toBeVisible(); // mise en page stable avant de glisser
   const card = page.locator(`.shift[aria-label^="${target.employee}, Ploom GVA3, GVA3, 06:00 à 15:00"]`).first();
   const cell = (name: string) => page.locator(`.cal-cell[aria-label="${name}, Lun 2 nov."]`);
   await card.dragTo(cell(other.name));

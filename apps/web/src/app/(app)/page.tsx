@@ -9,6 +9,8 @@ import { brandColor } from "@/lib/brand";
 import { budgetProgress, coverageRate, equityIndicator, hoursByEmployee, plannedByBrand, type BudgetRow } from "@/lib/metrics";
 import { issueTitle } from "@/lib/issues";
 import { fmtHM, type Assignment } from "@/lib/schedule";
+import { SundayStrip } from "@/components/planning/SundayCounter";
+import { computeCounter, type SundaySummary } from "@/lib/sundays";
 
 type Schedule = { assignments: Assignment[]; uncovered: unknown[] };
 type Issue = { code: string; severity: string; message: string };
@@ -20,13 +22,18 @@ export default function Dashboard() {
   const conf = useApi<{ hard_violations: string[] }>(period ? `/periods/${period.id}/conflicts` : null);
   const budgets = useApi<BudgetRow[]>("/budgets");
   const runs = useApi<Run[]>("/runs");
+  const sunday = useApi<SundaySummary>(period ? `/periods/${period.id}/sunday-summary` : null);
+  const emps = useApi<{ code: string; sunday_quota: number | null; sunday_mode: "max" | "exact" }[]>("/employees");
   const last = runs.data?.find((r) => r.status === "termine") ?? runs.data?.[0];
   const diag = useApi<{ report: { missing_data: Issue[]; diagnostics: Issue[] } }>(last?.status === "termine" ? `/runs/${last.id}/diagnostic` : null);
 
   const a = useMemo(() => sched.data?.assignments ?? [], [sched.data]);
   const planned = useMemo(() => plannedByBrand(a), [a]);
   const emp = useMemo(() => hoursByEmployee(a), [a]);
-  const totalPlanned = a.reduce((s, x) => s + x.effective_minutes, 0);
+  const totalAll = a.reduce((s, x) => s + x.effective_minutes, 0);
+  const budgetedBrands = new Set((budgets.data ?? []).map((b) => b.brand_code));
+  const unbudgeted = Object.entries(planned).filter(([b]) => !budgetedBrands.has(b));
+  const totalPlanned = totalAll - unbudgeted.reduce((s, [, v]) => s + v, 0); // heures rattachées à un budget
   const totalBudget = (budgets.data ?? []).reduce((s, b) => s + b.target_minutes, 0);
   const unplannable = (budgets.data ?? []).filter((b) => !b.requirements_defined);
   const unplannableMin = unplannable.reduce((s, b) => s + b.target_minutes, 0);
@@ -56,7 +63,7 @@ export default function Dashboard() {
             <Card eyebrow="Budget (travail effectif)" title="Heures planifiées" lift>
               <div className="row" style={{ gap: "var(--sp-4)", flexWrap: "nowrap" }}>
                 <Ring value={budgetProgress(totalPlanned, totalBudget)} label="Budget planifié" size={96} stroke={10}><span className="kpi-value num" style={{ fontSize: "var(--text-lg)" }}>{budgetProgress(totalPlanned, totalBudget)} %</span></Ring>
-                <div><p className="kpi-value">{fmtHM(totalPlanned)}</p><p className="kpi-sub">sur {fmtHM(totalBudget)} de budget déclaré</p></div>
+                <div><p className="kpi-value">{fmtHM(totalPlanned)}</p><p className="kpi-sub">sur {fmtHM(totalBudget)} de budget déclaré{unbudgeted.length > 0 && ` · + ${fmtHM(unbudgeted.reduce((s, [, v]) => s + v, 0))} hors budget (${unbudgeted.map(([b]) => b).join(", ")})`}</p></div>
               </div>
             </Card>
             <Card eyebrow="Shifts" title="Taux de couverture" lift>
@@ -75,6 +82,10 @@ export default function Dashboard() {
             </Card>
           </div>
 
+          {sunday.data && sunday.data.total > 0 && emps.data && (
+            <SundayStrip counter={computeCounter(sunday.data, emps.data.map((e) => ({ code: e.code, sunday_quota: e.sunday_quota, sunday_mode: e.sunday_mode })))} onDetails={() => { window.location.href = "/employees"; }} />
+          )}
+
           {unplannable.length > 0 && (
             <Callout kind="warn" title={`${fmtHM(unplannableMin)} non planifiables : besoins non définis`}>
               {unplannable.map((b) => b.brand_code).join(" et ")} : jours et horaires à renseigner. Ces heures ne sont pas comptées comme couvertes et ne sont pas inventées.
@@ -83,7 +94,8 @@ export default function Dashboard() {
 
           <div className="grid-2">
             <Card title="Heures par marque" eyebrow="Planifié / budget">
-              <BarList data={(budgets.data ?? []).map((b) => ({ key: b.brand_code, label: b.brand_code, value: (planned[b.brand_code] ?? 0) / 60, max: b.target_minutes / 60, color: brandColor(b.brand_code), right: `${fmtHM(planned[b.brand_code] ?? 0)} / ${fmtHM(b.target_minutes)}`, note: !b.requirements_defined ? <Badge tone="warn">À renseigner</Badge> : undefined }))} />
+              <BarList data={[...(budgets.data ?? []).map((b) => ({ key: b.brand_code, label: b.brand_code, value: (planned[b.brand_code] ?? 0) / 60, max: b.target_minutes / 60, color: brandColor(b.brand_code), right: `${fmtHM(planned[b.brand_code] ?? 0)} / ${fmtHM(b.target_minutes)}`, note: !b.requirements_defined ? <Badge tone="warn">À renseigner</Badge> : undefined })),
+                ...unbudgeted.map(([b, v]) => ({ key: b, label: b, value: v / 60, max: v / 60, color: brandColor(b), right: `${fmtHM(v)} / –`, note: <Badge tone="warn">Sans budget</Badge> }))]} />
             </Card>
             <Card title="Heures par collaborateur" eyebrow="Travail effectif">
               <BarList data={emp.slice(0, 12).map((e) => ({ key: e.id, label: e.name, value: e.minutes / 60, max: emp[0].minutes / 60, right: fmtHM(e.minutes), note: <span className="muted">· {e.days} j</span> }))} />

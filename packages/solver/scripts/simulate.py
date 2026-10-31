@@ -23,6 +23,11 @@ for b in r.budgets:
              f"{b['remaining_minutes'] / 60:g} | {'oui' if b['requirements_defined'] else '**non — à renseigner**'} |")
 L += ["", "## Heures par collaborateur", "", "| Collaborateur | Heures effectives |", "|---|---:|"]
 L += [f"| {names[k]} | {v / 60:g} |" for k, v in sorted(r.employee_hours.items(), key=lambda kv: -kv[1])]
+sm = r.sunday
+L += ["", "## Dimanches (Ploom uniquement)", "",
+      f"- {sm['per_sunday']} shifts par dimanche × {len(sm['sundays'])} dimanches ({', '.join(sm['sundays'])}) = **{sm['total']} shifts**"
+      f" ({', '.join(f'{k} {v}' for k, v in sm['by_site'].items())}).",
+      f"- Réservés (quotas « objectif exact ») : {sm['reserved']} ; planifiés : {sm['planned']} ; non planifiés : {sm['unplanned']} ; restant à attribuer : {sm['remaining_to_reserve']}."]
 L += ["", "## Données manquantes et hypothèses", ""]
 L += [f"- **{i.code}** ({i.severity}) : {i.message}" for i in r.missing_data]
 L += ["", "## Préférences", "", "| Préférence | Satisfaites | Non satisfaites |", "|---|---:|---:|"]

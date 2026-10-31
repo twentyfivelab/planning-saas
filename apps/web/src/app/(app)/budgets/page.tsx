@@ -9,7 +9,7 @@ import { t } from "@/lib/i18n";
 
 export default function Budgets() {
   const { period } = usePeriod();
-  const b = useApi<(BudgetRow & { id: string })[]>("/budgets");
+  const b = useApi<(BudgetRow & { id: string; strict?: boolean })[]>("/budgets");
   const s = useApi<{ assignments: Assignment[] }>(period ? `/periods/${period.id}/schedule` : null);
   const planned = plannedByBrand(s.data?.assignments ?? []);
   const rows = b.data ?? [];
@@ -30,7 +30,7 @@ export default function Budgets() {
             <div className="table-wrap"><table className="table table-cards">
               <thead><tr><th>Marque</th><th>Budget</th><th>Planifié</th><th>Restant</th><th style={{ minWidth: "10rem" }}>Avancement</th><th>Besoins</th></tr></thead>
               <tbody>{rows.map((x) => { const p = planned[x.brand_code] ?? 0; const pct = budgetProgress(p, x.target_minutes);
-                return <tr key={x.id}><td className="cell-main nowrap"><span className="row" style={{ flexWrap: "nowrap" }}><i className="dot" style={{ ["--c" as string]: brandColor(x.brand_code) }} /><strong>{x.brand_code}</strong></span></td>
+                return <tr key={x.id}><td className="cell-main nowrap"><span className="row" style={{ flexWrap: "nowrap" }}><i className="dot" style={{ ["--c" as string]: brandColor(x.brand_code) }} /><strong>{x.brand_code}</strong>{x.strict === false && <Badge tone="info">Souple</Badge>}</span></td>
                   <td className="num nowrap" data-label="Budget">{fmtHM(x.target_minutes)}</td><td className="num nowrap" data-label="Planifié">{fmtHM(p)}</td><td className="num nowrap" data-label="Restant">{fmtHM(x.target_minutes - p)}</td>
                   <td data-label="Avancement" style={{ minWidth: "9rem" }}><div className="row" style={{ flexWrap: "nowrap" }}><div style={{ flex: 1, minWidth: "5rem" }}><Progress value={pct} label={`${x.brand_code} : ${pct} %`} color={brandColor(x.brand_code)} /></div><span className="num">{pct} %</span></div></td>
                   <td data-label="Besoins">{x.requirements_defined ? <Badge tone="ok">Définis</Badge> : <Badge tone="warn" icon="alert">{t("to_fill")}</Badge>}</td></tr>; })}</tbody>

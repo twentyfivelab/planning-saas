@@ -10,6 +10,7 @@ from .. import models as m
 from ..deps import Ctx, audit, get_or_404, require
 from ..optimize import enqueue
 from ..services_bridge import assignments_for_validation, build_input
+from planning_solver.sundays import sunday_summary
 from planning_solver.timecalc import shift_hours, split_allocation
 from planning_solver.validator import validate
 from .crud import serialize
@@ -191,6 +192,40 @@ def reassign(aid: str, body: MoveIn, ctx: Ctx = Depends(require("planning.edit")
     return {"id": str(a.id), "conflicts": _conflicts(ctx, a.period_id)}
 
 
+def _allowed_schedules(ctx: Ctx, sh: m.Shift) -> list:
+    """Horaires autorisés pour la boutique et les marques d'un shift (modèles de shifts à portée). Vide = non restreint."""
+    brands = {r.brand_code for r in ctx.db.scalars(
+        select(m.BrandAllocation).join(m.Assignment, m.Assignment.id == m.BrandAllocation.assignment_id)
+        .where(m.Assignment.shift_id == sh.id))}
+    groups = {b.group_code for b in ctx.db.scalars(select(m.Brand).where(m.Brand.code.in_(brands))) if b.group_code} if brands else set()
+    keys = {sh.site_code} | brands | groups
+    out = []
+    for t in ctx.db.scalars(select(m.ShiftTemplate).where(m.ShiftTemplate.scope_code.in_(keys)).order_by(m.ShiftTemplate.start_time)):
+        out.append({"template": t.code, "start": t.start_time.isoformat(), "end": t.end_time.isoformat(),
+                    "break_minutes": t.break_minutes, "scope": t.scope_code})
+    seen, uniq = set(), []
+    for o in out:
+        if (o["start"], o["end"]) not in seen:
+            seen.add((o["start"], o["end"]))
+            uniq.append(o)
+    return uniq
+
+
+@router.get("/shifts/{sid}/allowed-times")
+def allowed_times(sid: str, ctx: Ctx = Depends(require("planning.read"))):
+    sh = get_or_404(ctx, m.Shift, sid)
+    return {"site": sh.site_code, "allowed": _allowed_schedules(ctx, sh),
+            "can_override": ctx.user.role in ("owner", "admin")}
+
+
+@router.get("/periods/{pid}/sunday-summary")
+def sunday(pid: str, ctx: Ctx = Depends(require("planning.read"))):
+    """Compteur des dimanches calculé sur les vrais shifts et les vrais quotas (jamais une valeur statique)."""
+    p = get_or_404(ctx, m.PlanningPeriod, pid)
+    inp = build_input(ctx.db, p)
+    return sunday_summary(inp, assignments_for_validation(ctx.db, inp, p))
+
+
 class ShiftPatch(BaseModel):
     model_config = ConfigDict(extra="forbid")
     start_time: time
@@ -202,6 +237,12 @@ class ShiftPatch(BaseModel):
 def edit_shift(sid: str, body: ShiftPatch, ctx: Ctx = Depends(require("planning.edit"))):
     """Modification d'horaire : durées recalculées côté serveur, imputations proportionnelles, conflits renvoyés."""
     sh = get_or_404(ctx, m.Shift, sid)
+    allowed = _allowed_schedules(ctx, sh)
+    if allowed and not any(a["start"] == body.start_time.isoformat() and a["end"] == body.end_time.isoformat() for a in allowed):
+        if ctx.user.role not in ("owner", "admin"):
+            ok = ", ".join(f"{a['start'][:5]}–{a['end'][:5]}" for a in allowed)
+            raise HTTPException(422, f"Horaire non autorisé pour {sh.site_code}. Horaires autorisés : {ok}. Seul un administrateur peut déroger.")
+        audit(ctx, "shift.schedule_override", "shift", sh.id, {"start": str(body.start_time), "end": str(body.end_time)})
     ass = list(ctx.db.scalars(select(m.Assignment).where(m.Assignment.shift_id == sh.id)))
     if any(a.locked for a in ass):
         raise HTTPException(409, "Affectation verrouillée : déverrouiller d'abord")

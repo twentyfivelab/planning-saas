@@ -33,7 +33,7 @@ for (const [name, t] of [["clair", light], ["sombre", dark]] as const) {
     it("fg-faint sur solide-1 ≥ 4,5:1 (texte d'aide)", () => expect(ratio(rgba(t["fg-faint"]), rgba(t["solid-1"]))).toBeGreaterThanOrEqual(4.5));
     it("états (ok, warn, bad, info) lisibles sur solide-1", () => { for (const k of ["ok", "warn", "bad", "info", "accent"]) expect(ratio(rgba(t[k]), rgba(t["solid-1"])), k).toBeGreaterThanOrEqual(4.5); });
     it("texte de bouton principal sur accent ≥ 4,5:1", () => expect(ratio(rgba(t["accent-ink"]), rgba(t["accent"]))).toBeGreaterThanOrEqual(4.5));
-    for (let n = 1; n <= 10; n++) {
+    for (let n = 1; n <= 12; n++) {
       it(`marque ${n} : encre sur fond doux (sur solide-1) ≥ 4,5:1`, () => expect(ratio(rgba(t[`brand-${n}-ink`]), over(rgba(t[`brand-${n}-soft`]), rgba(t["solid-1"])))).toBeGreaterThanOrEqual(4.5));
     }
   });

@@ -37,17 +37,26 @@ def seed(tenant_name: str = "Démo Retail Genève", domain: str = "demo.example"
             db.add(m.MonthlyBudget(tenant_id=tid, brand_code=code, month=month,
                                    target_minutes=demo.BUDGET_HOURS[b] * 60,
                                    requirements_defined=b not in ("Lindt", "Toblerone")))
-        for code in ("GVA3", "GVA9", "Cartier", "Valmont", "Nuxe/Cellcosmet", "Cailler"):
+        for code in ("GVA3", "GVA9", "Pilar", "Cartier", "Valmont", "Nuxe/Cellcosmet", "Cailler"):
             db.add(m.Site(tenant_id=tid, code=code, name=code))
+        # Ploom Pilar : marque sans budget (non fourni) ; seuls les shifts du dimanche sont définis
+        db.add(m.Brand(tenant_id=tid, code="Ploom Pilar", name="Ploom Pilar", active_weekdays=[]))
         db.flush()
         # modèles et besoins (dérivés du jeu de démonstration, mêmes horaires)
         tpl = {}
+        site_of = {x.template_id: x.site for x in demo.build_slots()}
         for s in {(x.template_id, x.start, x.end, x.tag) for x in demo.build_slots()}:
             t = m.ShiftTemplate(tenant_id=tid, code=s[0], start_time=s[1], end_time=s[2], break_minutes=60,
                                 tag=s[3], is_hypothesis=s[0] in demo.HYPOTHETICAL_TEMPLATES,
-                                hypothesis_note=demo.HYPOTHETICAL_TEMPLATES.get(s[0]))
+                                hypothesis_note=demo.HYPOTHETICAL_TEMPLATES.get(s[0]),
+                                scope_type="site", scope_code=site_of[s[0]])
             db.add(t)
             tpl[s[0]] = t
+        # horaires autorisés sans besoin défini (Lindt, Toblerone, marques d'alcool) : enregistrés, aucun besoin inventé
+        for scope, kind in (("Lindt", "brand"), ("Toblerone", "brand"), ("ALCOOL", "group")):
+            for a, b in demo.SITE_SCHEDULES[scope]:
+                db.add(m.ShiftTemplate(tenant_id=tid, code=f"{scope.upper()}-{a:%H}", start_time=a, end_time=b,
+                                       break_minutes=60, tag="day", scope_type=kind, scope_code=scope))
         db.flush()
         seen = {}
         for x in demo.build_slots():
@@ -106,6 +115,9 @@ def seed(tenant_name: str = "Démo Retail Genève", domain: str = "demo.example"
             db.add(m.ConstraintDefinition(tenant_id=tid, kind="internal" if code != "rest_hours" else "legal",
                                           code=code, params={"value": val}, jurisdiction="CH",
                                           legal_review_status="a_valider", exception_reason=note))
+        for text in demo.HYPOTHESES:  # hypothèses non validées : visibles dans les diagnostics et exports
+            db.add(m.ConstraintDefinition(tenant_id=tid, kind="internal", code="hypothesis", params={"text": text},
+                                          legal_review_status="a_valider"))
         # Aucun contrat n'est créé : ils ne sont pas fournis.
     return {"tenant_id": str(tid), "password": pw if not settings.demo_password else "(DEMO_PASSWORD)",
             "accounts": [f"{r}@{domain}" for r in ("owner", "manager", "planner", "auditor", "collaborateur")]}

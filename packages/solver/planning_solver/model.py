@@ -78,6 +78,13 @@ class Employee:
     preference_strength: int = 1
     opposite_of: Optional[str] = None  # préférence familiale
     prior_consecutive_days: int = 0
+    # --- paramètres de la fiche collaborateur ---
+    max_days_count: Optional[int] = None  # nombre max de jours travaillés (contrainte dure)
+    max_days_period: Optional[str] = None  # "week" | "month" ; None = pas de préférence
+    time_pref: Optional[str] = None  # "matin" | "middle" | "soir" ; None = pas de préférence
+    time_pref_strict: bool = False  # True : obligatoire (dur) ; False : souple
+    sunday_quota: Optional[int] = None  # nombre de dimanches sur la période ; None = pas de préférence
+    sunday_mode: str = "max"  # "max" : plafond dur ; "exact" : objectif (plafond dur + manque pénalisé)
 
     def blocked(self, d: date) -> bool:
         wd = d.weekday()
@@ -91,6 +98,17 @@ class BrandBudget:
     brand: str
     target_minutes: int
     requirements_defined: bool = True
+    strict: bool = True  # strict : plafond dur ; sinon dépassement autorisé mais pénalisé
+
+
+@dataclass(frozen=True)
+class OutsideShift:
+    """Shift réalisé hors de la période planifiée (période voisine) : sert aux semaines à cheval sur deux mois,
+    aux jours consécutifs et au repos à la frontière. Jamais deviné : fourni par les plannings existants."""
+    employee_id: str
+    day: date
+    start: time
+    end: time
 
 
 DEFAULT_WEIGHTS: Dict[str, int] = {
@@ -107,6 +125,9 @@ DEFAULT_WEIGHTS: Dict[str, int] = {
     "stagger": 10,
     "rest_days": 40,
     "stability": 25,
+    "time_pref": 8,  # par shift hors préférence horaire souple (x force)
+    "sunday_quota": 500,  # par dimanche manquant d'un objectif exact
+    "budget_over": 800,  # par heure au-delà d'un budget non strict
 }
 
 
@@ -134,6 +155,10 @@ class SolverInput:
     previous: Dict[str, str] = field(default_factory=dict)  # affectations existantes (stabilité)
     leaves_provided: bool = False
     hypotheses: List[str] = field(default_factory=list)
+    outside_shifts: List[OutsideShift] = field(default_factory=list)
+    history_provided: bool = False  # des plannings voisins ont été fournis pour les semaines à cheval
+    site_starts: Dict[str, List[time]] = field(default_factory=dict)  # horaires autorisés par boutique (début)
+    allowed_times: Dict[str, List[Tuple[time, time]]] = field(default_factory=dict)  # scope (site|marque) -> horaires
 
 
 @dataclass
@@ -177,6 +202,36 @@ class SolverResult:
     diagnostics: List[Issue]
     hard_violations: List[str]
     employee_hours: Dict[str, int]
+    sunday: Dict[str, object] = field(default_factory=dict)  # compteur et quotas des dimanches
 
     def to_dict(self) -> dict:
         return asdict(self)
+
+
+# ---- préférence horaire : catégories selon l'heure de début ----
+CATEGORIES = ("matin", "middle", "soir")
+CATEGORY_LABEL = {"matin": "Matin", "middle": "Middle shift", "soir": "Soir"}
+
+
+def time_category(start: time) -> str:
+    """Matin : début avant 9 h (6 h, 7 h, 8 h) ; middle : 9 h à 11 h 59 (10 h, 11 h) ; soir : à partir de 12 h."""
+    h = start.hour + start.minute / 60
+    return "matin" if h < 9 else ("middle" if h < 12 else "soir")
+
+
+def site_start_times(inp: "SolverInput") -> Dict[str, List[time]]:
+    """Horaires réellement disponibles par boutique : paramètres si fournis, sinon début des shifts générés."""
+    out: Dict[str, set] = {}
+    for site, starts in inp.site_starts.items():
+        out.setdefault(site, set()).update(starts)
+    for sl in inp.slots:
+        if sl.site not in inp.site_starts:
+            out.setdefault(sl.site, set()).add(sl.start)
+    return {k: sorted(v) for k, v in out.items()}
+
+
+def slot_category(slot: "Slot", starts_by_site: Dict[str, List[time]]) -> Optional[str]:
+    """Catégorie du shift, ou None (neutre) si la boutique n'a qu'un seul horaire : aucune préférence n'a de sens."""
+    if len(starts_by_site.get(slot.site, [slot.start])) < 2:
+        return None
+    return time_category(slot.start)
