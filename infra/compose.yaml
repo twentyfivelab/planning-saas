@@ -27,7 +27,7 @@ services:
       MIGRATION_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-planning}
       REDIS_URL: redis://redis:6379/0
     depends_on: {postgres: {condition: service_healthy}, redis: {condition: service_healthy}}
-    command: sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000"
+    command: sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000 --timeout-keep-alive 75"
     ports: ["8000:8000"]
   worker:
     build: {context: .., dockerfile: infra/api.Dockerfile}

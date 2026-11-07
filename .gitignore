@@ -11,3 +11,5 @@ playwright-report/
 *.bak
 .ruff_cache/
 *.tsbuildinfo
+# sauvegardes locales de la base (données personnelles, empreintes de mots de passe) : jamais dans Git
+backups/
