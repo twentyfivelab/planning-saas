@@ -215,11 +215,16 @@ def test_sunday_counter_reserved_versus_planned_without_double_counting():
     emps["abdu"].sunday_quota, emps["abdu"].sunday_mode = 3, "exact"
     sm = sunday_summary(inp)
     assert (sm["reserved"], sm["remaining_to_reserve"]) == (5, 30)
-    # un quota « maximum » plafonne mais ne réserve rien
+    # un quota « maximum » est aussi un dimanche attribué : il réduit le restant ; le détail garde la part garantie / plafonnée
     emps["sabrina"].sunday_quota, emps["sabrina"].sunday_mode = 4, "max"
     sm = sunday_summary(inp)
-    assert sm["reserved"] == 5 and sm["capacity_max"] == 9 and sm["remaining_to_reserve"] == 30
+    assert (sm["reserved"], sm["reserved_exact"], sm["reserved_max"], sm["remaining_to_reserve"]) == (9, 5, 4, 26)
     assert sm["planned"] == 0 and sm["unplanned"] == 35  # rien de planifié : réservé != réalisé
+    # modifier un quota met le compteur à jour immédiatement (recalcul à partir des quotas courants)
+    emps["mila"].sunday_quota = 1
+    assert sunday_summary(inp)["remaining_to_reserve"] == 27
+    emps["mila"].sunday_quota = None
+    assert sunday_summary(inp)["remaining_to_reserve"] == 28
 
 
 def test_sunday_alert_when_quotas_cannot_cover_all_shifts():
@@ -285,3 +290,38 @@ def test_every_generated_plan_is_checked_by_the_independent_validator():
     inp = build_input(config=SolverConfig(time_limit_s=40))
     res = solve(inp)
     assert validate(inp, res.assignments) == res.hard_violations == []
+
+
+# ---------- indisponibilités datées et marques autorisées ----------
+def test_blocked_dates_are_never_assigned_even_when_nobody_else_can_cover():
+    blocked = {date(2026, 11, 5), date(2026, 11, 12), date(2026, 11, 18)}
+    days = [date(2026, 11, d) for d in (4, 5, 11, 12, 17, 18)]
+    res = run(day_slots(days), [emp("zaki", unavailable_dates=blocked)])
+    assert {a.day for a in res.assignments} == set(days) - blocked
+    assert sorted(res.uncovered_slots) == sorted(f"d{d.isoformat()}" for d in blocked)
+    assert any(i.code == "NO_CANDIDATE" and "indisponible / absent" in i.constraints for i in res.diagnostics)
+    assert res.hard_violations == []
+
+
+def test_blocked_date_is_flagged_by_validator_on_an_existing_plan():
+    from planning_solver.model import Assignment
+    d = date(2026, 11, 5)
+    inp = SolverInput(*NOV, day_slots([d]), [emp("zaki", unavailable_dates={d})], [])
+    a = Assignment(f"d{d.isoformat()}", "zaki", d, time(9), time(18), 540, 60, 480, {"B": 480})
+    v = validate(inp, [a])
+    assert v and v[0].startswith("UNAVAILABLE: zaki") and f"d{d.isoformat()}" in v[0]
+
+
+def test_unselected_brand_is_never_assigned_and_levels_order_priority_secondary_reinforce():
+    from planning_solver.model import REINFORCE, SECONDARY
+    d = date(2026, 11, 3)
+    s = [slot("a", d, time(9), time(18), brand="X")]
+    p, sec, rf = (Employee(n, n, {"X": lv}) for n, lv in (("p", PRIORITY), ("s", SECONDARY), ("r", REINFORCE)))
+    other = Employee("o", "o", {"Y": PRIORITY})  # marque X non sélectionnée
+    b = [BrandBudget("X", 10 ** 6)]
+    assert run(s, [other], budgets=b).assignments == []
+    assert [a.employee_id for a in run(s, [rf, sec, p, other], budgets=b).assignments] == ["p"]
+    assert [a.employee_id for a in run(s, [rf, sec, other], budgets=b).assignments] == ["s"]
+    assert [a.employee_id for a in run(s, [rf, other], budgets=b).assignments] == ["r"]
+    issue = run(s, [other], budgets=b).diagnostics[0]
+    assert issue.code == "NO_CANDIDATE" and "marque non éligible" in issue.constraints

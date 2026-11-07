@@ -18,11 +18,13 @@ def sundays_in(inp: SolverInput) -> list:
 
 
 def sunday_summary(inp: SolverInput, assignments: Optional[List[Assignment]] = None) -> Dict[str, object]:
-    """total = shifts obligatoires un dimanche ; réservés = quotas « objectif exact » ; planifiés = affectations réelles.
+    """total = shifts obligatoires un dimanche ; réservés = dimanches attribués aux collaborateurs (quotas, « maximum » ou
+    « objectif exact ») ; planifiés = affectations réelles.
 
-    - remaining_to_reserve = total - réservés (ce que les quotas ne couvrent pas encore) ;
+    - remaining_to_reserve = total - réservés (ce que les quotas attribués ne couvrent pas encore) ;
     - unplanned = total - planifiés (shifts du dimanche sans collaborateur).
-    Les quotas « maximum » ne réservent rien : ils plafonnent seulement (capacité). Rien n'est compté deux fois."""
+    Réservés et planifiés sont deux notions distinctes : rien n'est compté deux fois. `reserved_exact` / `reserved_max`
+    détaillent la part garantie (objectif exact) et la part plafonnée (maximum)."""
     sundays = sundays_in(inp)
     slots = [s for s in inp.slots if s.mandatory and s.day.weekday() == 6]
     by_site: Dict[str, int] = defaultdict(int)
@@ -32,7 +34,7 @@ def sunday_summary(inp: SolverInput, assignments: Optional[List[Assignment]] = N
         by_day[s.day.isoformat()] += 1
     total = len(slots)
     n_sun = len(sundays)
-    reserved, capacity, flexible = 0, 0, 0
+    reserved, reserved_exact, reserved_max, flexible = 0, 0, 0, 0
     employees: Dict[str, dict] = {}
     slot_ids = {s.id for s in slots}
     planned_by: Dict[str, int] = defaultdict(int)
@@ -42,6 +44,8 @@ def sunday_summary(inp: SolverInput, assignments: Optional[List[Assignment]] = N
             planned += 1
             planned_by[a.employee_id] += 1
     for e in inp.employees:
+        if e.excluded:  # hors effectif du mois : ni réservé, ni flexible
+            continue
         q = e.sunday_quota
         available = sum(1 for d in sundays if not e.blocked(d))
         info = {"name": e.name, "quota": q, "mode": e.sunday_mode if q is not None else None,
@@ -50,9 +54,11 @@ def sunday_summary(inp: SolverInput, assignments: Optional[List[Assignment]] = N
             flexible += 1
         else:
             eff = min(q, n_sun)
+            reserved += eff
             if e.sunday_mode == "exact":
-                reserved += eff
-            capacity += eff
+                reserved_exact += eff
+            else:
+                reserved_max += eff
             if q > n_sun:
                 info["warnings"].append(f"Quota de {q} dimanche(s) supérieur au nombre de dimanches de la période ({n_sun}).")
             if q > available:
@@ -61,15 +67,15 @@ def sunday_summary(inp: SolverInput, assignments: Optional[List[Assignment]] = N
     remaining_to_reserve = max(0, total - reserved)
     alerts: List[dict] = []
     if remaining_to_reserve > 0:
-        if flexible == 0 and capacity < total:
-            alerts.append({"level": "warning", "text": f"{total - capacity} shift(s) du dimanche ne peuvent être couverts : tous les collaborateurs ont un quota et la capacité cumulée est de {capacity} pour {total} shifts."})
+        if flexible == 0:
+            alerts.append({"level": "warning", "text": f"{total - reserved} shift(s) du dimanche ne peuvent être couverts : tous les collaborateurs ont un quota et la capacité cumulée est de {reserved} pour {total} shifts."})
         else:
-            alerts.append({"level": "info", "text": f"{remaining_to_reserve} shift(s) du dimanche restent à distribuer : le moteur les répartira entre les collaborateurs sans quota exact."})
+            alerts.append({"level": "info", "text": f"{remaining_to_reserve} shift(s) du dimanche restent à distribuer : le moteur les répartira entre les collaborateurs sans quota."})
     if reserved > total:
         alerts.append({"level": "warning", "text": f"Les quotas réservés ({reserved}) dépassent les {total} shifts du dimanche."})
     if assignments is not None and total - planned > 0:
         alerts.append({"level": "warning", "text": f"{total - planned} shift(s) du dimanche non planifié(s)."})
     return {"sundays": [d.isoformat() for d in sundays], "per_sunday": (total // n_sun) if n_sun else 0,
-            "total": total, "by_site": dict(by_site), "by_day": dict(by_day), "reserved": reserved, "capacity_max": capacity,
-            "planned": planned, "remaining_to_reserve": remaining_to_reserve, "unplanned": total - planned,
+            "total": total, "by_site": dict(by_site), "by_day": dict(by_day), "reserved": reserved, "capacity_max": reserved,
+            "planned": planned, "remaining_to_reserve": remaining_to_reserve, "reserved_exact": reserved_exact, "reserved_max": reserved_max, "unplanned": total - planned,
             "flexible_employees": flexible, "employees": employees, "alerts": alerts}

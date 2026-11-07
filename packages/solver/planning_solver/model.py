@@ -8,8 +8,10 @@ from typing import Dict, List, Optional, Set, Tuple
 from .timecalc import shift_bounds, shift_hours
 
 # Niveaux d'éligibilité marque -> coût de "renfort" appliqué par le solveur.
-PRIORITY = "priority"
-REINFORCE = "reinforce"
+PRIORITY = "priority"  # prioritaire : aucun coût
+SECONDARY = "secondary"  # secondaire : petit coût
+REINFORCE = "reinforce"  # renfort : coût plus élevé, seulement si nécessaire
+BRAND_LEVELS = (PRIORITY, SECONDARY, REINFORCE)
 
 
 @dataclass(frozen=True)
@@ -28,6 +30,8 @@ class Slot:
     mandatory: bool = True  # False: shift optionnel piloté par un budget (le solveur choisit les jours)
     day_group: Optional[str] = None  # au plus un slot rempli par groupe
     stagger_group: Optional[str] = None
+    priority: int = 3  # 1 (basse) … 5 (critique) : pondère la pénalité de non-couverture (missions prioritaires)
+    mission: Optional[str] = None  # code de la mission client à l'origine du besoin (None = animation permanente)
 
     @property
     def hours(self):
@@ -55,6 +59,23 @@ class Contract:
     monthly_max_minutes: Optional[int] = None
     weekly_max_minutes: Optional[int] = None
     overtime_allowed: bool = False
+    hourly_cost_cents: Optional[int] = None  # coût horaire employeur saisi (jamais supposé) : sert aux estimations de coût
+
+
+RELATION_KINDS = ("avoid_together", "work_together", "mentor")  # « horaires opposés » : champ opposite_of (historique)
+
+
+@dataclass(frozen=True)
+class Relation:
+    """Relation entre deux collaborateurs, sans aucun nom codé dans le moteur :
+    - avoid_together : ne pas travailler le même jour sur le même site ;
+    - work_together : travailler en binôme (même jour, même site) ;
+    - mentor : quand ce collaborateur travaille, `other` (expérimenté) est présent le même jour sur le même site
+      (plusieurs relations « mentor » = au moins un des tuteurs).
+    strict = contrainte dure (avoid_together, mentor) ; sinon préférence pénalisée."""
+    kind: str
+    other: str
+    strict: bool = False
 
 
 @dataclass
@@ -78,6 +99,7 @@ class Employee:
     preference_strength: int = 1
     opposite_of: Optional[str] = None  # préférence familiale
     prior_consecutive_days: int = 0
+    excluded: bool = False  # hors de l'effectif du mois : aucun shift (fiche et autres mois inchangés)
     # --- paramètres de la fiche collaborateur ---
     max_days_count: Optional[int] = None  # nombre max de jours travaillés (contrainte dure)
     max_days_period: Optional[str] = None  # "week" | "month" ; None = pas de préférence
@@ -85,6 +107,12 @@ class Employee:
     time_pref_strict: bool = False  # True : obligatoire (dur) ; False : souple
     sunday_quota: Optional[int] = None  # nombre de dimanches sur la période ; None = pas de préférence
     sunday_mode: str = "max"  # "max" : plafond dur ; "exact" : objectif (plafond dur + manque pénalisé)
+    rest_weekdays_hard: Set[int] = field(default_factory=set)  # jours de repos obligatoires (0 = lundi)
+    rest_weekdays_soft: Set[int] = field(default_factory=set)  # jours de repos souhaités (préférence)
+    allowed_sites: Optional[Set[str]] = None  # sites autorisés (strict) ; None = tous
+    preferred_sites: Set[str] = field(default_factory=set)  # sites préférés (souple)
+    relations: List[Relation] = field(default_factory=list)
+    legal_weekly_max_minutes: Optional[int] = None  # plafond hebdomadaire du régime applicable (référentiel juridique) ; None = règle non activée
 
     def blocked(self, d: date) -> bool:
         wd = d.weekday()
@@ -109,11 +137,13 @@ class OutsideShift:
     day: date
     start: time
     end: time
+    minutes: int = 0  # travail effectif (compté dans les plafonds hebdomadaires des semaines à cheval)
 
 
 DEFAULT_WEIGHTS: Dict[str, int] = {
     "coverage": 1000,  # par heure effective non couverte
     "budget": 800,  # par heure de budget non planifiée (shifts optionnels)
+    "secondary": 4,  # par heure sur une marque secondaire
     "reinforce": 12,  # par heure en renfort
     "preference": 10,  # par préférence horaire/tag non respectée (x force)
     "fairness": 3,  # par demi-heure d'écart à la cible relative
@@ -125,10 +155,22 @@ DEFAULT_WEIGHTS: Dict[str, int] = {
     "stagger": 10,
     "rest_days": 40,
     "stability": 25,
-    "time_pref": 8,  # par shift hors préférence horaire souple (x force)
+    "time_pref": 20,  # par shift hors préférence horaire souple (x force) : « privilégier »
     "sunday_quota": 500,  # par dimanche manquant d'un objectif exact
     "budget_over": 800,  # par heure au-delà d'un budget non strict
+    "individual": 1,  # par heure et par point d'écart de priorité individuelle (poids d'allocation) avec le collaborateur le plus prioritaire
+    "sunday_balance": 6,  # par dimanche du collaborateur le plus chargé (collaborateurs sans quota)
+    "alternation": 3,  # par passage matin -> soir (ou soir -> matin) sur deux jours consécutifs
+    "days_balance": 3,  # par jour travaillé du collaborateur le plus chargé en jours
+    "cost": 1,  # par franc de coût horaire estimé (uniquement si le coût horaire du contrat est renseigné)
 }
+
+# Optimisation hiérarchisée : chaque niveau est optimisé puis figé avant le suivant (les contraintes dures, niveau 1, priment toujours).
+LEVELS = (
+    ("couverture", ("coverage", "budget")),
+    ("engagements", ("overtime", "sunday_quota", "budget_over")),
+    ("optimisation", None),  # tous les autres critères pondérés
+)
 
 
 @dataclass
@@ -141,6 +183,8 @@ class SolverConfig:
     workers: int = 8
     strict_coverage: bool = False  # True: toute couverture obligatoire devient dure (diagnostic de noyau)
     seed: int = 1
+    hierarchical: bool = True  # optimisation lexicographique (couverture, puis engagements, puis le reste)
+    break_rules: List[Tuple[int, int]] = field(default_factory=list)  # référentiel juridique : (travail effectif au-delà de N min, pause minimale en min)
 
 
 @dataclass
@@ -159,6 +203,7 @@ class SolverInput:
     history_provided: bool = False  # des plannings voisins ont été fournis pour les semaines à cheval
     site_starts: Dict[str, List[time]] = field(default_factory=dict)  # horaires autorisés par boutique (début)
     allowed_times: Dict[str, List[Tuple[time, time]]] = field(default_factory=dict)  # scope (site|marque) -> horaires
+    frozen_empty: Set[str] = field(default_factory=set)  # réoptimisation locale : shifts hors périmètre laissés sans titulaire
 
 
 @dataclass
@@ -203,6 +248,10 @@ class SolverResult:
     hard_violations: List[str]
     employee_hours: Dict[str, int]
     sunday: Dict[str, object] = field(default_factory=dict)  # compteur et quotas des dimanches
+    levels: List[dict] = field(default_factory=list)  # optimisation hiérarchisée : valeur et preuve d'optimalité par niveau
+    model: Dict[str, int] = field(default_factory=dict)  # taille du problème : variables de décision, affectations écartées par le préfiltrage
+    proved_optimal: bool = False  # True seulement si le solveur a PROUVÉ l'optimalité (tous les niveaux)
+    metrics: Dict[str, object] = field(default_factory=dict)  # indicateurs recalculés indépendamment (couverture, équité…)
 
     def to_dict(self) -> dict:
         return asdict(self)

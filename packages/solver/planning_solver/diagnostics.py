@@ -10,8 +10,7 @@ from .sundays import sunday_summary, sundays_in
 
 
 NON_EXECUTED_LEGAL_RULES = (
-    "pauses légales", "durée maximale du travail (journalière/hebdomadaire)", "travail de nuit", "travail du dimanche",
-    "jeunes travailleurs", "catégories particulières de travailleurs", "dérogations conventionnelles")
+    "travail de nuit", "travail du dimanche et repos compensatoires", "jeunes travailleurs", "catégories particulières de travailleurs", "dérogations conventionnelles")
 
 
 def missing_data(inp: SolverInput) -> List[Issue]:
@@ -67,12 +66,26 @@ def missing_data(inp: SolverInput) -> List[Issue]:
     if sundays_in(inp):
         for al in sun["alerts"]:
             out.append(Issue("SUNDAY_QUOTAS", "warning" if al["level"] == "warning" else "info", al["text"]))
+    executed = ["repos quotidien", "jours consécutifs"]
+    pending = list(NON_EXECUTED_LEGAL_RULES)
+    if inp.config.break_rules:
+        executed.append("pauses")
+    else:
+        pending.insert(0, "pauses légales (règle à activer dans le référentiel juridique)")
+    if any(e.legal_weekly_max_minutes is not None for e in inp.employees):
+        executed.append("durée maximale hebdomadaire")
+    else:
+        pending.insert(0, "durée maximale hebdomadaire (règle à activer dans le référentiel juridique)")
     out.append(Issue("LEGAL_REVIEW", "warning",
-                     "Seuls le repos quotidien (défaut 11 h) et le maximum de jours consécutifs (défaut 6) sont "
-                     "exécutés, comme valeurs de référence NON validées juridiquement. Non exécutées : " +
-                     ", ".join(NON_EXECUTED_LEGAL_RULES) + ". Non commercialisable / non utilisable en production "
+                     "Règles exécutées, comme valeurs de référence à faire valider : " + ", ".join(executed) + ". Non exécutées : " +
+                     ", ".join(pending) + ". Non commercialisable / non utilisable en production "
                      "tant que ces règles ne sont pas exécutées et validées par un spécialiste du droit suisse.",
                      constraints=["règles légales non exécutées"]))
+    rules = inp.config.break_rules
+    short = [s.id for s in inp.slots if s.break_minutes < max((b for over, b in rules if s.effective_minutes > over), default=0)]
+    if short:
+        out.append(Issue("BREAK_RULE", "blocking", f"{len(short)} shift(s) ont une pause inférieure au référentiel juridique activé : ils ne seront pas pourvus tant que l'horaire n'est pas corrigé.",
+                         slots=short[:50], constraints=["pauses"], suggestions=["Corriger la pause du modèle de shift ou la règle du référentiel juridique."]))
     for h in inp.hypotheses:
         out.append(Issue("HYPOTHESIS", "warning", h,
                          suggestions=["Confirmer l'horaire avec le client ou le corriger dans les modèles de shifts."]))

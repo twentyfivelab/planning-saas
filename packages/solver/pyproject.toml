@@ -13,3 +13,4 @@ include = ["planning_solver*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = ["slow: tests de performance sur de grands effectifs"]

@@ -1,4 +1,9 @@
-"""Moteur CP-SAT. Contraintes dures = contraintes du modèle ; préférences = termes de coût."""
+"""Moteur CP-SAT. Contraintes dures = contraintes du modèle ; préférences = termes de coût.
+
+Modélisation : une variable de décision x[e, s] par affectation ADMISSIBLE (préfiltrage : `context.ineligibility`), jamais pour une
+affectation impossible. Optimisation hiérarchisée (`SolverConfig.hierarchical`) : les contraintes dures priment toujours, puis la
+couverture est optimisée et figée, puis les engagements (objectifs contractuels, quotas exacts, budgets souples), puis tous les
+autres critères pondérés. Le statut « optimal » n'est annoncé que si le solveur l'a PROUVÉ à chaque niveau."""
 from __future__ import annotations
 
 import threading
@@ -9,85 +14,58 @@ from typing import Dict, List, Optional
 
 from ortools.sat.python import cp_model
 
+from .context import (cost_units, coverage_cost, hours_units, individual_penalty, ineligibility, period_of, prepare, preference_checks,
+                      relation_pairs)
 from .diagnostics import diagnose_uncovered, missing_data, core_issue
-from .model import (Assignment, REINFORCE, Employee, Slot, SolverInput, SolverResult, site_start_times, slot_category)
-from .sundays import sunday_summary, sundays_in
+from .metrics import plan_metrics
+from .model import (Assignment, DEFAULT_WEIGHTS, Issue, LEVELS, REINFORCE, SECONDARY, Slot, SolverInput, SolverResult)
+from .objective import evaluate
+from .sundays import sunday_summary
 from .validator import validate
 
 
 _UNIT_TERMS = ("fairness", "overtime", "budget")  # termes comptés en unités, pondérés à l'assemblage
 
 
-def _eligible(e: Employee, s: Slot, starts_by_site: Dict[str, list]) -> bool:
-    if e.blocked(s.day) or s.tag in e.forbidden_tags:
-        return False
-    if e.time_pref and e.time_pref_strict:  # préférence horaire stricte = contrainte dure
-        cat = slot_category(s, starts_by_site)
-        if cat is not None and cat != e.time_pref:
-            return False
-    if e.sunday_quota == 0 and s.day.weekday() == 6:  # 0 dimanche : interdiction dure
-        return False
-    if any(b not in e.brands for b in s.brands):
-        return False
-    return all(k in e.skills for k in s.required_skills)
+class _StopAtZero(cp_model.CpSolverSolutionCallback):
+    """Un coût nul ne peut plus s'améliorer : inutile de consommer le temps de calcul à le prouver."""
+
+    def on_solution_callback(self) -> None:
+        if self.ObjectiveValue() == 0:
+            self.StopSearch()
 
 
-def preference_checks(e: Employee, s: Slot) -> List[tuple]:
-    """[(code, satisfait, force)] pour les préférences applicables à (employé, slot)."""
-    out = []
-    if e.latest_start is not None:
-        out.append(("start<=%s" % e.latest_start.strftime("%H:%M"), s.start <= e.latest_start, 1))
-    if e.preferred_times:
-        out.append(("horaire_prefere", (s.start, s.end) in e.preferred_times, 1))
-    if e.preferred_tags:
-        out.append(("tag_prefere:" + "/".join(sorted(e.preferred_tags)), s.tag in e.preferred_tags,
-                    e.preference_strength))
-    return out
-
-
-def _period(s: Slot) -> str:
-    h = s.start.hour + s.start.minute / 60
-    return "matin" if h < 10 else ("apres_midi" if h >= 12 else "milieu")
-
-
-def _days(inp: SolverInput):
-    d, out = inp.period_start, []
-    while d <= inp.period_end:
-        out.append(d)
-        d += timedelta(days=1)
-    return out
+def _level_groups(cfg, exprs: dict, has_previous: bool) -> List[tuple]:
+    """Niveaux d'optimisation : (nom, termes). Sans hiérarchie, un seul niveau (somme pondérée)."""
+    keys = list(exprs)
+    if not cfg.hierarchical:
+        return [("pondere", keys)]
+    out, used = [], set()
+    for name, terms in LEVELS:
+        if terms is None:
+            continue
+        chosen = [k for k in terms if k in exprs]
+        if name == "engagements" and has_previous and "stability" in exprs:
+            chosen.append("stability")  # réoptimisation : ne pas bouleverser le planning passe avant le confort
+        used.update(chosen)
+        out.append((name, chosen))
+    out.append((LEVELS[-1][0], [k for k in keys if k not in used]))
+    return [g for g in out if g[1]]
 
 
 def solve(inp: SolverInput, cancel: Optional[threading.Event] = None) -> SolverResult:
     t0 = _time.time()
-    cfg, W = inp.config, inp.config.weights
+    cfg = inp.config
+    W = {**DEFAULT_WEIGHTS, **cfg.weights}
     m = cp_model.CpModel()
-    slots = {s.id: s for s in inp.slots}
-    emps = {e.id: e for e in inp.employees}
-    days = _days(inp)
-
-    starts_by_site = site_start_times(inp)
-    rest_td = timedelta(hours=cfg.rest_hours)
-    outside: Dict[str, list] = defaultdict(list)
-    for o in inp.outside_shifts:
-        from .timecalc import shift_bounds
-        outside[o.employee_id].append(shift_bounds(o.day, o.start, o.end))
-
-    def clashes_outside(e: Employee, s: Slot) -> bool:
-        """Chevauchement ou repos insuffisant avec un shift d'une période voisine."""
-        b0, b1 = s.bounds
-        for o0, o1 in outside.get(e.id, ()):
-            if o0 < b1 + rest_td and b0 < o1 + rest_td:
-                return True
-        return False
+    prep = prepare(inp)
+    slots, emps, days = prep.slots, prep.emps, prep.days
+    by_emp = prep.by_emp
 
     x: Dict[tuple, cp_model.IntVar] = {}
-    by_emp: Dict[str, List[Slot]] = defaultdict(list)
     for e in inp.employees:
-        for s in inp.slots:
-            if _eligible(e, s, starts_by_site) and not clashes_outside(e, s):
-                x[e.id, s.id] = m.NewBoolVar(f"x_{e.id}_{s.id}")
-                by_emp[e.id].append(s)
+        for s in by_emp[e.id]:
+            x[e.id, s.id] = m.NewBoolVar(f"x_{e.id}_{s.id}")
 
     y: Dict[str, cp_model.IntVar] = {}  # slot pourvu
     for s in inp.slots:
@@ -103,11 +81,16 @@ def solve(inp: SolverInput, cancel: Optional[threading.Event] = None) -> SolverR
         m.Add(sum(y[s.id] for s in g) <= 1)
 
     # Verrous : l'affectation est imposée, mais reste soumise aux contraintes dures (sinon infaisable)
+    impossible_locks = []
     for sid, eid in inp.locked.items():
         if (eid, sid) in x:
             m.Add(x[eid, sid] == 1)
         else:
+            impossible_locks.append((sid, eid))
             m.AddBoolOr([])  # verrou incompatible avec les règles dures -> infaisable, expliqué en diagnostic
+    for sid in inp.frozen_empty:
+        if sid in y:
+            m.Add(y[sid] == 0)
 
     # Chevauchement + repos minimal (inclut double affectation multi-sites)
     rest = timedelta(hours=cfg.rest_hours)
@@ -155,6 +138,9 @@ def solve(inp: SolverInput, cancel: Optional[threading.Event] = None) -> SolverR
         return 1 if d in out_days[e_id] else 0
 
     terms: Dict[str, list] = defaultdict(list)
+    outside_minutes: Dict[tuple, int] = defaultdict(int)
+    for o in inp.outside_shifts:
+        outside_minutes[o.employee_id, o.day.isocalendar()[:2]] += o.minutes
 
     for e in inp.employees:
         # jours consécutifs (fenêtre glissante, y compris sur la frontière avec les périodes voisines)
@@ -193,16 +179,19 @@ def solve(inp: SolverInput, cancel: Optional[threading.Event] = None) -> SolverR
                     ex = m.NewIntVar(0, 7, f"rd_{e.id}_{wkey}")
                     m.Add(ex >= sum(vs) - cap)
                     terms["rest_days"].append(W["rest_days"] * ex)
+            # plafonds hebdomadaires du contrat et du régime applicable, y compris les heures d'une période voisine dans la même semaine
             c = e.contract
-            if c and c.weekly_max_minutes is not None:
-                m.Add(sum(x[e.id, s.id] * s.effective_minutes for s in by_emp[e.id]
-                          if s.day in wdays) <= c.weekly_max_minutes)
+            caps = [v for v in (c.weekly_max_minutes if c else None, e.legal_weekly_max_minutes) if v is not None]
+            if caps:
+                mine_w = [s for s in by_emp[e.id] if s.day in wdays]
+                if mine_w:
+                    m.Add(sum(x[e.id, s.id] * s.effective_minutes for s in mine_w) <= max(0, min(caps) - outside_minutes[e.id, wkey]))
         if e.max_days_count is not None and e.max_days_period == "month":
             vs_m = [wk(e.id, d) for d in days if wk(e.id, d) is not None]
             if len(vs_m) > e.max_days_count:
                 m.Add(sum(vs_m) <= e.max_days_count)
         # quota de dimanches : plafond dur ; « objectif exact » = manque pénalisé ; jamais 2 shifts le même dimanche
-        suns = sundays_in(inp)
+        suns = prep.suns
         if suns and e.sunday_quota is not None:
             sv = [wk(e.id, d) for d in suns if wk(e.id, d) is not None]
             cap = min(e.sunday_quota, len(suns))
@@ -234,22 +223,21 @@ def solve(inp: SolverInput, cancel: Optional[threading.Event] = None) -> SolverR
                 m.Add(f >= sum(win) - 4)
                 terms["fatigue"].append(W["fatigue"] * f)
 
-    # Couverture obligatoire
+    # Couverture obligatoire (pondérée par la priorité du besoin)
     assump = {}
     for s in inp.slots:
         if s.mandatory:
-            hrs = max(1, round(s.effective_minutes / 60))
             if cfg.strict_coverage:
                 lit = m.NewBoolVar(f"cov_{s.id}")
                 m.AddImplication(lit, y[s.id])
                 assump[s.id] = lit
             else:
-                terms["coverage"].append(W["coverage"] * hrs * (1 - y[s.id]))
+                terms["coverage"].append(coverage_cost(W["coverage"], s) * (1 - y[s.id]))
     if assump:
         m.AddAssumptions(list(assump.values()))
 
     # Budgets : plafond dur, écart pénalisé pour les marques à shifts optionnels
-    optional_brands = {b for s in inp.slots if not s.mandatory for b in s.brands}
+    optional_brands = prep.optional_brands
     for b in inp.budgets:
         planned = sum(y[s.id] * s.allocations[b.brand] for s in inp.slots if b.brand in s.allocations)
         if b.strict:
@@ -263,11 +251,16 @@ def solve(inp: SolverInput, cancel: Optional[threading.Event] = None) -> SolverR
             m.Add(60 * sh >= b.target_minutes - planned)
             terms["budget"].append(sh)
 
-    # Renfort
+    # Renfort, coût estimé (si le coût horaire est renseigné)
     for e in inp.employees:
         for s in by_emp[e.id]:
-            if any(e.brands[b] == REINFORCE for b in s.brands):
-                terms["reinforce"].append(W["reinforce"] * max(1, round(s.effective_minutes / 60)) * x[e.id, s.id])
+            lv = [e.brands[b] for b in s.brands]
+            unit = W["reinforce"] if REINFORCE in lv else (W["secondary"] if SECONDARY in lv else 0)
+            if unit:
+                terms["reinforce"].append(unit * hours_units(s) * x[e.id, s.id])
+            francs = cost_units(e, s)
+            if francs and W["cost"]:
+                terms["cost"].append(W["cost"] * francs * x[e.id, s.id])
 
     # Préférences individuelles
     for e in inp.employees:
@@ -280,22 +273,13 @@ def solve(inp: SolverInput, cancel: Optional[threading.Event] = None) -> SolverR
     for e in inp.employees:
         if e.time_pref and not e.time_pref_strict:
             for s in by_emp[e.id]:
-                cat = slot_category(s, starts_by_site)
+                cat = prep.category[s.id]
                 if cat is not None and cat != e.time_pref:
                     terms["time_pref"].append(W["time_pref"] * max(1, e.preference_strength) * x[e.id, s.id])
 
     # Équité relative : cible proportionnelle au poids x disponibilité (ou cible contrat si renseignée)
-    supply = sum(s.effective_minutes for s in inp.slots if s.mandatory)
-    supply += sum(b.target_minutes for b in inp.budgets if b.brand in optional_brands)
-    caps, raw = {}, {}
     for e in inp.employees:
-        avail = sum(1 for d in days if not e.blocked(d))
-        c = e.contract
-        raw[e.id] = c.monthly_target_minutes if c and c.monthly_target_minutes else e.weight * avail
-        caps[e.id] = sum(s.effective_minutes for s in by_emp[e.id])
-    Wsum = sum(raw.values()) or 1
-    for e in inp.employees:
-        tgt = min(int(supply * raw[e.id] / Wsum), caps[e.id])
+        tgt = prep.targets[e.id]
         if not by_emp[e.id]:
             continue
         tot = sum(x[e.id, s.id] * s.effective_minutes for s in by_emp[e.id])
@@ -340,18 +324,94 @@ def solve(inp: SolverInput, cancel: Optional[threading.Event] = None) -> SolverR
                 m.Add(mx >= sum(xs))
         terms["balance"].append(W["balance"] * mx)
 
-    # Famille : horaires opposés quand les deux travaillent le même jour
+    # Horaires opposés quand les deux travaillent le même jour (préférence paramétrée, aucun nom dans le moteur)
     for e in inp.employees:
         if not e.opposite_of or e.opposite_of not in emps or e.id > e.opposite_of:
             continue
         for d in days:
             for per in ("matin", "milieu", "apres_midi"):
-                a = [x[e.id, s.id] for s in by_emp[e.id] if s.day == d and _period(s) == per]
-                b = [x[e.opposite_of, s.id] for s in by_emp[e.opposite_of] if s.day == d and _period(s) == per]
+                a = [x[e.id, s.id] for s in by_emp[e.id] if s.day == d and period_of(s) == per]
+                b = [x[e.opposite_of, s.id] for s in by_emp[e.opposite_of] if s.day == d and period_of(s) == per]
                 if a and b:
                     v = m.NewBoolVar(f"fam_{e.id}_{d}_{per}")
                     m.Add(v >= sum(a) + sum(b) - 1)
                     terms["family"].append(W["family"] * v)
+
+    # Relations entre collaborateurs (même jour, même site) : éviter, binôme, tuteur
+    def at(eid, d, st):
+        return [x[eid, s.id] for s in by_emp[eid] if s.day == d and s.site == st]
+
+    for kind, e, others, strict in relation_pairs(prep):
+        for d in days:
+            for st in sorted({s.site for s in by_emp[e.id] if s.day == d}):
+                a = at(e.id, d, st)
+                b = [v for o in others for v in at(o, d, st)]
+                if kind == "avoid_together":
+                    if a and b:
+                        if strict:
+                            m.Add(sum(a) + sum(b) <= 1)
+                        else:
+                            v = m.NewBoolVar(f"rel_{kind}_{e.id}_{d}_{st}")
+                            m.Add(v >= sum(a) + sum(b) - 1)
+                            terms["family"].append(W["family"] * v)
+                elif kind == "mentor":
+                    if strict:
+                        m.Add(sum(a) <= sum(b))
+                    else:
+                        v = m.NewBoolVar(f"rel_{kind}_{e.id}_{d}_{st}")
+                        m.Add(v >= sum(a) - sum(b))
+                        terms["family"].append(W["family"] * v)
+                else:  # work_together : pénalité pour le collaborateur présent sans son binôme
+                    v = m.NewBoolVar(f"rel_{kind}_{e.id}_{d}_{st}")
+                    m.Add(v >= sum(a) - sum(b))
+                    terms["family"].append(W["family"] * v)
+        if kind == "work_together":  # sens inverse : le binôme présent sans ce collaborateur
+            o = others[0]
+            for d in days:
+                for st in sorted({s.site for s in by_emp[o] if s.day == d}):
+                    v = m.NewBoolVar(f"rel_{kind}_{o}_{d}_{st}")
+                    m.Add(v >= sum(at(o, d, st)) - sum(at(e.id, d, st)))
+                    terms["family"].append(W["family"] * v)
+
+    # Priorité individuelle : à couverture égale, les collaborateurs de plus fort poids d'allocation sont préférés
+    if prep.wmax > 0:
+        for e in inp.employees:
+            pen = individual_penalty(prep, e)
+            if pen:
+                for s in by_emp[e.id]:
+                    terms["individual"].append(W["individual"] * pen * hours_units(s) * x[e.id, s.id])
+
+    # Équilibrage des dimanches (collaborateurs sans quota) et des jours travaillés : minimiser le maximum individuel
+    suns_all = prep.suns
+    mx_sun = m.NewIntVar(0, len(suns_all), "max_sundays")
+    mx_days = m.NewIntVar(0, len(days), "max_days")
+    for e in inp.employees:
+        if e.sunday_quota is None:
+            sv = [worked[e.id, d] for d in suns_all if (e.id, d) in worked]
+            if sv:
+                m.Add(mx_sun >= sum(sv))
+        dv = [worked[e.id, d] for d in days if (e.id, d) in worked]
+        if dv:
+            m.Add(mx_days >= sum(dv))
+    terms["sunday_balance"].append(W["sunday_balance"] * mx_sun)
+    terms["days_balance"].append(W["days_balance"] * mx_days)
+
+    # Alternance matin / soir : pénalité quand deux jours consécutifs passent d'un extrême à l'autre
+    for e in inp.employees:
+        cat_vars: Dict[tuple, Dict[str, list]] = defaultdict(lambda: defaultdict(list))
+        for s in by_emp[e.id]:
+            c = prep.category[s.id]
+            if c in ("matin", "soir"):
+                cat_vars[s.day][c].append(x[e.id, s.id])
+        for i, d in enumerate(days[:-1]):
+            a, b = cat_vars.get(d), cat_vars.get(days[i + 1])
+            if not a or not b:
+                continue
+            for c1, c2 in (("matin", "soir"), ("soir", "matin")):
+                if a.get(c1) and b.get(c2):
+                    v = m.NewBoolVar(f"alt_{e.id}_{d}_{c1}")
+                    m.Add(v >= sum(a[c1]) + sum(b[c2]) - 1)
+                    terms["alternation"].append(W["alternation"] * v)
 
     # Coordination cosmétique : prises de poste décalées
     sg: Dict[tuple, List[Slot]] = defaultdict(list)
@@ -382,43 +442,94 @@ def solve(inp: SolverInput, cancel: Optional[threading.Event] = None) -> SolverR
         if not lst:
             continue
         exprs[k] = sum(lst)
-    scaled = [ex * W[k] if k in _UNIT_TERMS else ex for k, ex in exprs.items()]
-    m.Minimize(sum(scaled) if scaled else 0)
+    scaled = {k: (ex * W[k] if k in _UNIT_TERMS else ex) for k, ex in exprs.items()}
 
-    solver = cp_model.CpSolver()
-    solver.parameters.max_time_in_seconds = cfg.time_limit_s
-    solver.parameters.num_workers = cfg.workers
-    solver.parameters.random_seed = cfg.seed
+    current: Dict[str, Optional[cp_model.CpSolver]] = {"solver": None}
     stopped = {"v": False}
-    watcher = None
     if cancel is not None:
         def _watch():
             while not stopped["v"]:
                 if cancel.wait(0.1):
-                    solver.StopSearch()
+                    if current["solver"] is not None:
+                        current["solver"].StopSearch()
                     return
-        watcher = threading.Thread(target=_watch, daemon=True)
-        watcher.start()
-    status = solver.Solve(m)
+        threading.Thread(target=_watch, daemon=True).start()
+
+    # Réutilise le planning existant comme point de départ (réoptimisation) : solution plus rapide et moins de changements inutiles
+    for sid, eid in inp.previous.items():
+        if (eid, sid) in x:
+            m.AddHint(x[eid, sid], 1)
+    # Résolution niveau par niveau : la solution du niveau précédent sert de point de départ et sa valeur est figée
+    groups_lv = _level_groups(cfg, exprs, bool(inp.previous)) or [("pondere", [])]
+    deadline = t0 + cfg.time_limit_s
+    shares = {"couverture": 0.35, "engagements": 0.25}
+    floor = 5.0  # le préchargement d'un grand modèle prend plusieurs secondes : un niveau a besoin d'un minimum de temps pour exister
+    carry: List[str] = []  # critères d'un niveau resté sans solution : reportés au suivant, jamais oubliés
+    levels: List[dict] = []
+    solver: Optional[cp_model.CpSolver] = None  # dernier solveur ayant une solution
+    status = cp_model.UNKNOWN
+    proved = True
+    for i, (name, keys) in enumerate(groups_lv):
+        keys = [*keys, *carry]
+        expr = sum(scaled[k] for k in keys)
+        last = i == len(groups_lv) - 1
+        remaining = max(0.05, deadline - _time.time())
+        sv = cp_model.CpSolver()
+        sv.parameters.max_time_in_seconds = remaining if last else min(remaining, max(floor, remaining * shares.get(name, 0.5)))
+        sv.parameters.num_workers = cfg.workers
+        sv.parameters.random_seed = cfg.seed
+        current["solver"] = sv
+        m.Minimize(expr)
+        st = sv.Solve(m, _StopAtZero() if keys else None)
+        if st in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+            value = int(sv.Value(expr)) if keys else 0
+            # tous les coûts sont positifs ou nuls : atteindre 0 prouve l'optimum de ce niveau, sans attendre la preuve du solveur
+            level_proved = st == cp_model.OPTIMAL or value == 0
+            solver, status = sv, cp_model.OPTIMAL if (level_proved and proved) else cp_model.FEASIBLE
+            proved = proved and level_proved
+            levels.append({"level": name, "terms": keys, "value": value, "proved_optimal": level_proved,
+                           "bound": 0 if value == 0 else int(sv.BestObjectiveBound()), "seconds": round(sv.WallTime(), 3)})
+            if last or (cancel is not None and cancel.is_set()):
+                break
+            carry = []
+            m.Add(expr <= value)  # le niveau suivant ne peut pas dégrader celui-ci
+            # solution complète (variables auxiliaires comprises) : le niveau suivant repart immédiatement de ce planning
+            m.ClearHints()
+            for idx in range(len(m.Proto().variables)):
+                var = m.GetIntVarFromProtoIndex(idx)
+                m.AddHint(var, sv.Value(var))
+        elif solver is None:
+            status, solver = st, sv
+            break
+        else:  # pas de solution à ce niveau dans le temps imparti : la solution précédente reste valable, le niveau suivant garde sa chance
+            proved = False
+            status = cp_model.FEASIBLE
+            levels.append({"level": name, "terms": keys, "value": None, "proved_optimal": False, "bound": None, "seconds": round(sv.WallTime(), 3)})
+            carry = keys
+            if cancel is not None and cancel.is_set():
+                break
     stopped["v"] = True
     dur = _time.time() - t0
 
     names = {cp_model.OPTIMAL: "optimal", cp_model.FEASIBLE: "faisable"}
     missing = missing_data(inp)
-    base = dict(duration_s=round(dur, 3), weights=dict(W), missing_data=missing)
+    possible = len(inp.employees) * len(inp.slots)
+    base = dict(duration_s=round(dur, 3), weights=dict(W), missing_data=missing, levels=levels, proved_optimal=status == cp_model.OPTIMAL,
+                model={"employees": len(inp.employees), "shifts": len(inp.slots), "possible_pairs": possible, "decision_variables": len(x), "filtered_out": possible - len(x)})
     exploratory = any(i.severity in ("blocking", "warning") and i.code in ("CONTRACT_MISSING",) for i in missing)
     mode = "simulation_exploratoire" if exploratory else "validable"
 
     if status in (cp_model.INFEASIBLE, cp_model.MODEL_INVALID) or status == cp_model.UNKNOWN:
         diag = []
         if status == cp_model.INFEASIBLE:
-            diag = [core_issue(inp, solver, assump)] if assump else []
+            diag = [_lock_issue(prep, sid, eid) for sid, eid in impossible_locks]
+            diag += [core_issue(inp, solver, assump)] if assump else []
             diag += diagnose_uncovered(inp, [s.id for s in inp.slots if s.mandatory], inp.locked)
-            st = "infaisable"
+            st_name = "infaisable"
         else:
-            st = "interrompu"
+            st_name = "interrompu"
             diag = []
-        return SolverResult(status=st, mode=mode, validable=False, assignments=[], uncovered_slots=[],
+        return SolverResult(status=st_name, mode=mode, validable=False, assignments=[], uncovered_slots=[],
                             budgets=[], objective={}, preferences={}, avoided_violations={},
                             hard_violations=[], employee_hours={}, diagnostics=diag, sunday=sunday_summary(inp), **base)
 
@@ -444,10 +555,9 @@ def solve(inp: SolverInput, cancel: Optional[threading.Event] = None) -> SolverR
                         "requirements_defined": b.requirements_defined})
     # un budget sans besoins définis (Lindt/Toblerone) reste « non planifié » : jamais un succès complet
     shortfall = any(bd["remaining_minutes"] > 0 for bd in budgets)
-    objective = {}
-    for k, ex in exprs.items():
-        val = int(solver.Value(ex))
-        objective[k] = val * (W[k] if k in _UNIT_TERMS else 1)
+    # coût réel par critère, recalculé sur les affectations (aucune variable auxiliaire du solveur n'intervient)
+    true_cost = evaluate(inp, assigns, prep)
+    objective = {k: true_cost.get(k, 0) for k in exprs}
 
     prefs: Dict[str, dict] = defaultdict(lambda: {"satisfaites": 0, "non_satisfaites": 0})
     for a in assigns:
@@ -461,18 +571,29 @@ def solve(inp: SolverInput, cancel: Optional[threading.Event] = None) -> SolverR
         hours[a.employee_id] += a.effective_minutes
 
     viol = validate(inp, assigns)
-    st = names.get(status, "faisable")
+    st_name = names.get(status, "faisable")
     if cancel is not None and cancel.is_set():
-        st = "interrompu"
+        st_name = "interrompu"
     elif uncovered or shortfall:
-        st = "partiellement_couvert"
+        st_name = "partiellement_couvert"
     diag = diagnose_uncovered(inp, uncovered, inp.locked) if uncovered else []
     avoided = {"conflits_chevauchement_repos": _count_conflict_pairs(inp, x)}
-    return SolverResult(status=st, mode=mode, validable=(mode == "validable" and st in ("optimal", "faisable")
-                                                          and not viol),
+    return SolverResult(status=st_name, mode=mode, validable=(mode == "validable" and st_name in ("optimal", "faisable")
+                                                              and not viol),
                         assignments=assigns, uncovered_slots=uncovered, budgets=budgets, objective=objective,
                         preferences=dict(prefs), avoided_violations=avoided, hard_violations=viol,
-                        employee_hours=dict(hours), diagnostics=diag, sunday=sunday_summary(inp, assigns), **base)
+                        employee_hours=dict(hours), diagnostics=diag, sunday=sunday_summary(inp, assigns),
+                        metrics=plan_metrics(inp, assigns, prep=prep), **base)
+
+
+def _lock_issue(prep, sid: str, eid: str) -> Issue:
+    """Un verrou impossible rend le problème infaisable : le diagnostic nomme le shift, la personne et la règle en cause."""
+    s, e = prep.slots.get(sid), prep.emps.get(eid)
+    if s is None or e is None:
+        return Issue("LOCK_IMPOSSIBLE", "blocking", f"Verrou impossible sur {sid} : shift ou collaborateur absent des données du mois.", slots=[sid])
+    why = ineligibility(e, s, prep.starts_by_site)
+    return Issue("LOCK_IMPOSSIBLE", "blocking", f"Le shift verrouillé {sid} ({s.day}, {s.start:%H:%M}-{s.end:%H:%M}) ne peut pas rester à {e.name} : {why[1] if why else 'repos insuffisant avec une période voisine'}.",
+                 slots=[sid], constraints=[why[0] if why else "REST"], suggestions=["Déverrouiller ce shift ou lever la contrainte, puis relancer la génération."])
 
 
 def _count_conflict_pairs(inp: SolverInput, x: dict) -> int:
@@ -499,7 +620,7 @@ def _derived_metrics(inp: SolverInput, assigns: List[Assignment], prefs: dict) -
             for d in {a.day for a in assigns if a.employee_id == e.id}:
                 o = by_day_emp.get((e.opposite_of, d))
                 if o is not None:
-                    ok = _period(by_day_emp[e.id, d]) != _period(o)
+                    ok = period_of(by_day_emp[e.id, d]) != period_of(o)
                     prefs[f"famille:{e.name}/{emps[e.opposite_of].name}"][
                         "satisfaites" if ok else "non_satisfaites"] += 1
     cos: Dict[object, List[Slot]] = defaultdict(list)
