@@ -25,7 +25,7 @@ export function SundayCounter({ counter, summary, draftNote }: { counter: Counte
         <Tile label="Restant à attribuer" value={counter.remaining} hint="à couvrir − réservés" tone={counter.remaining > 0 ? undefined : "ok"} />
       </div>
       {counter.alerts.map((a) => <div key={a.text} style={{ marginTop: "var(--sp-3)" }}><Callout kind={a.level === "warning" ? "warn" : "info"}>{a.text}</Callout></div>)}
-      <p className="help" style={{ marginTop: "var(--sp-3)" }}><Icon name="info" size={12} style={{ verticalAlign: "-2px" }} /> Ploom est la seule activité planifiée le dimanche. Un quota « maximum » plafonne sans réserver ; « objectif exact » réserve. Un collaborateur n&apos;a jamais deux shifts le même dimanche.</p>
+      <p className="help" style={{ marginTop: "var(--sp-3)" }}><Icon name="info" size={12} style={{ verticalAlign: "-2px" }} /> Un quota « maximum » plafonne sans réserver ; « objectif exact » réserve. Un collaborateur n&apos;a jamais deux shifts le même dimanche.</p>
     </Card>
   );
 }

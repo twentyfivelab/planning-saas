@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useMe } from "@/components/Shell";
 import { useApi, usePeriod } from "@/components/hooks";
 import { Badge, Button, Callout, Card, EmptyState, ErrorState, Field, Input, PageHead, Progress, SearchInput, Select, SkeletonCard } from "@/components/ui/primitives";
@@ -9,18 +9,30 @@ import { ShiftCard } from "@/components/ui/ShiftCard";
 import { useToast } from "@/components/ui/Toast";
 import { useReassign } from "@/components/planning/useReassign";
 import { SundayStrip } from "@/components/planning/SundayCounter";
+import { CompatBanner } from "@/components/planning/CompatBanner";
+import { AddShiftModal } from "@/components/planning/AddShiftModal";
+import { DayShiftsModal, RemoveDialog } from "@/components/planning/DayShiftsModal";
+import { HistoryPanel } from "@/components/planning/HistoryPanel";
+import { ReplacementsModal, type ReplaceTarget } from "@/components/planning/ReplacementsModal";
+import { ExplainModal } from "@/components/planning/ExplainModal";
+import { AbsenceModal } from "@/components/planning/AbsenceModal";
+import { MonthSwitcher } from "@/components/MonthSwitcher";
+import { MonthNeeds, type MonthCalendar } from "@/components/planning/MonthNeeds";
+import { parseMonthKey } from "@/lib/months";
+import { canWork } from "@/lib/brandGroups";
+import { invalidate } from "@/lib/invalidate";
 import { computeCounter, type SundaySummary } from "@/lib/sundays";
 import { api } from "@/lib/api";
 import { brandColor, brandVars } from "@/lib/brand";
 import { budgetProgress, plannedByBrand, splitShares, type BudgetRow } from "@/lib/metrics";
 import {
   DOW_SHORT, KIND_LABEL, addDays, conflictsBySlot, dayLabel, daysBetween, defaultWeek, filterAssignments, fmtHM, mainBrand, shiftKind, timeShort,
-  weekOf, weekdayIdx, type Assignment, type ShiftKind,
+  weekdayIdx, type Assignment, type ShiftKind,
 } from "@/lib/schedule";
 
 type Schedule = { assignments: Assignment[]; uncovered: { shift_id: string; slot_key: string; day: string; site: string; start: string; end: string }[] };
 type Emp = { id: string; code: string; name: string; brands?: Record<string, string>; sunday_quota?: number | null; sunday_mode?: "max" | "exact" };
-const VIEWS = [["month", "Mois"], ["week", "Semaine"], ["day", "Jour"], ["employee", "Collaborateur"], ["brand", "Marque / site"]] as const;
+const VIEWS = [["month", "Mois"], ["general", "Planning général"], ["day", "Jour"], ["employee", "Collaborateur"], ["brand", "Marque / site"]] as const;
 type View = (typeof VIEWS)[number][0];
 const KIND_ICON = { open: "sunrise", day: "briefcase", close: "sunset" } as const;
 type Drag = { id: string; day: string; from: string } | null;
@@ -29,21 +41,25 @@ type Target = { emp: string; day: string; state: "ok" | "bad" } | null;
 export default function PlanningPage() {
   const me = useMe();
   const toast = useToast();
-  const canEdit = me.permissions.includes("planning.edit");
-  const { periods, period, setId, loading: pLoading } = usePeriod();
+  const canEditRole = me.permissions.includes("planning.edit");
+  const { period, month, setMonth, loading: pLoading, reloadPeriods } = usePeriod();
+  const archived = period?.status === "archived";
+  const canEdit = canEditRole && !archived; // un planning archivé reste consultable mais n'est plus modifiable
+  const ym = parseMonthKey(month);
+  const cal = useApi<MonthCalendar>(`/calendar?year=${ym.y}&month=${ym.m}`);
   const sched = useApi<Schedule>(period ? `/periods/${period.id}/schedule` : null);
   const confl = useApi<{ hard_violations: string[] }>(period ? `/periods/${period.id}/conflicts` : null);
   const emps = useApi<Emp[]>("/employees");
   const budgets = useApi<BudgetRow[]>("/budgets");
   const sunday = useApi<SundaySummary>(period ? `/periods/${period.id}/sunday-summary` : null);
 
-  const [view, setView] = useState<View>("week");
+  const [view, setView] = useState<View>("general");
   const [focusState, setFocus] = useState("");
   const [text, setText] = useState(""); const [site, setSite] = useState(""); const [brand, setBrand] = useState(""); const [empF, setEmpF] = useState("");
   const [sel, setSel] = useState<Assignment | null>(null);
   const [drag, setDrag] = useState<Drag>(null); const [target, setTarget] = useState<Target>(null);
 
-  const days = useMemo(() => (period ? daysBetween(period.start_date, period.end_date) : []), [period]);
+  const days = useMemo(() => (period ? daysBetween(period.start_date, period.end_date) : []), [period?.start_date, period?.end_date]); // eslint-disable-line react-hooks/exhaustive-deps -- un rechargement du même mois ne réinitialise pas la vue
   useEffect(() => { if (days.length) setFocus(defaultWeek(days)); }, [days]);
   const focus = focusState || defaultWeek(days);
   const all = useMemo(() => sched.data?.assignments ?? [], [sched.data]);
@@ -52,9 +68,15 @@ export default function PlanningPage() {
   const sites = useMemo(() => [...new Set(all.map((a) => a.site))].sort(), [all]);
   const brands = useMemo(() => [...new Set(all.flatMap((a) => Object.keys(a.allocations)))].sort(), [all]);
     const filtersActive = !!(text || site || brand || empF);
-  const week = useMemo(() => weekOf(focus), [focus]);
   const inPeriod = (d: string) => days.includes(d);
-  const refresh = () => { sched.reload(); confl.reload(); sunday.reload(); };
+  const refresh = () => { sched.reload(); confl.reload(); sunday.reload(); invalidate(); };
+  const [adding, setAdding] = useState<{ emp: Emp; day: string } | null>(null);
+  const [picking, setPicking] = useState<{ emp: Emp; day: string } | null>(null);
+  const [removing, setRemoving] = useState<Assignment | null>(null);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [replace, setReplace] = useState<ReplaceTarget>(null);
+  const [explain, setExplain] = useState<string | null>(null);
+  const [absence, setAbsence] = useState(false);
 
   const reassign = useReassign({ all, emps: emps.data ?? [], refresh, getSchedule: async () => (await api<Schedule>(`/periods/${period!.id}/schedule`)).assignments });
 
@@ -81,13 +103,16 @@ export default function PlanningPage() {
     "data-drop": target && target.emp === empId && target.day === day ? target.state : drag ? "idle" : undefined,
     onDragOver: (e: React.DragEvent) => {
       if (!drag) return; e.preventDefault();
-      const state = drag.day === day ? "ok" : "bad"; e.dataTransfer.dropEffect = state === "ok" ? "move" : "none";
+      const dragged = all.find((x) => x.assignment_id === drag.id);
+      const eligible = !dragged || canWork(emps.data?.find((x) => x.id === empId)?.brands, Object.keys(dragged.allocations));
+      const state = drag.day === day && eligible ? "ok" : "bad"; e.dataTransfer.dropEffect = state === "ok" ? "move" : "none";
       if (!target || target.emp !== empId || target.day !== day || target.state !== state) setTarget({ emp: empId, day, state });
     },
     onDragLeave: () => setTarget(null),
     onDrop: (e: React.DragEvent) => {
       e.preventDefault(); const d = drag; setDrag(null); setTarget(null); if (!d) return;
       const a = all.find((x) => x.assignment_id === d.id); if (!a || d.from === empId) return;
+      if (!canWork(emps.data?.find((x) => x.id === empId)?.brands, Object.keys(a.allocations))) { toast.push(`${emps.data?.find((x) => x.id === empId)?.name ?? "Ce collaborateur"} n'est pas autorisé·e sur ${Object.keys(a.allocations).join(" + ")} (fiche collaborateur).`, "warn"); return; }
       if (d.day !== day) { toast.push("Un shift ne change pas de jour par glisser-déposer : modifiez son horaire depuis la fiche.", "warn"); return; }
       reassign.request(a, empId);
     },
@@ -98,15 +123,21 @@ export default function PlanningPage() {
 
   return (
     <>
-      <PageHead eyebrow={period ? `${dayLabel(period.start_date)} → ${dayLabel(period.end_date)}` : "Planning"} title="Planning">
+      <PageHead eyebrow={period ? `${period.name} · ${period.status_label ?? ""}` : "Planning"} title="Planning">
+        <MonthSwitcher month={month} onChange={setMonth} />
+        {canEditRole && <a className="btn btn-primary" href="/plannings/new"><Icon name="plus" size={16} />Générer un nouveau planning</a>}
+        {period && canEdit && <a className="btn" href={`/plannings/new?period=${period.id}`}><Icon name="sparkles" size={16} />Paramètres du mois</a>}
+        {period && me.permissions.includes("planning.publish") && period.status !== "draft" && (
+          <Button icon="history" onClick={async () => { try { await api(`/periods/${period.id}/${archived ? "unarchive" : "archive"}`, { method: "POST" }); reloadPeriods(); invalidate(); toast.push(archived ? `${period.name} désarchivé : il est de nouveau modifiable.` : `${period.name} archivé : consultable, non modifiable.`, "ok"); } catch (e) { toast.push(e instanceof Error ? e.message : "Action impossible", "bad"); } }}>{archived ? "Désarchiver" : "Archiver"}</Button>)}
         <Button icon="undo" disabled={!reassign.canUndo} onClick={reassign.undo}>Annuler</Button>
         <Button icon="redo" disabled={!reassign.canRedo} onClick={reassign.redo}>Rétablir</Button>
+        <Button icon="clock" onClick={() => setHistoryOpen(true)} disabled={!period}>Historique</Button>
+        {period && canEdit && me.permissions.includes("availability.write") && <Button icon="alert" onClick={() => setAbsence(true)}>Déclarer une absence</Button>}
         {canEdit && <Button variant="primary" icon="history" onClick={saveVersion} disabled={!period}>Enregistrer une version</Button>}
       </PageHead>
 
       <Card>
         <div className="toolbar" role="search" aria-label="Filtres du planning">
-          <Field label="Période">{(p) => <Select {...p} value={period?.id ?? ""} onChange={(e) => setId(e.target.value)}>{periods.map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}</Select>}</Field>
           <Field label="Recherche">{(p) => <SearchInput {...p} placeholder="Rechercher…" value={text} onChange={(e) => setText(e.target.value)} />}</Field>
           <Field label="Site">{(p) => <Select {...p} value={site} onChange={(e) => setSite(e.target.value)}><option value="">Tous les sites</option>{sites.map((s) => <option key={s}>{s}</option>)}</Select>}</Field>
           <Field label="Marque">{(p) => <Select {...p} value={brand} onChange={(e) => setBrand(e.target.value)}><option value="">Toutes les marques</option>{brands.map((s) => <option key={s}>{s}</option>)}</Select>}</Field>
@@ -117,13 +148,13 @@ export default function PlanningPage() {
             {VIEWS.map(([v, l]) => <button key={v} type="button" role="tab" aria-selected={view === v} className="btn" onClick={() => setView(v)}>{l}</button>)}
           </div>
           <div className="row">
-            {(view === "week" || view === "day") && days.length > 0 && (
+            {view === "day" && days.length > 0 && (
               <>
-                <Button iconOnly icon="chevL" label={view === "week" ? "Semaine précédente" : "Jour précédent"} onClick={() => setFocus(addDays(focus, view === "week" ? -7 : -1))} disabled={!inPeriod(addDays(focus, view === "week" ? -7 : -1)) && view === "day"} />
+                <Button iconOnly icon="chevL" label="Jour précédent" onClick={() => setFocus(addDays(focus, -1))} disabled={!inPeriod(addDays(focus, -1))} />
                 <strong className="num" aria-live="polite" style={{ minWidth: "9.5rem", textAlign: "center" }}>
-                  {view === "week" ? `${dayLabel(week[0])} – ${dayLabel(week[6])}` : dayLabel(focus)}
+                  {dayLabel(focus)}
                 </strong>
-                <Button iconOnly icon="chevR" label={view === "week" ? "Semaine suivante" : "Jour suivant"} onClick={() => setFocus(addDays(focus, view === "week" ? 7 : 1))} disabled={!inPeriod(addDays(focus, view === "week" ? 7 : 1)) && view === "day"} />
+                <Button iconOnly icon="chevR" label="Jour suivant" onClick={() => setFocus(addDays(focus, 1))} disabled={!inPeriod(addDays(focus, 1))} />
                 <Button size="sm" onClick={() => setFocus(defaultWeek(days))}>Début de période</Button>
               </>
             )}
@@ -139,28 +170,47 @@ export default function PlanningPage() {
       )}
       <Legend brands={brands} />
 
+      {archived && <Callout kind="info" title={`${period!.name} est archivé`}>Ce planning reste consultable (planning général, plannings individuels, historique, versions) mais n&apos;est plus modifiable. Désarchivez-le pour le modifier.</Callout>}
+      {period && all.length > 0 && !archived && <CompatBanner periodId={period.id} />}
       {(confl.data?.hard_violations.length ?? 0) > 0 && (
         <Callout kind="warn" title={`${confl.data!.hard_violations.length} conflit(s) de contraintes dures`}>
           Les cartes concernées sont entourées en orange. <a href="/alerts" style={{ textDecoration: "underline" }}>Voir le détail</a>
         </Callout>
       )}
-      {!!sched.data?.uncovered.length && <Callout kind="warn" title={`${sched.data.uncovered.length} shift(s) non couvert(s)`}>{sched.data.uncovered.slice(0, 6).map((u) => `${dayLabel(u.day)} ${u.site} ${timeShort(u.start)}`).join(" · ")}</Callout>}
+      {!!sched.data?.uncovered.length && (
+        <Callout kind="warn" title={`${sched.data.uncovered.length} shift(s) non couvert(s)`}>
+          <div className="row" style={{ marginTop: "var(--sp-1)" }}>
+            {sched.data.uncovered.slice(0, 8).map((u) => <Button key={u.shift_id} size="sm" onClick={() => setReplace({ shift_id: u.shift_id, label: `${dayLabel(u.day)} · ${u.site} · ${timeShort(u.start)}–${timeShort(u.end)}` })} aria-label={`Trouver un collaborateur : ${dayLabel(u.day)}, ${u.site}, ${timeShort(u.start)}`}>{dayLabel(u.day)} {u.site} {timeShort(u.start)}</Button>)}
+            {sched.data.uncovered.length > 8 && <span className="muted">+ {sched.data.uncovered.length - 8} autres</span>}
+          </div>
+        </Callout>)}
 
-      {err ? <ErrorState message={err} onRetry={() => { sched.reload(); emps.reload(); }} /> : loading ? <SkeletonCard lines={6} /> : !all.length ? (
+      {!pLoading && !period && cal.data && (
+        <MonthNeeds cal={cal.data} actions={canEdit ? <a className="btn btn-primary" href="/generate"><Icon name="sparkles" size={16} />Générer automatiquement le planning</a> : undefined} />
+      )}
+      {!pLoading && !period ? null : err ? <ErrorState message={err} onRetry={() => { sched.reload(); emps.reload(); }} /> : loading ? <SkeletonCard lines={6} /> : !all.length ? (
         <Card><EmptyState icon="calendar" title="Aucun planning pour cette période" action={<a className="btn btn-primary" href="/generate"><Icon name="sparkles" size={16} />Générer le planning</a>}>Lancez une génération (simulation exploratoire tant que les données sont incomplètes) ou saisissez des affectations.</EmptyState></Card>
       ) : (
         <Card>
           {view === "month" && <MonthView days={days} list={list} alertMap={alertMap} onPickDay={(d) => { setFocus(d); setView("day"); }} />}
-          {view === "week" && <WeekView week={week} inPeriod={inPeriod} list={list} emps={(emps.data ?? []).filter((e) => !empF || e.id === empF)} cardProps={cardProps} cellDnD={cellDnD} dragging={!!drag} />}
+          {view === "general" && <GeneralGrid periodId={period!.id} days={days} inPeriod={inPeriod} list={list} emps={(emps.data ?? []).filter((e) => !empF || e.id === empF)} cardProps={cardProps} cellDnD={cellDnD} dragging={!!drag} canEdit={canEdit} onAdd={(emp, day) => setPicking({ emp, day })} />}
           {view === "day" && <DayView day={focus} list={list.filter((a) => a.day === focus)} uncovered={(sched.data?.uncovered ?? []).filter((u) => u.day === focus).length} cardProps={cardProps} emps={emps.data ?? []} canEdit={canEdit} onChange={reassign.request} />}
-          {view === "employee" && <EmployeeView days={days} list={list} emps={emps.data ?? []} cardProps={cardProps} />}
-          {view === "brand" && <BrandView days={days} list={list} budgets={budgets.data ?? []} />}
+          {view === "employee" && <EmployeeView days={days} list={list} emps={emps.data ?? []} cardProps={cardProps} canEdit={canEdit} onAdd={(emp, day) => setPicking({ emp, day })} />}
+          {view === "brand" && <BrandView days={days} list={list} budgets={(budgets.data ?? []).filter((x) => (x as { month?: string }).month === period?.start_date)} />}
         </Card>
       )}
 
       {reassign.dialog}
+      <DayShiftsModal target={picking} periodId={period?.id ?? ""} onClose={() => setPicking(null)} onChanged={() => { setPicking(null); refresh(); }} onCreateNew={() => { setAdding(picking); setPicking(null); }} />
+      <RemoveDialog a={removing} onClose={() => setRemoving(null)} onDone={() => { setRemoving(null); refresh(); }} />
+      <HistoryPanel open={historyOpen} periodId={period?.id ?? ""} employeeId={empF || undefined} onClose={() => setHistoryOpen(false)} />
+      <AddShiftModal target={adding} periodId={period?.id ?? ""} onClose={() => setAdding(null)} onAdded={() => { setAdding(null); refresh(); }} />
       <ShiftModal a={sel} onClose={() => setSel(null)} canEdit={canEdit} emps={emps.data ?? []} alerts={sel ? alertMap.get(sel.assignment_id) ?? [] : []}
-        onReassign={(a, to) => { setSel(null); reassign.request(a, to); }} onLock={toggleLock} onTimes={editTimes} />
+        onReassign={(a, to) => { setSel(null); reassign.request(a, to); }} onLock={toggleLock} onTimes={editTimes} onRemove={(a) => { setSel(null); setRemoving(a); }}
+        onExplain={(a) => setExplain(a.assignment_id)} onReplacements={(a) => { setSel(null); setReplace({ shift_id: a.shift_id, label: `${dayLabel(a.day)} · ${a.site} · ${timeShort(a.start)}–${timeShort(a.end)}` }); }} />
+      <ExplainModal assignmentId={explain} onClose={() => setExplain(null)} />
+      <ReplacementsModal target={replace} periodId={period?.id ?? ""} canEdit={canEdit} onClose={() => setReplace(null)} onDone={() => { setReplace(null); refresh(); }} />
+      <AbsenceModal open={absence} periodId={period?.id ?? ""} period={period} emps={emps.data ?? []} canOptimize={me.permissions.includes("planning.optimize")} canEdit={canEdit} onClose={() => setAbsence(false)} onChanged={refresh} />
     </>
   );
 }
@@ -214,33 +264,75 @@ function MonthView({ days, list, alertMap, onPickDay }: { days: string[]; list: 
   );
 }
 
-function WeekView({ week, inPeriod, list, emps, cardProps, cellDnD, dragging }: { week: string[]; inPeriod: (d: string) => boolean; list: Assignment[]; emps: Emp[]; cardProps: CardProps; cellDnD: (e: string, d: string) => any; dragging: boolean }) {
-  const cols = `minmax(6.5rem, 9rem) repeat(7, minmax(7.5rem, 1fr)) 4rem`;
+const hScroll = new Map<string, number>(); // position horizontale par période (conservée entre les vues)
+const COL_REM = 8.75;
+/**
+ * Planning général : collaborateurs en lignes (colonne fixe), TOUS les jours du mois en colonnes, défilement horizontal natif
+ * (trackpad, souris, tactile, clavier) + flèches. Les lignes sont rendues par le navigateur à la demande (content-visibility) pour
+ * rester fluides avec des centaines de collaborateurs ; la position est conservée entre les vues et réinitialisée au changement de mois.
+ */
+function GeneralGrid({ periodId, days, inPeriod, list, emps, cardProps, cellDnD, dragging, canEdit, onAdd }: { periodId: string; days: string[]; inPeriod: (d: string) => boolean; list: Assignment[]; emps: Emp[]; cardProps: CardProps; cellDnD: (e: string, d: string) => any; dragging: boolean; canEdit: boolean; onAdd: (e: Emp, d: string) => void }) {
+  const scroller = useRef<HTMLDivElement>(null);
+  const [nav, setNav] = useState({ first: 0, last: 0, left: false, right: true });
   const today = new Date().toISOString().slice(0, 10);
+  const cols = `9.5rem repeat(${days.length}, ${COL_REM}rem) 5.5rem`;
+  const colPx = () => (parseFloat(getComputedStyle(document.documentElement).fontSize) || 16) * COL_REM;
+  const measure = () => {
+    const el = scroller.current; if (!el) return;
+    const w = colPx(), name = 9.5 * (parseFloat(getComputedStyle(document.documentElement).fontSize) || 16);
+    const first = Math.max(0, Math.min(days.length - 1, Math.floor(el.scrollLeft / w)));
+    const last = Math.max(first, Math.min(days.length - 1, Math.floor((el.scrollLeft + el.clientWidth - name - 1) / w)));
+    setNav({ first, last, left: el.scrollLeft > 1, right: el.scrollLeft + el.clientWidth < el.scrollWidth - 1 });
+  };
+  useLayoutEffect(() => { // restaure la position du mois (0 pour un nouveau mois)
+    const el = scroller.current; if (!el) return;
+    el.scrollLeft = hScroll.get(periodId) ?? 0; measure();
+  }, [periodId, days.length]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { const on = () => measure(); window.addEventListener("resize", on); return () => window.removeEventListener("resize", on); });
+  const raf = useRef(0);
+  const onScroll = () => { hScroll.set(periodId, scroller.current?.scrollLeft ?? 0); cancelAnimationFrame(raf.current); raf.current = requestAnimationFrame(measure); };
+  const go = (n: number) => scroller.current?.scrollBy({ left: n * colPx(), behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
+  const toDay = (i: number) => scroller.current?.scrollTo({ left: i * colPx(), behavior: "smooth" });
+  const byEmp = useMemo(() => { const m = new Map<string, Map<string, Assignment[]>>(); for (const a of list) { const r = m.get(a.employee_id) ?? new Map(); r.set(a.day, [...(r.get(a.day) ?? []), a]); m.set(a.employee_id, r); } return m; }, [list]);
   return (
     <>
-      {dragging && <p className="help" role="status" style={{ marginBottom: "var(--sp-2)" }}>Déposez sur la ligne d'un autre collaborateur, le même jour. Vert : dépôt possible · Rouge : jour différent.</p>}
-      <p className="help cal-hint" style={{ marginBottom: "var(--sp-2)" }}>Faites défiler horizontalement pour voir toute la semaine.</p>
-      <div className="cal-scroll"><div className="cal" style={{ gridTemplateColumns: cols }} role="table" aria-label="Vue hebdomadaire">
-        <div className="cal-h" role="columnheader" style={{ textAlign: "left" }}>Collaborateur</div>
-        {week.map((d) => <div key={d} className="cal-h" role="columnheader" data-today={d === today}>{DOW_SHORT[weekdayIdx(d)]} {Number(d.slice(8))}</div>)}
-        <div className="cal-h" role="columnheader">Heures</div>
-        {emps.map((e) => {
-          const mine = list.filter((a) => a.employee_id === e.id && week.includes(a.day));
-          const mins = mine.reduce((s, a) => s + a.effective_minutes, 0);
-          return (
-            <div key={e.id} style={{ display: "contents" }} role="row">
-              <div className="cal-name" role="rowheader">{e.name}</div>
-              {week.map((d) => (
-                <div key={d} className="cal-cell" role="cell" data-off={!inPeriod(d) || undefined} {...cellDnD(e.id, d)} aria-label={`${e.name}, ${dayLabel(d)}`}>
-                  {mine.filter((a) => a.day === d).map((a) => <ShiftCard key={a.assignment_id} {...cardProps(a)} />)}
-                </div>
-              ))}
-              <div className="cal-cell num" role="cell" style={{ alignItems: "center", justifyContent: "center", fontWeight: 650 }}>{mins ? fmtHM(mins) : "–"}</div>
-            </div>
-          );
-        })}
-      </div></div>
+      <div className="spread hgrid-bar">
+        <div className="row">
+          <Button iconOnly icon="chevL" label="Jours précédents" disabled={!nav.left} onClick={() => go(-7)} />
+          <strong className="num" aria-live="polite" style={{ minWidth: "12rem", textAlign: "center" }}>{days.length ? `${dayLabel(days[nav.first])} – ${dayLabel(days[nav.last])}` : ""}</strong>
+          <Button iconOnly icon="chevR" label="Jours suivants" disabled={!nav.right} onClick={() => go(7)} />
+          <Button size="sm" onClick={() => toDay(0)} disabled={!nav.left}>Début du mois</Button>
+          {days.includes(today) && <Button size="sm" onClick={() => toDay(Math.max(0, days.indexOf(today) - 1))}>Aujourd&apos;hui</Button>}
+        </div>
+        <p className="help">Faites glisser horizontalement (trackpad, souris, doigt) ou utilisez les flèches : les noms restent visibles.</p>
+      </div>
+      {dragging && <p className="help" role="status" style={{ marginBottom: "var(--sp-2)" }}>Déposez sur la ligne d&apos;un autre collaborateur, le même jour. Vert : dépôt possible · Rouge : jour différent.</p>}
+      <div className="cal-scroll hgrid-scroll" ref={scroller} onScroll={onScroll} tabIndex={0} role="region" aria-label="Planning général, défilement horizontal"
+        onKeyDown={(e) => { if (e.target !== e.currentTarget) return; if (e.key === "ArrowRight") { e.preventDefault(); go(1); } if (e.key === "ArrowLeft") { e.preventDefault(); go(-1); } }}>
+        <div className="hgrid" role="table" aria-label="Planning général" style={{ ["--cols" as string]: cols }}>
+          <div className="hgrid-row hgrid-head" role="row">
+            <div className="cal-h cal-name-h" role="columnheader">Collaborateur</div>
+            {days.map((d) => <div key={d} className="cal-h" role="columnheader" data-today={d === today} data-weekend={weekdayIdx(d) >= 5 || undefined}>{DOW_SHORT[weekdayIdx(d)]} {Number(d.slice(8))}</div>)}
+            <div className="cal-h cal-total-h" role="columnheader">Heures</div>
+          </div>
+          {emps.map((e) => {
+            const mine = byEmp.get(e.id);
+            let mins = 0; mine?.forEach((l) => l.forEach((a) => { mins += a.effective_minutes; }));
+            return (
+              <div key={e.id} className="hgrid-row" role="row">
+                <div className="cal-name" role="rowheader">{e.name}</div>
+                {days.map((d) => (
+                  <div key={d} className="cal-cell" role="cell" data-off={!inPeriod(d) || undefined} data-weekend={weekdayIdx(d) >= 5 || undefined} {...cellDnD(e.id, d)} aria-label={`${e.name}, ${dayLabel(d)}`}>
+                    {(mine?.get(d) ?? []).map((a) => <ShiftCard key={a.assignment_id} {...cardProps(a)} />)}
+                    {canEdit && inPeriod(d) && !mine?.get(d)?.length && <button type="button" className="cal-add" aria-label={`Ajouter un shift pour ${e.name}, ${dayLabel(d)}`} onClick={() => onAdd(e, d)}>+</button>}
+                  </div>
+                ))}
+                <div className="cal-cell cal-total num" role="cell">{mins ? fmtHM(mins) : "–"}</div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
     </>
   );
 }
@@ -286,7 +378,7 @@ function DayView({ day, list, uncovered, cardProps, emps, canEdit, onChange }: {
               <td data-label="Site">{a.site}</td>
               <td data-label="Collaborateur">
                 <Select aria-label={`Collaborateur pour ${a.site} ${timeShort(a.start)}–${timeShort(a.end)}`} value={a.employee_id} disabled={!canEdit || a.locked} onChange={(e) => onChange(a, e.target.value)} style={{ minWidth: "11rem" }}>
-                  {emps.map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}
+                  {emps.map((e) => { const ok = e.id === a.employee_id || canWork(e.brands, Object.keys(a.allocations)); return <option key={e.id} value={e.id} disabled={!ok}>{e.name}{ok ? "" : " — marque non autorisée"}</option>; })}
                 </Select>
               </td>
             </tr>))}</tbody>
@@ -296,7 +388,7 @@ function DayView({ day, list, uncovered, cardProps, emps, canEdit, onChange }: {
   );
 }
 
-function EmployeeView({ days, list, emps, cardProps }: { days: string[]; list: Assignment[]; emps: Emp[]; cardProps: CardProps }) {
+function EmployeeView({ days, list, emps, cardProps, canEdit, onAdd }: { days: string[]; list: Assignment[]; emps: Emp[]; cardProps: CardProps; canEdit: boolean; onAdd: (e: Emp, d: string) => void }) {
   const [id, setId] = useState("");
   const cur = id || emps[0]?.id || "";
   const mine = list.filter((a) => a.employee_id === cur);
@@ -308,12 +400,12 @@ function EmployeeView({ days, list, emps, cardProps }: { days: string[]; list: A
       <div className="row">
         <Field label="Collaborateur">{(p) => <Select {...p} value={cur} onChange={(e) => setId(e.target.value)} style={{ minWidth: "14rem" }}>{emps.map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}</Select>}</Field>
         <Badge tone="accent">{new Set(mine.map((a) => a.day)).size} jours travaillés</Badge><Badge>{fmtHM(total)} effectives</Badge>
-        <Badge tone="info" icon="info">Aucun plafond affiché : contrats non renseignés</Badge>
       </div>
       <div className="cal-scroll"><div className="month" role="grid" aria-label="Vue par collaborateur">
         {DOW_SHORT.map((d) => <div key={d} className="cal-h" role="columnheader">{d}</div>)}
         {cells.map((d, i) => d ? (
-          <div key={d} className="month-cell" role="gridcell"><div className="month-day"><span>{Number(d.slice(8))}</span></div>{mine.filter((a) => a.day === d).map((a) => <ShiftCard key={a.assignment_id} {...cardProps(a, "sm")} />)}</div>
+          <div key={d} className="month-cell" role="gridcell"><div className="month-day">{canEdit && cur ? <button type="button" aria-label={`Shifts du ${dayLabel(d)} pour ${emps.find((e) => e.id === cur)?.name}`} onClick={() => onAdd(emps.find((e) => e.id === cur)!, d)}>{Number(d.slice(8))}</button> : <span>{Number(d.slice(8))}</span>}</div>{mine.filter((a) => a.day === d).map((a) => <ShiftCard key={a.assignment_id} {...cardProps(a, "sm")} />)}
+            {canEdit && cur && !mine.some((a) => a.day === d) && <button type="button" className="cal-add" aria-label={`Ajouter un jour de travail pour ${emps.find((e) => e.id === cur)?.name}, ${dayLabel(d)}`} onClick={() => onAdd(emps.find((e) => e.id === cur)!, d)}>+</button>}</div>
         ) : <div key={i} className="month-cell" data-empty="true" role="gridcell" />)}
       </div></div>
     </div>
@@ -349,7 +441,7 @@ function BrandView({ days, list, budgets }: { days: string[]; list: Assignment[]
 
 type Allowed = { allowed: { template: string; start: string; end: string; break_minutes: number }[]; can_override: boolean };
 
-function ShiftModal({ a, onClose, canEdit, emps, alerts, onReassign, onLock, onTimes }: { a: Assignment | null; onClose: () => void; canEdit: boolean; emps: Emp[]; alerts: string[]; onReassign: (a: Assignment, to: string) => void; onLock: (a: Assignment) => void; onTimes: (a: Assignment, f: FormData) => void }) {
+function ShiftModal({ a, onClose, canEdit, emps, alerts, onReassign, onLock, onTimes, onRemove, onExplain, onReplacements }: { a: Assignment | null; onClose: () => void; canEdit: boolean; emps: Emp[]; alerts: string[]; onReassign: (a: Assignment, to: string) => void; onLock: (a: Assignment) => void; onTimes: (a: Assignment, f: FormData) => void; onRemove: (a: Assignment) => void; onExplain: (a: Assignment) => void; onReplacements: (a: Assignment) => void }) {
   const [to, setTo] = useState("");
   const [allowed, setAllowed] = useState<Allowed | null>(null);
   const [slotSel, setSlotSel] = useState("");
@@ -378,10 +470,11 @@ function ShiftModal({ a, onClose, canEdit, emps, alerts, onReassign, onLock, onT
               <p className="muted">{splitShares(a.allocations).map((s) => `${s.brand} ${fmtHM(s.minutes)} (${s.pct} %)`).join(" · ")}</p></div>
           )}
           {alerts.length > 0 && <Callout kind="warn" title="Conflits sur ce shift"><ul style={{ paddingLeft: "1.1rem", margin: 0 }}>{alerts.map((c) => <li key={c}>{c}</li>)}</ul></Callout>}
+          <div className="row"><Button icon="info" onClick={() => onExplain(a)}>Pourquoi ce collaborateur ?</Button><Button icon="users" onClick={() => onReplacements(a)}>Voir les remplaçants</Button></div>
           {canEdit ? (
             <>
               <div className="row" style={{ alignItems: "flex-end" }}>
-                <Field label="Réaffecter à">{(p) => <Select {...p} value={to} disabled={a.locked} onChange={(e) => setTo(e.target.value)} style={{ minWidth: "12rem" }}>{emps.map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}</Select>}</Field>
+                <Field label="Réaffecter à">{(p) => <Select {...p} value={to} disabled={a.locked} onChange={(e) => setTo(e.target.value)} style={{ minWidth: "12rem" }}>{emps.map((e) => { const ok = canWork(e.brands, Object.keys(a.allocations)); return <option key={e.id} value={e.id} disabled={!ok}>{e.name}{ok ? "" : " — marque non autorisée"}</option>; })}</Select>}</Field>
                 <Button variant="primary" disabled={a.locked || to === a.employee_id} onClick={() => onReassign(a, to)}>Réaffecter</Button>
               </div>
               <form className="row" style={{ alignItems: "flex-end" }} onSubmit={(e) => { e.preventDefault(); onTimes(a, new FormData(e.currentTarget)); }}>
@@ -405,6 +498,7 @@ function ShiftModal({ a, onClose, canEdit, emps, alerts, onReassign, onLock, onT
                 <Button type="submit" disabled={a.locked || (restricted && !slotSel)}>Modifier l&apos;horaire</Button>
               </form>
               <div className="row"><Button icon="lock" onClick={() => onLock(a)}>{a.locked ? "Déverrouiller" : "Verrouiller"}</Button>
+                <Button icon="x" onClick={() => onRemove(a)}>Retirer du planning</Button>
                 <p className="help">{a.locked ? "Déverrouillez pour réaffecter ou modifier." : "Un shift verrouillé n'est jamais déplacé par la réoptimisation."}</p></div>
             </>
           ) : <p className="help">Lecture seule : votre rôle ne permet pas de modifier le planning.</p>}

@@ -58,6 +58,8 @@ export function useReassign({ all, emps, refresh, getSchedule }: { all: Assignme
     if (a.locked) { toast.push("Affectation verrouillée : déverrouillez-la d'abord.", "warn"); return; }
     if (toId === a.employee_id) return;
     const to = byId.get(toId); if (!to) return;
+    const need = Object.keys(a.allocations);
+    if (to.brands && need.some((b) => !(b in to.brands!))) { toast.push(`${to.name} n'est pas autorisé·e sur ${need.join(" + ")} : cochez la marque dans sa fiche pour l'autoriser.`, "warn"); return; }
     setError(""); setPending({ a, to, from: byId.get(a.employee_id) });
   }, [byId, toast]);
 

@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
-import { usePeriod } from "@/components/hooks";
+import { useApi, usePeriod } from "@/components/hooks";
+import { Modal } from "@/components/ui/Modal";
 import { Badge, Button, Callout, Card, Field, Input, PageHead, Progress } from "@/components/ui/primitives";
 import { Icon } from "@/components/ui/Icon";
 import { useToast } from "@/components/ui/Toast";
@@ -9,14 +10,28 @@ import { brandColor } from "@/lib/brand";
 import { budgetProgress } from "@/lib/metrics";
 import { Assignment, diffSchedules, fmtHM } from "@/lib/schedule";
 import { t } from "@/lib/i18n";
+import { MonthSwitcher } from "@/components/MonthSwitcher";
+import { MonthNeeds, type MonthCalendar } from "@/components/planning/MonthNeeds";
+import { copyPreviousBudgets } from "@/lib/budgetCopy";
+import { invalidate } from "@/lib/invalidate";
+import { monthLabel, parseMonthKey } from "@/lib/months";
 
-const WEIGHT_LABELS: Record<string, string> = { coverage: "Couverture", budget: "Budgets", reinforce: "Renforts", preference: "Préférences", fairness: "Équité", overtime: "Heures supplémentaires", site_change: "Changements de site", balance: "Équilibre ouvertures/fermetures/week-ends", fatigue: "Enchaînements fatigants", family: "Préférences familiales", stagger: "Décalage cosmétique", rest_days: "Jours de repos", stability: "Stabilité" };
+const WEIGHT_LABELS: Record<string, string> = { coverage: "Couverture", budget: "Budgets", reinforce: "Renforts", preference: "Préférences", fairness: "Équité", overtime: "Heures supplémentaires", site_change: "Changements de site", balance: "Équilibre ouvertures/fermetures/week-ends", fatigue: "Enchaînements fatigants", family: "Relations entre collaborateurs", stagger: "Décalage cosmétique", rest_days: "Jours de repos", stability: "Stabilité", time_pref: "Préférence matin/middle/soir", secondary: "Marques secondaires", budget_over: "Dépassement de budget souple", sunday_quota: "Objectif exact de dimanches", individual: "Priorité individuelle", sunday_balance: "Équilibrage des dimanches", alternation: "Alternance matin/soir", days_balance: "Équilibrage des jours", cost: "Coût estimé" };
 const STEPS = ["Vérification", "Paramètres", "Calcul", "Résultat"];
 const SEV: Record<string, "bad" | "warn" | "info"> = { blocking: "bad", warning: "warn", info: "info" };
 
 export default function Generate() {
-  const { period } = usePeriod(); const toast = useToast();
+  const { period, month, setMonth, ensure } = usePeriod(); const toast = useToast();
+  const ym = parseMonthKey(month);
+  const cal = useApi<MonthCalendar>(`/calendar?year=${ym.y}&month=${ym.m}`);
+  const [runPeriod, setRunPeriod] = useState("");
+  async function copyBudgets() {
+    try { const n = await copyPreviousBudgets(month); toast.push(n ? `${n} budget(s) copié(s) depuis le mois précédent.` : "Rien à copier : aucun budget le mois précédent ou déjà saisis.", n ? "ok" : "info"); cal.reload(); invalidate(); }
+    catch (e: unknown) { toast.push(e instanceof Error ? e.message : "Copie impossible", "bad"); }
+  }
   const [step, setStep] = useState(1);
+  const [confirming, setConfirming] = useState(false);
+  const compat = useApi<{ has_plan: boolean; locked: number; unlocked: number; hard: string[]; soft: unknown[] }>(period ? `/periods/${period.id}/compatibility` : null);
   const [partial, setPartial] = useState(false); const [limit, setLimit] = useState(30); const [weights, setWeights] = useState<Record<string, number>>({});
   const [run, setRun] = useState<any>(null); const [diag, setDiag] = useState<any>(null);
   const [diff, setDiff] = useState<ReturnType<typeof diffSchedules> | null>(null);
@@ -31,7 +46,7 @@ export default function Generate() {
   useEffect(() => {
     if (run?.status === "termine") (async () => {
       setDiag((await api(`/runs/${run.id}/diagnostic`)).report);
-      const after = (await api(`/periods/${period!.id}/schedule`)).assignments; setDiff(diffSchedules(before.current, after)); setStep(4);
+      const after = (await api(`/periods/${runPeriod || run.period_id}/schedule`)).assignments; setDiff(diffSchedules(before.current, after)); setStep(4);
       toast.push("Génération terminée.", "ok");
     })();
     if (run?.status === "annule" || run?.status === "erreur") { toast.push(run.status === "annule" ? "Exécution annulée." : "L'exécution a échoué.", run.status === "annule" ? "warn" : "bad"); setStep(2); }
@@ -39,15 +54,18 @@ export default function Generate() {
 
   async function start() {
     try {
-      before.current = (await api(`/periods/${period!.id}/schedule`)).assignments;
-      const r = await api<{ run_id: string }>(`/periods/${period!.id}/${partial ? "reoptimize" : "runs"}`, { method: "POST", json: { time_limit_s: limit, weights, kind: partial ? "partial" : "full" }, headers: { "Idempotency-Key": key.current } });
+      const p = period ?? await ensure(); // le planning du mois est créé s'il n'existe pas (les autres mois ne sont jamais touchés)
+      setRunPeriod(p.id);
+      before.current = (await api(`/periods/${p.id}/schedule`)).assignments;
+      const r = await api<{ run_id: string }>(`/periods/${p.id}/${partial ? "reoptimize" : "runs"}`, { method: "POST", json: { time_limit_s: limit, weights, kind: partial ? "partial" : "full", confirm_replace: true }, headers: { "Idempotency-Key": key.current } }); // la confirmation est demandée ci-dessous quand un planning existe
       key.current = crypto.randomUUID(); setRun(await api(`/runs/${r.run_id}`)); setStep(3);
     } catch (e: any) { toast.push(String(e.message), "bad"); }
   }
   const running = run && !["termine", "annule", "erreur"].includes(run.status);
   return (
     <>
-      <PageHead eyebrow={period?.name} title={t("nav.generate")} />
+      <PageHead eyebrow={monthLabel(month)} title={t("nav.generate")}><a className="btn btn-primary" href="/plannings/new"><Icon name="plus" size={16} />Générer un nouveau planning</a><MonthSwitcher month={month} onChange={(m) => { setMonth(m); setStep(1); setRun(null); }} /></PageHead>
+      {step <= 2 && cal.data && <MonthNeeds cal={cal.data} actions={cal.data.budgets_missing ? <Button size="sm" onClick={copyBudgets}>Copier les budgets du mois précédent</Button> : undefined} />}
       <ol className="stepper" aria-label="Étapes">
         {STEPS.map((l, i) => <li key={l} className="step" data-done={i + 1 < step || undefined} aria-current={step === i + 1 ? "step" : undefined}><i>{i + 1 < step ? <Icon name="check" size={12} /> : i + 1}</i>{l}</li>)}
       </ol>
@@ -55,9 +73,9 @@ export default function Generate() {
       {step === 1 && (
         <Card title="Avant de générer">
           <div className="stack">
-            <Callout kind="warn" title="Simulation exploratoire">Contrats et disponibilités incomplets : le résultat sera une proposition <strong>non validable</strong>, jamais publiable. Lindt et Toblerone (128 h) ne seront pas planifiés sans jours ni horaires.</Callout>
-            <Callout kind="info" title="Hypothèses non validées">Les horaires de Cailler et de Nuxe/Cellcosmet sont supposés (paramétrables) ; seules deux règles légales sont exécutées, à titre de référence.</Callout>
-            <div><Button variant="primary" icon="sparkles" onClick={() => setStep(2)}>Continuer en simulation exploratoire</Button></div>
+            <Callout kind="warn" title="Vérifiez les données avant de générer">Tant que des contrats manquent, le résultat reste une proposition <strong>non validable</strong> et non publiable. Une marque dont le budget n&apos;a ni jours ni horaires définis n&apos;est pas planifiée.</Callout>
+            <Callout kind="info" title="Hypothèses et règles légales">Les horaires marqués comme hypothèses restent à confirmer (voir Alertes). Les règles légales exécutées et leur état de validation sont dans <a href="/rules" style={{ textDecoration: "underline" }}>Règles</a>.</Callout>
+            <div className="row"><Button variant="primary" icon="sparkles" onClick={() => setStep(2)}>Continuer</Button><a className="btn" href="/simulations">Comparer des stratégies sans toucher au planning</a></div>
           </div>
         </Card>
       )}
@@ -67,13 +85,22 @@ export default function Generate() {
             <label className="row"><input type="checkbox" checked={partial} onChange={(e) => setPartial(e.target.checked)} /> Réoptimisation partielle <span className="help">— les affectations verrouillées sont conservées</span></label>
             <Field label="Durée maximale (secondes)">{(p) => <Input {...p} type="number" min={5} max={600} value={limit} onChange={(e) => setLimit(+e.target.value)} style={{ width: "10rem" }} />}</Field>
             <fieldset style={{ border: 0, padding: 0, margin: 0 }}>
-              <legend className="h2" style={{ marginBottom: "var(--sp-2)" }}>Poids <span className="help">(vide = valeur par défaut)</span></legend>
+              <legend className="h2" style={{ marginBottom: "var(--sp-2)" }}>Ajustement exceptionnel des poids <span className="help">(vide = pondération enregistrée dans <a href="/settings" style={{ textDecoration: "underline" }}>Paramètres</a>)</span></legend>
               <div className="toolbar">{Object.entries(WEIGHT_LABELS).map(([k, l]) => <Field key={k} label={l}>{(p) => <Input {...p} type="number" min={0} onChange={(e) => setWeights({ ...weights, [k]: +e.target.value })} />}</Field>)}</div>
             </fieldset>
-            <div className="row"><Button onClick={() => setStep(1)}>Retour</Button><Button variant="primary" icon="sparkles" onClick={start} disabled={!period}>Lancer le calcul</Button></div>
+            <div className="row"><Button onClick={() => setStep(1)}>Retour</Button><Button variant="primary" icon="sparkles" onClick={() => (compat.data?.has_plan ? setConfirming(true) : start())}>Générer automatiquement le planning</Button></div>
           </div>
         </Card>
       )}
+      <Modal open={confirming} onClose={() => setConfirming(false)} title="Un planning existe déjà pour ce mois" description="Ouvrez-le, ou confirmez avant de le recalculer.">
+        <div className="stack">
+          {(period?.status === "validated" || period?.status === "published") && <Callout kind="warn" title={`Planning ${period.status_label?.toLowerCase()}`}>La version {period.status === "published" ? "publiée" : "validée"} reste conservée, mais le planning en cours sera remplacé et devra être de nouveau validé et publié.</Callout>}
+          <p><strong>{compat.data?.locked ?? 0}</strong> affectation(s) verrouillée(s) ou ajoutée(s) à la main resteront inchangées.</p>
+          <p><strong>{compat.data?.unlocked ?? 0}</strong> affectation(s) non verrouillée(s) seront recalculées avec les paramètres actuels{partial ? " (réoptimisation partielle : le moins de changements possible)" : ""}.</p>
+          {!!(compat.data && (compat.data.hard.length || compat.data.soft.length)) && <p className="help">{compat.data!.hard.length + compat.data!.soft.length} incompatibilité(s) actuelle(s) avec les paramètres seront traitées. Un comparatif avant/après sera affiché.</p>}
+          <div className="row modal-actions"><Button onClick={() => setConfirming(false)}>Annuler</Button><a className="btn" href="/planning"><Icon name="calendar" size={16} />Ouvrir le planning existant</a><Button variant="primary" onClick={() => { setConfirming(false); void start(); }}>Confirmer et lancer</Button></div>
+        </div>
+      </Modal>
       {step === 3 && (
         <Card title="Calcul en cours">
           <div className="stack" role="status" aria-live="polite">
@@ -86,7 +113,7 @@ export default function Generate() {
       )}
       {step === 4 && diag && (
         <>
-          <Card title={`Résultat : ${String(diag.status).replace(/_/g, " ")}`} eyebrow={`${diag.duration_s} s`} actions={<Badge tone={diag.mode === "simulation_exploratoire" ? "warn" : "ok"} icon={diag.mode === "simulation_exploratoire" ? "alert" : "check"}>{diag.mode === "simulation_exploratoire" ? t("exploratory") : "Validable"}</Badge>}>
+          <Card title={`Résultat : ${String(diag.status).replace(/_/g, " ")}`} eyebrow={`${diag.duration_s} s`} actions={<div className="row">{diag.verification?.executed && <Badge tone={diag.hard_violations?.length ? "bad" : "ok"} icon={diag.hard_violations?.length ? "alert" : "check"} data-testid="verification">{diag.hard_violations?.length ? `Vérificateur : ${diag.hard_violations.length} violation(s), planning refusé` : "Vérificateur indépendant : aucune violation"}</Badge>}<Badge tone={diag.mode === "simulation_exploratoire" ? "warn" : "ok"} icon={diag.mode === "simulation_exploratoire" ? "alert" : "check"}>{diag.mode === "simulation_exploratoire" ? t("exploratory") : "Validable"}</Badge></div>}>
             <h3 className="h2" style={{ marginBottom: "var(--sp-2)" }}>Budgets</h3>
             <div className="stack">{diag.budgets.map((b: any) => (
               <div key={b.brand} className="bar-row"><span className="row"><i className="dot" style={{ ["--c" as string]: brandColor(b.brand) }} />{b.brand}</span>
@@ -94,6 +121,7 @@ export default function Generate() {
                 <span className="num">{fmtHM(b.planned_minutes)} / {fmtHM(b.target_minutes)} {!b.requirements_defined && <Badge tone="warn">{t("to_fill")}</Badge>}</span></div>))}</div>
           </Card>
           <div className="grid-2">
+            {diag.levels?.length > 0 && <Card title="Optimisation hiérarchisée" eyebrow={diag.model ? `${diag.model.decision_variables.toLocaleString("fr-CH")} variables de décision · ${diag.model.filtered_out.toLocaleString("fr-CH")} affectations impossibles écartées d'emblée` : "Chaque niveau est figé avant le suivant"}><div className="table-wrap"><table className="table"><thead><tr><th>Niveau</th><th>Coût</th><th>Preuve</th></tr></thead><tbody>{diag.levels.map((l: any) => <tr key={l.level}><td>{({ couverture: "1. Couverture des postes", engagements: "2. Engagements (contrats, quotas, budgets souples)", optimisation: "3. Équité, préférences et autres critères", pondere: "Somme pondérée" } as Record<string, string>)[l.level] ?? l.level}</td><td className="num">{l.value ?? "—"}</td><td>{l.proved_optimal ? <Badge tone="ok" icon="check">Optimum prouvé</Badge> : <Badge tone="info">Non prouvé</Badge>}</td></tr>)}</tbody></table></div></Card>}
             <Card title="Objectifs et poids utilisés"><div className="table-wrap"><table className="table"><thead><tr><th>Terme</th><th>Coût</th><th>Poids</th></tr></thead><tbody>{Object.entries(diag.objective).map(([k, v]) => <tr key={k}><td>{WEIGHT_LABELS[k] ?? k}</td><td className="num">{String(v)}</td><td className="num">{diag.weights_used[k]}</td></tr>)}</tbody></table></div></Card>
             <Card title="Préférences"><div className="table-wrap"><table className="table"><thead><tr><th>Préférence</th><th>Respectées</th><th>Non respectées</th></tr></thead><tbody>{Object.entries<any>(diag.preferences).map(([k, v]) => <tr key={k}><td>{k}</td><td className="num" style={{ color: "var(--ok)" }}>{v.satisfaites}</td><td className="num" style={{ color: "var(--warn)" }}>{v.non_satisfaites}</td></tr>)}</tbody></table></div></Card>
           </div>

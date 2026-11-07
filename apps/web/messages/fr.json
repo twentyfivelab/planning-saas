@@ -14,7 +14,7 @@
   "login.password": "Mot de passe",
   "login.submit": "Se connecter",
   "login.error": "Identifiants invalides",
-  "legal.banner": "Aide à la décision, pas un conseil juridique. Non commercialisable en l'état : seuls le repos quotidien (11 h, référence) et les 6 jours consécutifs sont exécutés ; pauses légales, durée maximale, nuit, dimanche, jeunes travailleurs et dérogations ne le sont pas. Validation par un spécialiste du droit suisse requise. Hypothèses non validées : éligibilité des collaborateurs aux marques, Pilar (dimanches seulement, sans budget), poids d'attribution.",
+  "legal.banner": "Aide à la décision, pas un conseil juridique. Non commercialisable en l'état : les règles légales exécutées (repos quotidien, jours consécutifs et, si activées dans le référentiel juridique, durée hebdomadaire et pauses) sont des valeurs de référence à faire valider ; nuit, dimanche, repos compensatoires, jeunes travailleurs et dérogations conventionnelles ne sont pas exécutés. Validation par un spécialiste du droit suisse requise, ainsi que des hypothèses signalées dans les Alertes.",
   "exploratory": "Simulation exploratoire — non validable",
   "to_fill": "À renseigner",
   "view.month": "Mois",
@@ -26,5 +26,13 @@
   "action.unlock": "Déverrouiller",
   "action.undo": "Annuler",
   "action.redo": "Rétablir",
-  "action.theme": "Thème"
+  "action.theme": "Thème",
+  "nav.settings": "Paramètres",
+  "nav.catalog": "Sites et marques",
+  "nav.clients": "Clients et missions",
+  "nav.simulations": "Simulations",
+  "nav.time": "Heures réelles",
+  "nav.finance": "Rentabilité",
+  "nav.me": "Mon planning",
+  "nav.brand": "Mes marques"
 }

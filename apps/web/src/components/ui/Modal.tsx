@@ -10,12 +10,14 @@ export function Modal({ open, onClose, title, children, description, initialFocu
   const id = useId();
   useEffect(() => {
     const d = ref.current; if (!d) return;
-    if (open && !d.open) { d.showModal(); requestAnimationFrame(() => initialFocusRef?.current?.focus()); }
+    if (open && !d.open) { d.showModal(); initialFocusRef?.current?.focus(); } // immédiat : un focus différé volerait le focus après une frappe de Tab
     if (!open && d.open) d.close();
   }, [open, initialFocusRef]);
   return (
     <dialog ref={ref} className={variant === "confirm" ? "modal modal-confirm" : "modal"} aria-labelledby={`${id}-t`} aria-describedby={description ? `${id}-d` : undefined}
-      onClose={onClose} onCancel={(e) => { e.preventDefault(); onClose(); }}
+      // une fenêtre imbriquée (ex. « Autoriser » dans « Sites et marques ») ne doit jamais fermer sa fenêtre parente :
+      // les événements close/cancel remontent l'arbre React, on ne réagit qu'aux siens
+      onClose={(e) => { if (e.target === e.currentTarget) onClose(); }} onCancel={(e) => { if (e.target !== e.currentTarget) return; e.preventDefault(); onClose(); }}
       onClick={(e) => { if (e.target === ref.current) onClose(); }}>
       {open && (
         <div className="modal-body">

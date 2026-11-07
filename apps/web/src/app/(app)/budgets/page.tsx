@@ -6,20 +6,30 @@ import { brandColor } from "@/lib/brand";
 import { budgetProgress, plannedByBrand, type BudgetRow } from "@/lib/metrics";
 import { fmtHM, type Assignment } from "@/lib/schedule";
 import { t } from "@/lib/i18n";
+import { MonthSwitcher } from "@/components/MonthSwitcher";
+import { Button } from "@/components/ui/primitives";
+import { useToast } from "@/components/ui/Toast";
+import { copyPreviousBudgets } from "@/lib/budgetCopy";
+import { invalidate } from "@/lib/invalidate";
+import { monthLabel } from "@/lib/months";
 
 export default function Budgets() {
-  const { period } = usePeriod();
+  const { period, month, setMonth } = usePeriod(); const toast = useToast();
   const b = useApi<(BudgetRow & { id: string; strict?: boolean })[]>("/budgets");
   const s = useApi<{ assignments: Assignment[] }>(period ? `/periods/${period.id}/schedule` : null);
   const planned = plannedByBrand(s.data?.assignments ?? []);
-  const rows = b.data ?? [];
+  const rows = (b.data ?? []).filter((x) => (x as { month?: string }).month === `${month}-01`); // budgets du mois choisi uniquement
+  async function copy() {
+    try { const n = await copyPreviousBudgets(month); toast.push(n ? `${n} budget(s) copié(s) depuis le mois précédent.` : "Rien à copier.", n ? "ok" : "info"); b.reload(); invalidate(); }
+    catch (e: unknown) { toast.push(e instanceof Error ? e.message : "Copie impossible", "bad"); }
+  }
   const total = rows.reduce((x, y) => x + y.target_minutes, 0);
   const done = rows.reduce((x, y) => x + (planned[y.brand_code] ?? 0), 0);
   return (
     <>
-      <PageHead eyebrow="Heures de travail effectif" title={t("nav.budgets")} />
+      <PageHead eyebrow={`Heures de travail effectif · ${monthLabel(month)}`} title={t("nav.budgets")}><MonthSwitcher month={month} onChange={setMonth} /></PageHead>
       {b.error ? <ErrorState message={b.error} onRetry={b.reload} /> : b.loading ? <SkeletonCard lines={6} /> : !rows.length ? (
-        <Card><EmptyState icon="wallet" title="Aucun budget saisi">Les budgets mensuels par marque se saisissent via l&apos;API (<code>/budgets</code>).</EmptyState></Card>
+        <Card><EmptyState icon="wallet" title={`Aucun budget pour ${monthLabel(month)}`} action={<Button onClick={copy}>Copier les budgets du mois précédent</Button>}>Les budgets mensuels par marque se saisissent via l&apos;API (<code>/budgets</code>) ou se copient explicitement depuis le mois précédent : aucun budget n&apos;est jamais inventé.</EmptyState></Card>
       ) : (
         <>
           <Card lift><div className="row" style={{ gap: "var(--sp-5)" }}>
@@ -35,7 +45,7 @@ export default function Budgets() {
                   <td data-label="Avancement" style={{ minWidth: "9rem" }}><div className="row" style={{ flexWrap: "nowrap" }}><div style={{ flex: 1, minWidth: "5rem" }}><Progress value={pct} label={`${x.brand_code} : ${pct} %`} color={brandColor(x.brand_code)} /></div><span className="num">{pct} %</span></div></td>
                   <td data-label="Besoins">{x.requirements_defined ? <Badge tone="ok">Définis</Badge> : <Badge tone="warn" icon="alert">{t("to_fill")}</Badge>}</td></tr>; })}</tbody>
             </table></div>
-            <p className="help" style={{ marginTop: "var(--sp-3)" }}>Lindt et Toblerone : jours et horaires non définis, donc non planifiables. Le co-branding impute les heures aux deux budgets sans doubler les heures du collaborateur.</p>
+            <p className="help" style={{ marginTop: "var(--sp-3)" }}>{rows.some((x) => !x.requirements_defined) && <>{rows.filter((x) => !x.requirements_defined).map((x) => x.brand_code).join(" et ")} : jours et horaires non définis, donc non planifiables. </>}Le co-branding impute les heures aux deux budgets sans doubler les heures du collaborateur. Coûts, tarifs et marges : voir <a href="/finance" style={{ textDecoration: "underline" }}>Rentabilité</a>.</p>
           </Card>
         </>
       )}

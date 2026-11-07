@@ -1,4 +1,5 @@
 const BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+export const API_BASE = BASE;
 
 let csrf = "";
 export function setCsrf(v: string) { csrf = v; try { sessionStorage.setItem("csrf", v); } catch {} }

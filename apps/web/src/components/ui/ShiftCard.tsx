@@ -27,7 +27,7 @@ export function ShiftCard({ a, size = "sm", alerts = [], dragging, draggable, on
       </span>
       {showEmployee && <span style={{ fontWeight: 600 }}>{a.employee}</span>}
       <span className="shift-meta">
-        <span>{brands}</span>{!a.site.split("/").every((p) => brands.includes(p)) && <span>{a.site}</span>}
+        <span>{brands}</span>{!a.site.split("/").every((p) => brands.includes(p)) && <span>{a.site_name ?? a.site}</span>}
       </span>
       <span className="shift-meta num" aria-hidden="true">
         <span className="nowrap">{fmtHM(a.effective_minutes)} · pause {a.break_minutes >= 60 && a.break_minutes % 60 === 0 ? `${a.break_minutes / 60} h` : `${a.break_minutes} min`}</span>{size === "lg" && <span>{KIND_LABEL[kind]}</span>}

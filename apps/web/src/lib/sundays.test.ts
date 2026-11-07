@@ -16,9 +16,14 @@ describe("compteur des dimanches (novembre 2026 : 7 × 5 = 35)", () => {
     const c = computeCounter(base, [emp("mila", 2), emp("abdu", 3)]);
     expect(c.reserved).toBe(5); expect(c.remaining).toBe(30);
   });
-  it("un quota « maximum » plafonne sans réserver ; planifié et réservé ne sont pas confondus", () => {
+  it("un quota « maximum » compte aussi comme attribué ; planifié et réservé ne sont pas confondus", () => {
     const c = computeCounter({ ...base, planned: 35 }, [emp("mila", 2), emp("sabrina", 4, "max")]);
-    expect(c).toMatchObject({ reserved: 2, capacity: 6, remaining: 33, planned: 35, unplanned: 0 });
+    expect(c).toMatchObject({ reserved: 6, reservedExact: 2, reservedMax: 4, remaining: 29, planned: 35, unplanned: 0 });
+  });
+  it("modifier un quota met le restant à jour immédiatement", () => {
+    expect(computeCounter(base, [emp("mila", 2, "max")]).remaining).toBe(33);
+    expect(computeCounter(base, [emp("mila", 3, "max")]).remaining).toBe(32);
+    expect(computeCounter(base, [emp("mila", null)]).remaining).toBe(35);
   });
   it("0 dimanche ne réserve rien ; un quota au-delà des 5 dimanches est plafonné", () => {
     expect(computeCounter(base, [emp("a", 0)]).reserved).toBe(0);

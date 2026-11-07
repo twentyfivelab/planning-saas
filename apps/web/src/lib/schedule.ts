@@ -1,5 +1,5 @@
 export type Assignment = {
-  assignment_id: string; shift_id: string; slot_key: string; day: string; site: string; start: string; end: string;
+  assignment_id: string; shift_id: string; slot_key: string; day: string; site: string; site_name?: string; start: string; end: string;
   presence_minutes: number; break_minutes: number; effective_minutes: number; employee_id: string; employee: string;
   locked: boolean; source: string; allocations: Record<string, number>;
 };
