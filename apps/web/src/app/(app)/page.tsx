@@ -11,6 +11,7 @@ import { issueTitle } from "@/lib/issues";
 import { fmtHM, type Assignment } from "@/lib/schedule";
 import { SundayStrip } from "@/components/planning/SundayCounter";
 import { computeCounter, type SundaySummary } from "@/lib/sundays";
+import { Pilotage } from "@/components/planning/Pilotage";
 
 type Schedule = { assignments: Assignment[]; uncovered: unknown[] };
 type Issue = { code: string; severity: string; message: string };
@@ -20,7 +21,8 @@ export default function Dashboard() {
   const { period, loading: pl } = usePeriod();
   const sched = useApi<Schedule>(period ? `/periods/${period.id}/schedule` : null);
   const conf = useApi<{ hard_violations: string[] }>(period ? `/periods/${period.id}/conflicts` : null);
-  const budgets = useApi<BudgetRow[]>("/budgets");
+  const allBudgets = useApi<(BudgetRow & { month?: string })[]>("/budgets");
+  const budgets = { ...allBudgets, data: allBudgets.data ? allBudgets.data.filter((b) => b.month === period?.start_date) : null }; // budgets du mois affiché uniquement
   const runs = useApi<Run[]>("/runs");
   const sunday = useApi<SundaySummary>(period ? `/periods/${period.id}/sunday-summary` : null);
   const emps = useApi<{ code: string; sunday_quota: number | null; sunday_mode: "max" | "exact" }[]>("/employees");
@@ -92,6 +94,8 @@ export default function Dashboard() {
             </Callout>
           )}
 
+          {period && <Pilotage periodId={period.id} />}
+
           <div className="grid-2">
             <Card title="Heures par marque" eyebrow="Planifié / budget">
               <BarList data={[...(budgets.data ?? []).map((b) => ({ key: b.brand_code, label: b.brand_code, value: (planned[b.brand_code] ?? 0) / 60, max: b.target_minutes / 60, color: brandColor(b.brand_code), right: `${fmtHM(planned[b.brand_code] ?? 0)} / ${fmtHM(b.target_minutes)}`, note: !b.requirements_defined ? <Badge tone="warn">À renseigner</Badge> : undefined })),
@@ -109,7 +113,7 @@ export default function Dashboard() {
                 <>
                   <p className="kpi-value num">{(eq.cv * 100).toFixed(0)} %</p>
                   <p className="kpi-sub">dispersion des heures (écart-type / moyenne) · de {fmtHM(eq.min)} à {fmtHM(eq.max)} par collaborateur</p>
-                  <Callout kind="info"><span>Indicatif seulement : sans contrats ni disponibilités complètes, l&apos;équité ne peut pas être évaluée relativement aux heures contractuelles. Les poids d&apos;attribution (Sahra, Mila, Abdu…) sont des préférences souples.</span></Callout>
+                  <Callout kind="info"><span>Indicatif seulement : sans contrats ni disponibilités complètes, l&apos;équité ne peut pas être évaluée relativement aux heures contractuelles. Les poids d&apos;attribution sont des préférences souples.</span></Callout>
                 </>
               ) : <EmptyState icon="users" title="Pas assez de données">Au moins deux collaborateurs planifiés sont nécessaires.</EmptyState>}
             </Card>
@@ -125,7 +129,7 @@ export default function Dashboard() {
 
           <Card title="Hypothèses et contraintes non validées" eyebrow="À lire avant toute décision">
             <ul className="stack" style={{ margin: 0, paddingLeft: "1.1rem" }}>
-              {(hypotheses.length ? hypotheses : [{ code: "À renseigner", message: "Contrats individuels, disponibilités complètes, congés, besoins Lindt/Toblerone ; validation juridique des règles de repos et de durée." }] as Issue[]).map((i, n) => <li key={n} className="muted" style={{ color: "var(--fg)" }}>{i.message}</li>)}
+              {(hypotheses.length ? hypotheses : [{ code: "À renseigner", message: "Contrats individuels, disponibilités complètes, congés, besoins des marques sans jours ni horaires ; validation juridique des règles de repos et de durée." }] as Issue[]).map((i, n) => <li key={n} className="muted" style={{ color: "var(--fg)" }}>{i.message}</li>)}
             </ul>
           </Card>
         </>

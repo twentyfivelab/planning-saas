@@ -1,0 +1,39 @@
+"use client";
+import { useApi } from "@/components/hooks";
+import { Badge, Button, Card, EmptyState, ErrorState, PageHead, SkeletonCard } from "@/components/ui/primitives";
+import { api } from "@/lib/api";
+import { invalidate } from "@/lib/invalidate";
+import { hourRange, longDate } from "@/lib/reassign";
+import { fmtH } from "@/lib/wfm";
+
+type Mine = { linked: boolean; employee?: string; periods: { period_id: string; name: string; version: number; published_at: string; minutes: number; shifts: { day: string; site: string; start: string; end: string; break_minutes: number; effective_minutes: number; allocations: Record<string, number> }[] }[] };
+type Notes = { unread: number; items: { id: string; title: string; body: string | null; read: boolean; at: string }[] };
+
+/** Espace du collaborateur : uniquement les plannings publiés ; un planning en préparation n'est jamais visible ici. */
+export default function MyPlanning() {
+  const q = useApi<Mine>("/me/planning");
+  const n = useApi<Notes>("/notifications");
+  async function read(id?: string) { await api(id ? `/notifications/${id}/read` : "/notifications/read-all", { method: "POST" }); n.reload(); invalidate(); }
+  return (
+    <>
+      <PageHead eyebrow={q.data?.employee} title="Mon planning" />
+      <Card title="Notifications" actions={n.data?.unread ? <Button size="sm" onClick={() => read()}>Tout marquer comme lu</Button> : undefined}>
+        {n.error ? <ErrorState message={n.error} onRetry={n.reload} /> : !n.data?.items.length ? <EmptyState icon="bell" title="Aucune notification">Vous serez prévenu·e lorsqu&apos;un planning vous concernant sera publié.</EmptyState> : (
+          <ul className="stack" style={{ listStyle: "none", padding: 0, margin: 0, gap: "var(--sp-2)" }}>
+            {n.data.items.map((x) => <li key={x.id} className="surface" style={{ padding: "var(--sp-3)" }}><div className="spread"><div><strong>{x.title}</strong>{!x.read && <> <Badge tone="accent">Nouveau</Badge></>}<p className="muted" style={{ margin: 0 }}>{x.body}</p></div>{!x.read && <Button size="sm" variant="ghost" onClick={() => read(x.id)}>Marquer comme lu</Button>}</div></li>)}
+          </ul>)}
+      </Card>
+      {q.error ? <ErrorState message={q.error} onRetry={q.reload} /> : q.loading && !q.data ? <SkeletonCard lines={4} /> : !q.data?.linked ? (
+        <Card><EmptyState icon="users" title="Compte non relié à une fiche">Demandez à votre responsable de relier votre compte à votre fiche collaborateur.</EmptyState></Card>
+      ) : !q.data.periods.length ? <Card><EmptyState icon="calendar" title="Aucun planning publié">Votre planning apparaîtra ici dès qu&apos;il sera publié.</EmptyState></Card> : q.data.periods.map((p) => (
+        <Card key={p.period_id} title={p.name} eyebrow={`Version publiée n° ${p.version}`} actions={<Badge tone="accent">{fmtH(p.minutes)}</Badge>}>
+          {!p.shifts.length ? <p className="muted">Aucun shift ce mois-ci.</p> : (
+            <div className="table-wrap"><table className="table table-cards">
+              <caption className="sr-only">Mes shifts de {p.name}</caption>
+              <thead><tr><th>Date</th><th>Site</th><th>Marque</th><th>Horaire</th><th>Pause</th><th>Travail effectif</th></tr></thead>
+              <tbody>{p.shifts.map((s) => <tr key={s.day + s.start}><td className="cell-main">{longDate(s.day)}</td><td data-label="Site">{s.site}</td><td data-label="Marque">{Object.keys(s.allocations ?? {}).join(" + ")}</td><td className="num nowrap" data-label="Horaire">{hourRange(s.start, s.end)}</td><td className="num" data-label="Pause">{s.break_minutes} min</td><td className="num" data-label="Travail effectif">{fmtH(s.effective_minutes)}</td></tr>)}</tbody>
+            </table></div>)}
+        </Card>))}
+    </>
+  );
+}

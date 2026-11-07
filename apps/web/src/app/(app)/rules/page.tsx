@@ -6,6 +6,7 @@ import { Badge, Button, Callout, Card, EmptyState, ErrorState, Field, Input, Pag
 import { useToast } from "@/components/ui/Toast";
 import { api } from "@/lib/api";
 import { t } from "@/lib/i18n";
+import { LegalReferential } from "@/components/planning/LegalReferential";
 
 type Rule = { id: string; kind: string; code: string; scope: string; params: unknown; jurisdiction: string | null; version: number; exception_reason: string | null; legal_review_status: string; enabled_by: string | null };
 const PARAM_LABEL: Record<string, string> = { value: "Valeur", tags: "Shifts interdits", days: "Jours" };
@@ -29,7 +30,8 @@ export default function Rules() {
   return (
     <>
       <PageHead eyebrow="Légal · dérogations · interne · préférences" title={t("nav.rules")} />
-      <Callout kind="warn" title="Non commercialisable en l'état">Seuls le repos quotidien (11 h) et les 6 jours consécutifs sont exécutés, comme valeurs de référence non validées. Les autres règles légales suisses ne sont pas exécutées. Une préférence ne contourne jamais une contrainte dure.</Callout>
+      <LegalReferential />
+      <Callout kind="warn" title="Non commercialisable en l'état">Les règles exécutées sont des valeurs de référence à faire valider ; celles qui ne sont pas encore exécutées sont listées dans le référentiel ci-dessus. Une préférence ne contourne jamais une contrainte dure.</Callout>
       {rules.error ? <ErrorState message={rules.error} onRetry={rules.reload} /> : rules.loading && !rules.data ? <SkeletonCard lines={5} /> : (
         <div className="grid-2">
           {Object.keys(KIND).map((g) => {
