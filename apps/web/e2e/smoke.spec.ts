@@ -19,7 +19,7 @@ test("connexion, planning, verrouillage et déconnexion", async ({ page }) => {
   await page.getByRole("button", { name: "Se connecter" }).click();
   await expect(page.getByRole("heading", { name: /Tableau de bord/ })).toBeVisible();
   await page.getByRole("navigation", { name: "Navigation principale" }).getByRole("link", { name: "Planning", exact: true }).click();
-  await expect(page.getByRole("tab", { name: "Semaine" })).toBeVisible();
+  await expect(page.getByRole("tab", { name: "Planning général" })).toBeVisible();
   await page.getByRole("tab", { name: "Jour" }).click();
   await expect(page.getByLabel("Vue journalière")).toBeVisible();
   await page.getByRole("navigation", { name: "Navigation principale" }).getByRole("link", { name: "Budgets", exact: true }).click();

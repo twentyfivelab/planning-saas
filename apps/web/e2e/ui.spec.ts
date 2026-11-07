@@ -21,21 +21,21 @@ test("tableau de bord : indicateurs, budgets, hypothèses et avertissement léga
   await expect(page).toHaveURL(/\/generate/);
 });
 
-test("planning : semaine complète, légende, navigation, vues, filtres", async ({ page }) => {
+test("planning : planning général défilant, légende, navigation, vues, filtres", async ({ page }) => {
   await login(page);
   await page.goto("/planning");
-  await expect(page.getByRole("tab", { name: "Semaine" })).toHaveAttribute("aria-selected", "true");
-  await expect(page.getByText("Lun 2 nov. – Dim 8 nov.")).toBeVisible(); // pas la semaine d'un seul jour
+  await expect(page.getByRole("tab", { name: "Planning général" })).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByText(/^Dim 1 nov\. – /)).toBeVisible(); // le mois entier est atteignable, pas seulement sept jours
   await expect(page.getByRole("group", { name: "Légende" })).toContainText("Répartition co-branding");
-  await page.getByRole("button", { name: "Semaine suivante" }).click();
-  await expect(page.getByText("Lun 9 nov. – Dim 15 nov.")).toBeVisible();
+  await page.getByRole("button", { name: "Jours suivants" }).click();
+  await expect(page.getByText(/^Dim 1 nov\. – /)).toHaveCount(0);
   for (const v of ["Mois", "Jour", "Collaborateur", "Marque / site"]) {
     await page.getByRole("tab", { name: v, exact: true }).click();
     await expect(page.getByRole("tab", { name: v, exact: true })).toHaveAttribute("aria-selected", "true");
   }
   await page.getByRole("tab", { name: "Marque / site" }).click();
   await expect(page.getByText("À renseigner").first()).toBeVisible(); // Lindt / Toblerone
-  await page.getByRole("tab", { name: "Semaine" }).click();
+  await page.getByRole("tab", { name: "Planning général" }).click();
   await page.getByLabel("Site").selectOption("Cartier");
   await expect(page.getByText(/affectations? \(filtré\)/)).toBeVisible();
   await page.getByRole("button", { name: "Réinitialiser" }).click();
@@ -94,6 +94,7 @@ test("mobile : menu, bandeau légal replié, pas de débordement horizontal", as
 test("mouvement réduit : aucune animation longue", async ({ page }) => {
   await page.emulateMedia({ reducedMotion: "reduce" });
   await login(page);
+  await expect(page.locator(".rise").first()).toBeVisible(); // attendre la fin du chargement (squelettes)
   const d = await page.locator(".rise").first().evaluate((el) => getComputedStyle(el).animationDuration);
   expect(parseFloat(d)).toBeLessThan(0.01);
 });

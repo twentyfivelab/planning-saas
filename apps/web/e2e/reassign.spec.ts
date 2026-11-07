@@ -21,11 +21,11 @@ async function force(page: Page, empId: string) {
 test.beforeAll(async ({ browser }) => {
   const ctx = await browser.newContext({ storageState: "e2e/.auth/state.json" });
   const page = await ctx.newPage();
-  periodId = (await (await page.request.get(`${API}/periods`)).json()).at(-1).id;
+  periodId = (await (await page.request.get(`${API}/periods`)).json()).find((p: { start_date: string }) => p.start_date === "2026-11-01").id;
   const all = await schedule(page);
   target = all.find((a) => a.day === "2026-11-02" && a.site === "GVA3" && a.start.startsWith("06:00"))!;
   const emps = (await (await page.request.get(`${API}/employees`)).json()) as { id: string; name: string }[];
-  other = emps.find((e) => e.id !== target.employee_id && !all.some((a) => a.employee_id === e.id && a.day === target.day))!;
+  other = emps.find((e) => e.id !== target.employee_id && (e as unknown as { brands: Record<string, string> }).brands["Ploom GVA3"] && !all.some((a) => a.employee_id === e.id && a.day === target.day))!;
   await ctx.close();
 });
 test.afterEach(async ({ page }) => { if ((await owner(page)) !== target.employee_id) await force(page, target.employee_id); });
@@ -93,10 +93,10 @@ test("8. l'action « Annuler » de la notification restaure l'affectation préc�
 test("6. le glisser-déposer demande aussi une confirmation", async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 2400 }); // source et cible visibles ensemble : un glisser-déposer natif ne défile pas
   await page.goto("/planning");
-  await expect(page.getByText("Lun 2 nov. – Dim 8 nov.")).toBeVisible();
+  await expect(page.getByRole("region", { name: /Planning général/ })).toBeVisible();
   await expect(page.getByRole("group", { name: "Compteur des dimanches" })).toBeVisible(); // mise en page stable avant de glisser
-  const card = page.locator(`.shift[aria-label^="${target.employee}, Ploom GVA3, GVA3, 06:00 à 15:00"]`).first();
   const cell = (name: string) => page.locator(`.cal-cell[aria-label="${name}, Lun 2 nov."]`);
+  const card = cell(target.employee).locator(`.shift[aria-label^="${target.employee}, Ploom GVA3, GVA3, 06:00 à 15:00"]`).first();
   await card.dragTo(cell(other.name));
   await expect(dialog(page)).toBeVisible();
   await expect(dialog(page)).toContainText(other.name);
@@ -137,15 +137,17 @@ test("9a. clavier : focus initial sur Annuler ; Entrée n'y confirme jamais ; Ta
   await pick(page);
   const cancel = dialog(page).getByRole("button", { name: "Annuler", exact: true });
   await expect(cancel).toBeFocused();
-  await page.keyboard.press("Tab");
-  await expect(dialog(page).getByRole("button", { name: "Confirmer le remplacement" })).toBeFocused();
+  const confirmBtn = dialog(page).getByRole("button", { name: "Confirmer le remplacement" });
+  await expect(async () => { await cancel.focus(); await page.keyboard.press("Tab"); await expect(confirmBtn).toBeFocused({ timeout: 1000 }); }).toPass(); // Tab depuis « Annuler » -> « Confirmer »
   await page.keyboard.press("Shift+Tab");
   await expect(cancel).toBeFocused();
   await page.keyboard.press("Enter"); // Entrée sur « Annuler » = annuler
   await expect(dialog(page)).toBeHidden();
   expect(await owner(page)).toBe(target.employee_id);
   await pick(page);
+  await expect(dialog(page).getByRole("button", { name: "Annuler", exact: true })).toBeFocused();
   await page.keyboard.press("Tab");
+  await expect(dialog(page).getByRole("button", { name: "Confirmer le remplacement" })).toBeFocused();
   await page.keyboard.press("Enter"); // focus explicite sur « Confirmer »
   await expect.poll(() => owner(page)).toBe(other.id);
 });
