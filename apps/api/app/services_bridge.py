@@ -8,8 +8,10 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from planning_solver.model import (Assignment as SAssign, BrandBudget, Contract, DEFAULT_WEIGHTS,
-                                   Employee as SEmployee, OutsideShift, Slot, SolverConfig, SolverInput)
+                                   Employee as SEmployee, OutsideShift, Relation, Slot, SolverConfig, SolverInput)
+from planning_solver.strategies import BY_KEY as STRATEGIES, apply_strategy
 from planning_solver.timecalc import shift_hours, split_allocation
+from planning_solver.weights import engine_weights
 
 from . import models as m
 
@@ -22,37 +24,60 @@ def _active(c: m.ConstraintDefinition, start: date, end: date) -> bool:
     return c.enabled and (c.valid_from is None or c.valid_from <= end) and (c.valid_to is None or c.valid_to >= start)
 
 
-def build_input(db: Session, period: m.PlanningPeriod, cfg_overrides: Optional[dict] = None) -> SolverInput:
+PLANNED_MISSION_STATUSES = ("confirmed", "completed")
+
+
+def _regime_value(rules: Dict[Optional[str], int], regime: Optional[str]) -> Optional[int]:
+    """Valeur du régime du contrat ; à défaut, règle générale du tenant ; à défaut, aucune."""
+    return rules.get(regime, rules.get(None)) if regime else rules.get(None)
+
+
+def build_input(db: Session, period: m.PlanningPeriod, cfg_overrides: Optional[dict] = None, toggles: bool = True) -> SolverInput:
+    """`toggles=False` : ignore les marques/sites désactivés pour le mois (sert à afficher les besoins « si activé »)."""
     cfg_overrides = cfg_overrides or {}
     start, end = period.start_date, period.end_date
     brands = {b.code: b for b in db.scalars(select(m.Brand))}
     templates = {t.id: t for t in db.scalars(select(m.ShiftTemplate))}
     slots: List[Slot] = []
     d = start
-    reqs = list(db.scalars(select(m.StaffingRequirement)))
+    pid = getattr(period, "id", None) if toggles else None
+    off_brands = {x.brand_code for x in db.scalars(select(m.PeriodBrand).where(m.PeriodBrand.period_id == pid, m.PeriodBrand.active.is_(False)))} if pid else set()
+    off_sites = {x.site_code for x in db.scalars(select(m.PeriodSite).where(m.PeriodSite.period_id == pid, m.PeriodSite.active.is_(False)))} if pid else set()
+    off_brands |= {b.code for b in brands.values() if b.archived_from and b.archived_from <= start}  # archivé à partir d'un mois : les mois antérieurs restent intacts
+    off_sites |= {x.code for x in db.scalars(select(m.Site)) if x.archived_from and x.archived_from <= start}
+    missions = {x.id: x for x in db.scalars(select(m.Mission))}
+    reqs = [r for r in db.scalars(select(m.StaffingRequirement))
+            if (r.valid_from is None or r.valid_from <= end) and (r.valid_to is None or r.valid_to >= start)  # version de besoin en vigueur
+            and r.site_code not in off_sites and not any(b in off_brands for b in r.allocations)
+            and (r.mission_id is None or (r.mission_id in missions and missions[r.mission_id].status in PLANNED_MISSION_STATUSES))]  # mission en brouillon ou annulée : rien à planifier
     while d <= end:
         for r in reqs:
+            if (r.valid_from and d < r.valid_from) or (r.valid_to and d > r.valid_to):
+                continue
             days_ok = (d.isoformat() in (r.dates or [])) if r.dates else (d.weekday() in (r.weekdays or []))
             if not days_ok:
                 continue
-            # jours de fonctionnement des marques : contrainte dure
-            if any(brands.get(b) and brands[b].active_weekdays and d.weekday() not in brands[b].active_weekdays
-                   for b in r.allocations):
+            # jours de fonctionnement des marques : contrainte dure (une mission client fixe ses propres jours)
+            if r.mission_id is None and any(brands.get(b) and brands[b].active_weekdays and d.weekday() not in brands[b].active_weekdays
+                                            for b in r.allocations):
                 continue
             t = templates[r.template_id]
             h = shift_hours(d, t.start_time, t.end_time, t.break_minutes)
-            slots.append(Slot(
-                f"{r.code}|{d.isoformat()}", d, r.site_code, t.start_time, t.end_time, t.break_minutes,
-                split_allocation(h.effective_minutes, {k: float(v) for k, v in r.allocations.items()}),
-                tag=t.tag, template_id=t.code, required_skills=tuple(r.required_skills or ()),
-                mandatory=r.mandatory, day_group=f"{r.flex_group}|{d.isoformat()}" if r.flex_group else None,
-                stagger_group=r.stagger_group))
+            for k in range(max(1, r.headcount or 1)):  # une personne par shift : « N personnes » = N shifts identiques
+                slots.append(Slot(
+                    f"{r.code}{'' if k == 0 else f'#{k + 1}'}|{d.isoformat()}", d, r.site_code, t.start_time, t.end_time, t.break_minutes,
+                    split_allocation(h.effective_minutes, {b: float(v) for b, v in r.allocations.items()}),
+                    tag=t.tag, template_id=t.code, required_skills=tuple(r.required_skills or ()),
+                    mandatory=r.mandatory, day_group=f"{r.flex_group}|{d.isoformat()}" if r.flex_group else None,
+                    stagger_group=r.stagger_group, priority=r.priority or 3, mission=missions[r.mission_id].code if r.mission_id else None))
         d += timedelta(days=1)
 
+    slots += manual_slots(db, period)
     skills = {s.id: s.code for s in db.scalars(select(m.Skill))}
     emp_skills: Dict[uuid.UUID, set] = defaultdict(set)
     for es in db.scalars(select(m.EmployeeSkill)):
-        emp_skills[es.employee_id].add(skills.get(es.skill_id))
+        if es.valid_until is None or es.valid_until >= end:  # certification échue pendant le mois : plus admise pour ce mois
+            emp_skills[es.employee_id].add(skills.get(es.skill_id))
     contracts: Dict[uuid.UUID, m.EmploymentContract] = {}
     for c in db.scalars(select(m.EmploymentContract)):
         if (c.start_date is None or c.start_date <= end) and (c.end_date is None or c.end_date >= start):
@@ -75,23 +100,48 @@ def build_input(db: Session, period: m.PlanningPeriod, cfg_overrides: Optional[d
     prefs: Dict[uuid.UUID, list] = defaultdict(list)
     for p in db.scalars(select(m.EmployeePreference)):
         prefs[p.employee_id].append(p)
-    rel = {r.employee_id: r.other_employee_id for r in db.scalars(select(m.RelationshipPreference))}
+    relationships = list(db.scalars(select(m.RelationshipPreference)))
+    rel = {r.employee_id: r.other_employee_id for r in relationships if r.kind == "opposite_shifts"}
+    for a_, b_ in list(rel.items()):  # une relation saisie dans un seul sens vaut pour les deux collaborateurs
+        rel.setdefault(b_, a_)
     codes = {e.id: e.code for e in db.scalars(select(m.Employee))}
 
+    month_params = {p.employee_id: p for p in db.scalars(select(m.EmployeeMonthParams).where(
+        m.EmployeeMonthParams.month == start.replace(day=1)))}
+    roster_out = {x.employee_id for x in db.scalars(select(m.PeriodEmployee).where(m.PeriodEmployee.period_id == pid, m.PeriodEmployee.included.is_(False)))} if pid else set()
+    all_contracts: Dict[uuid.UUID, list] = defaultdict(list)
+    for c in db.scalars(select(m.EmploymentContract)):
+        all_contracts[c.employee_id].append(c)
+    # référentiel juridique : plafond hebdomadaire par régime (la version la plus récente en vigueur) ; aucun plafond n'est supposé
+    weekly_rules: Dict[Optional[str], int] = {}
+    for r in sorted((r for r in rules if r.code == "weekly_max_minutes" and r.scope == "tenant"), key=lambda r: r.version):
+        weekly_rules[r.jurisdiction or None] = int(r.params["value"])
     emps: List[SEmployee] = []
     for e in db.scalars(select(m.Employee).where(m.Employee.active.is_(True)).order_by(m.Employee.code)):
+        mp = month_params.get(e.id)  # le quota de dimanches est propre au mois ; à défaut, valeur historique de la fiche
+        if mp is not None:
+            quota, qmode = mp.sunday_quota, mp.sunday_mode
+        elif e.sunday_quota_migrated_at is None:  # quota historique, pas encore reporté sur les mois
+            quota, qmode = e.sunday_quota, e.sunday_mode or "max"
+        else:
+            quota, qmode = None, "max"
+        md_count, md_period = (mp.max_days_count, mp.max_days_period) if mp is not None and mp.max_days_set else (e.max_days_count, e.max_days_period)
+        ended = bool(all_contracts.get(e.id)) and all(c.end_date is not None and c.end_date < start for c in all_contracts[e.id])
         se = SEmployee(e.code, e.name, dict(e.brands or {}), skills={s for s in emp_skills[e.id] if s},
-                       weight=e.allocation_weight,
-                       max_days_count=e.max_days_count, max_days_period=e.max_days_period,
+                       weight=e.allocation_weight, excluded=e.id in roster_out or ended,
+                       max_days_count=md_count, max_days_period=md_period,
                        time_pref=e.time_pref, time_pref_strict=e.time_pref_strict,
-                       sunday_quota=e.sunday_quota, sunday_mode=e.sunday_mode or "max",
+                       sunday_quota=quota, sunday_mode=qmode,
                        available_weekdays=set(avail[e.id]) if avail.get(e.id) else None,
                        unavailable_weekdays=set(unav_wd[e.id]), unavailable_dates=set(unav_dt[e.id]),
-                       opposite_of=codes.get(rel.get(e.id)) if e.id in rel else None)
+                       opposite_of=codes.get(rel.get(e.id)) if e.id in rel else None,
+                       relations=[Relation(r.kind, codes[r.other_employee_id], r.strict) for r in relationships
+                                  if r.employee_id == e.id and r.kind != "opposite_shifts" and r.other_employee_id in codes])
         c = contracts.get(e.id)
         if c:
             se.contract = Contract(c.activity_rate, c.monthly_min_minutes, c.monthly_target_minutes,
-                                   c.monthly_max_minutes, c.weekly_max_minutes, c.overtime_allowed)
+                                   c.monthly_max_minutes, c.weekly_max_minutes, c.overtime_allowed, c.hourly_cost_cents)
+        se.legal_weekly_max_minutes = _regime_value(weekly_rules, c.legal_regime if c else None)
         for r in rules:
             if r.scope == "employee" and r.employee_id == e.id:
                 if r.code == "forbidden_tag":
@@ -111,6 +161,13 @@ def build_input(db: Session, period: m.PlanningPeriod, cfg_overrides: Optional[d
             elif p.kind == "weekly_rest_days":
                 se.weekly_rest_days_pref = int(P["days"])
                 se.weekly_rest_days_hard = p.is_hard
+            elif p.kind == "rest_weekdays":
+                (se.rest_weekdays_hard if p.is_hard else se.rest_weekdays_soft).update(int(w) for w in P["weekdays"])
+            elif p.kind == "sites":
+                if p.is_hard:
+                    se.allowed_sites = set(P["sites"])
+                else:
+                    se.preferred_sites |= set(P["sites"])
         emps.append(se)
 
     cfg = SolverConfig(weights=dict(DEFAULT_WEIGHTS))
@@ -123,11 +180,18 @@ def build_input(db: Session, period: m.PlanningPeriod, cfg_overrides: Optional[d
             cfg.max_consecutive_days = int(r.params["value"])
         elif r.code == "weights":
             cfg.weights.update({k: int(v) for k, v in r.params.items() if k in DEFAULT_WEIGHTS})
+        elif r.code == "weights_ui":  # pondérations personnalisées (Paramètres → Pondération de l'algorithme)
+            cfg.weights.update(engine_weights(r.params.get("criteria"), r.params.get("advanced")))
+            cfg.hierarchical = bool(r.params.get("hierarchical", True))
+        elif r.code == "break_rules":
+            cfg.break_rules = [(int(x["over_minutes"]), int(x["break_minutes"])) for x in r.params.get("rules", [])]
     for k, v in cfg_overrides.items():
         if k == "weights":
             cfg.weights.update({a: int(b) for a, b in v.items() if a in DEFAULT_WEIGHTS})
         elif k in ("time_limit_s", "workers", "strict_coverage", "seed"):
             setattr(cfg, k, v)
+    if cfg_overrides.get("strategy") in STRATEGIES:  # simulation : mêmes règles, importance relative des critères modifiée
+        cfg.weights = apply_strategy(cfg.weights, cfg_overrides["strategy"])
 
     budgets = [BrandBudget(b.brand_code, b.target_minutes, b.requirements_defined, strict=b.strict)
                for b in db.scalars(select(m.MonthlyBudget).where(
@@ -150,7 +214,11 @@ def build_input(db: Session, period: m.PlanningPeriod, cfg_overrides: Optional[d
         for k in keys:
             if (t.start_time, t.end_time) not in allowed[k]:
                 allowed[k].append((t.start_time, t.end_time))
-    site_starts = {k: sorted({a for a, _ in v}) for k, v in allowed.items()}
+    site_starts = {k: sorted({a for a, _ in v}) for k, v in allowed.items() if "@" not in k}
+    for k, v in allowed.items():  # horaires « marque@site » : comptent aussi parmi les horaires de la boutique (matin / soir)
+        if "@" in k:
+            site = k.split("@", 1)[1]
+            site_starts[site] = sorted(set(site_starts.get(site, [])) | {a for a, _ in v})
     outside = _outside_shifts(db, period)
     inp = SolverInput(start, end, slots, emps, budgets, cfg, leaves_provided=bool(leaves), hypotheses=sorted(hyp),
                       outside_shifts=outside, history_provided=bool(outside), site_starts=site_starts,
@@ -165,7 +233,7 @@ def _outside_shifts(db: Session, period: m.PlanningPeriod) -> List[OutsideShift]
     rows = db.execute(
         select(m.Shift, m.Assignment).join(m.Assignment, m.Assignment.shift_id == m.Shift.id)
         .where(m.Shift.period_id != period.id, m.Shift.day >= lo, m.Shift.day <= hi)).all()
-    return [OutsideShift(codes[a.employee_id], sh.day, sh.start_time, sh.end_time) for sh, a in rows
+    return [OutsideShift(codes[a.employee_id], sh.day, sh.start_time, sh.end_time, sh.effective_minutes) for sh, a in rows
             if a.employee_id in codes and not (period.start_date <= sh.day <= period.end_date)]
 
 
@@ -194,25 +262,37 @@ def assignments_for_validation(db: Session, inp: SolverInput, period: m.Planning
             inp.slots[i] = dataclasses.replace(s0, start=sh0.start_time, end=sh0.end_time,
                                                break_minutes=sh0.break_minutes)
     slots = {s.id: s for s in inp.slots}
-    for a in db.scalars(select(m.Assignment).where(m.Assignment.period_id == period.id)):
+    rows = list(db.scalars(select(m.Assignment).where(m.Assignment.period_id == period.id)))
+    allocs: Dict[uuid.UUID, Dict[str, int]] = defaultdict(dict)
+    if rows:
+        for r in db.scalars(select(m.BrandAllocation).where(m.BrandAllocation.assignment_id.in_([a.id for a in rows]))):
+            allocs[r.assignment_id][r.brand_code] = r.minutes
+    for a in rows:
         sh = shifts[a.shift_id]
         s = slots.get(sh.slot_key)
         if s is None:
             continue
         h = s.hours
         out.append(SAssign(s.id, codes[a.employee_id], s.day, s.start, s.end, h.presence_minutes, h.break_minutes,
-                           h.effective_minutes, dict(s.allocations), a.locked))
+                           h.effective_minutes, allocs.get(a.id) or dict(s.allocations), a.locked))
     return out
 
 
 def persist_result(db: Session, tenant_id, period: m.PlanningPeriod, inp: SolverInput, res, run_id) -> None:
-    """Remplace les affectations non verrouillées par le résultat ; les verrouillées sont conservées."""
+    """Applique le résultat par différence : une affectation inchangée reste la même ligne (identifiant et imputations conservés),
+    les verrouillées ne bougent jamais, seules les autres sont remplacées."""
     codes = {e.code: e.id for e in db.scalars(select(m.Employee))}
     shifts = {s.slot_key: s for s in db.scalars(select(m.Shift).where(m.Shift.period_id == period.id))}
     existing = list(db.scalars(select(m.Assignment).where(m.Assignment.period_id == period.id)))
-    keep = {a.shift_id for a in existing if a.locked}
+    wanted = {a.slot_id: codes[a.employee_id] for a in res.assignments}
+    by_id = {s.id: k for k, s in shifts.items()}
+    keep = set()
     for a in existing:
-        if not a.locked:
+        if a.locked or wanted.get(by_id.get(a.shift_id)) == a.employee_id:
+            keep.add(a.shift_id)
+            if not a.locked:
+                a.run_id = run_id
+        else:
             db.delete(a)
     db.flush()
     slots = {s.id: s for s in inp.slots}
@@ -245,3 +325,43 @@ def persist_result(db: Session, tenant_id, period: m.PlanningPeriod, inp: Solver
         s = slots.get(key)
         if sh.id not in used and (s is None or not s.mandatory):
             db.delete(sh)
+
+
+def brand_schedules(db: Session) -> Dict[str, list]:
+    """Horaires autorisés PAR MARQUE : modèles dont la portée est la boutique de la marque, la marque ou son groupe."""
+    brand_sites: Dict[str, list] = defaultdict(list)
+    for r in db.scalars(select(m.StaffingRequirement)):
+        for b in r.allocations:
+            if r.site_code not in brand_sites[b]:
+                brand_sites[b].append(r.site_code)
+    templates = list(db.scalars(select(m.ShiftTemplate).order_by(m.ShiftTemplate.start_time)))
+    out: Dict[str, list] = {}
+    for b in db.scalars(select(m.Brand)):
+        sites = brand_sites.get(b.code, [])
+        keys = set(sites) | {b.code} | ({b.group_code} if b.group_code else set()) | {f"{b.code}@{x}" for x in sites}
+        seen, lst = set(), []
+        for t in templates:
+            if t.scope_code in keys and (t.start_time, t.end_time) not in seen:
+                seen.add((t.start_time, t.end_time))
+                site = t.scope_code if t.scope_type == "site" else t.scope_code.split("@", 1)[1] if t.scope_type == "pair" else (sites[0] if sites else b.code)
+                lst.append({"template_id": str(t.id), "template": t.code, "start": t.start_time.isoformat(), "end": t.end_time.isoformat(),
+                            "break_minutes": t.break_minutes, "site": site})
+        out[b.code] = lst
+    return out
+
+
+def manual_slots(db: Session, period: m.PlanningPeriod) -> List[Slot]:
+    """Shifts ajoutés à la main : repris comme créneaux (verrouillés) pour que le moteur et le vérificateur les prennent en compte."""
+    out = []
+    shifts = list(db.scalars(select(m.Shift).where(m.Shift.period_id == period.id, m.Shift.slot_key.like("MANUAL|%"))))
+    if not shifts:
+        return out
+    alloc: Dict[uuid.UUID, Dict[str, int]] = defaultdict(dict)
+    for a, r in db.execute(select(m.Assignment, m.BrandAllocation).join(m.BrandAllocation, m.BrandAllocation.assignment_id == m.Assignment.id)
+                           .where(m.Assignment.period_id == period.id)).all():
+        alloc[a.shift_id][r.brand_code] = r.minutes
+    for sh in shifts:
+        if alloc.get(sh.id):
+            out.append(Slot(sh.slot_key, sh.day, sh.site_code, sh.start_time, sh.end_time, sh.break_minutes, dict(alloc[sh.id]),
+                            tag="day", template_id="manual", mandatory=False))
+    return out

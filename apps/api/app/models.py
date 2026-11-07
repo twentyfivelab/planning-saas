@@ -3,7 +3,7 @@ import uuid
 from datetime import date, datetime, time
 from typing import Any, Optional
 
-from sqlalchemy import (Boolean, Date, DateTime, Float, ForeignKey, Integer, String, Text, Time, UniqueConstraint,
+from sqlalchemy import (Boolean, CheckConstraint, Date, DateTime, Float, ForeignKey, Integer, String, Text, Time, UniqueConstraint,
                         func)
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -63,6 +63,9 @@ class Tenant(Base):
     timezone: Mapped[str] = mapped_column(String(64), default="Europe/Zurich")
     locale: Mapped[str] = mapped_column(String(8), default="fr")
     retention_months: Mapped[int] = mapped_column(Integer, default=24)
+    # conservation des versions AUTOMATIQUES d'un planning (jamais les versions manuelles, validées ou publiées) ; NULL = sans limite
+    version_keep_per_month: Mapped[Optional[int]] = mapped_column(Integer, default=20, server_default="20")
+    version_max_age_days: Mapped[Optional[int]] = mapped_column(Integer)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -83,6 +86,32 @@ class User(TenantOwned, Base):
     employee_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True))
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     failed_logins: Mapped[int] = mapped_column(Integer, default=0)
+    scope: Mapped[Any] = mapped_column(JSONB, default=dict, server_default="{}")  # périmètre d'un responsable de marque : {"brands": [...]}
+
+
+class Client(TenantOwned, Base):
+    """Entreprise cliente de la société de placement : ses marques, missions, contrats commerciaux et responsables."""
+    __tablename__ = "clients"
+    code: Mapped[str] = mapped_column(String(32))
+    name: Mapped[str] = mapped_column(String(200))
+    legal_name: Mapped[Optional[str]] = mapped_column(String(200))
+    contacts: Mapped[Any] = mapped_column(JSONB, default=list, server_default="[]")  # responsables : [{name, role, email, phone}]
+    billing_rate_cents: Mapped[Optional[int]] = mapped_column(Integer)  # tarif horaire de facturation saisi ; NULL = non renseigné (jamais supposé)
+    notes: Mapped[Optional[str]] = mapped_column(Text)
+    archived_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    __table_args__ = (UniqueConstraint("tenant_id", "code"),)
+
+
+class ClientContract(TenantOwned, Base):
+    """Contrat commercial avec un client : période, heures commandées, tarif."""
+    __tablename__ = "client_contracts"
+    client_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("clients.id", ondelete="CASCADE"))
+    reference: Mapped[str] = mapped_column(String(100))
+    start_date: Mapped[Optional[date]] = mapped_column(Date)
+    end_date: Mapped[Optional[date]] = mapped_column(Date)
+    ordered_minutes: Mapped[Optional[int]] = mapped_column(Integer)
+    billing_rate_cents: Mapped[Optional[int]] = mapped_column(Integer)
+    notes: Mapped[Optional[str]] = mapped_column(Text)
 
 
 class Site(TenantOwned, Base):
@@ -90,6 +119,8 @@ class Site(TenantOwned, Base):
     code: Mapped[str] = mapped_column(String(32))
     name: Mapped[str] = mapped_column(String(200))
     open_weekdays: Mapped[Any] = mapped_column(JSONB, default=list)
+    # le code est l'identifiant STABLE (référencé par les shifts et les besoins) ; seul le nom est modifiable.
+    archived_from: Mapped[Optional[date]] = mapped_column(Date)  # 1er mois sans ce site ; les mois antérieurs restent intacts
     __table_args__ = (UniqueConstraint("tenant_id", "code"),)
 
 
@@ -99,6 +130,9 @@ class Brand(TenantOwned, Base):
     name: Mapped[str] = mapped_column(String(200))
     active_weekdays: Mapped[Any] = mapped_column(JSONB, default=list)  # jours de fonctionnement
     group_code: Mapped[Optional[str]] = mapped_column(String(64))  # ex. COSMETIQUE
+    archived_from: Mapped[Optional[date]] = mapped_column(Date)  # code stable ; archivage à partir d'un mois, historique conservé
+    client_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("clients.id", ondelete="SET NULL"))
+    billing_rate_cents: Mapped[Optional[int]] = mapped_column(Integer)  # tarif horaire propre à la marque (prime sur celui du client)
     __table_args__ = (UniqueConstraint("tenant_id", "code"),)
 
 
@@ -106,6 +140,7 @@ class Skill(TenantOwned, Base):
     __tablename__ = "skills"
     code: Mapped[str] = mapped_column(String(64))
     name: Mapped[str] = mapped_column(String(200))
+    category: Mapped[str] = mapped_column(String(16), default="competence", server_default="competence")  # competence | formation | langue | certification | qualification
     __table_args__ = (UniqueConstraint("tenant_id", "code"),)
 
 
@@ -123,6 +158,8 @@ class Employee(TenantOwned, Base):
     time_pref_strict: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     sunday_quota: Mapped[Optional[int]] = mapped_column(Integer)  # NULL = pas de préférence
     sunday_mode: Mapped[str] = mapped_column(String(8), default="max", server_default="max")  # max | exact
+    # quota historique (valeur unique d'avant les paramètres mensuels) : conservé tel quel ; une fois reporté sur les mois, il ne sert plus de défaut
+    sunday_quota_migrated_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     __table_args__ = (UniqueConstraint("tenant_id", "code"),)
 
 
@@ -130,6 +167,8 @@ class EmployeeSkill(TenantOwned, Base):
     __tablename__ = "employee_skills"
     employee_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("employees.id", ondelete="CASCADE"))
     skill_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("skills.id", ondelete="CASCADE"))
+    valid_until: Mapped[Optional[date]] = mapped_column(Date)  # certification à échéance : plus prise en compte après cette date
+    __table_args__ = (UniqueConstraint("employee_id", "skill_id"),)
 
 
 class EmploymentContract(TenantOwned, Base):
@@ -146,6 +185,9 @@ class EmploymentContract(TenantOwned, Base):
     weekly_max_minutes: Mapped[Optional[int]] = mapped_column(Integer)
     overtime_allowed: Mapped[bool] = mapped_column(Boolean, default=False)
     collective_agreement_limits: Mapped[Any] = mapped_column(JSONB, default=dict)
+    contract_type: Mapped[Optional[str]] = mapped_column(String(32))  # CDI, CDD, mission…
+    hourly_cost_cents: Mapped[Optional[int]] = mapped_column(Integer)  # coût horaire employeur saisi ; NULL = non renseigné (jamais supposé)
+    legal_regime: Mapped[Optional[str]] = mapped_column(String(64))  # régime applicable (référentiel juridique) ; NULL = règles générales du tenant
 
 
 class Availability(TenantOwned, Base):
@@ -203,6 +245,43 @@ class StaffingRequirement(TenantOwned, Base):
     flex_group: Mapped[Optional[str]] = mapped_column(String(64))  # 1 seul modèle par jour (shifts optionnels)
     stagger_group: Mapped[Optional[str]] = mapped_column(String(64))
     required_skills: Mapped[Any] = mapped_column(JSONB, default=list)
+    headcount: Mapped[int] = mapped_column(Integer, default=1, server_default="1")  # personnes nécessaires sur ce shift
+    # validité : une modification depuis un mois crée une nouvelle version ; les mois précédents gardent l'ancienne
+    valid_from: Mapped[Optional[date]] = mapped_column(Date)
+    valid_to: Mapped[Optional[date]] = mapped_column(Date)
+    mission_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("missions.id", ondelete="CASCADE"))  # besoin créé par une mission client
+    priority: Mapped[int] = mapped_column(Integer, default=3, server_default="3")  # 1 (basse) … 5 (critique)
+
+
+class Mission(TenantOwned, Base):
+    """Demande d'un client (événement, renfort, animation ponctuelle) : une fois confirmée, elle crée des besoins que le moteur
+    intègre à la planification, à côté des animations permanentes. Annulée ou en brouillon : aucun besoin n'est planifié."""
+    __tablename__ = "missions"
+    code: Mapped[str] = mapped_column(String(48))
+    client_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("clients.id"))
+    brand_code: Mapped[str] = mapped_column(String(64))
+    title: Mapped[str] = mapped_column(String(200))
+    site_codes: Mapped[Any] = mapped_column(JSONB, default=list)
+    start_date: Mapped[date] = mapped_column(Date)
+    end_date: Mapped[date] = mapped_column(Date)
+    weekdays: Mapped[Any] = mapped_column(JSONB, default=list)
+    start_time: Mapped[time] = mapped_column(Time)
+    end_time: Mapped[time] = mapped_column(Time)
+    break_minutes: Mapped[int] = mapped_column(Integer, default=60)
+    headcount: Mapped[int] = mapped_column(Integer, default=1)
+    required_skills: Mapped[Any] = mapped_column(JSONB, default=list)
+    budget_minutes: Mapped[Optional[int]] = mapped_column(Integer)  # heures commandées pour la mission
+    billing_rate_cents: Mapped[Optional[int]] = mapped_column(Integer)  # tarif propre à la mission (prime sur marque et client)
+    priority: Mapped[int] = mapped_column(Integer, default=3)
+    status: Mapped[str] = mapped_column(String(16), default="draft")  # draft | confirmed | cancelled | completed
+    notes: Mapped[Optional[str]] = mapped_column(Text)
+    cancelled_reason: Mapped[Optional[str]] = mapped_column(String(300))
+    renewed_from: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True))
+    __table_args__ = (UniqueConstraint("tenant_id", "code"),
+                      CheckConstraint("priority BETWEEN 1 AND 5", name="ck_mission_priority"),
+                      CheckConstraint("headcount BETWEEN 1 AND 200", name="ck_mission_headcount"),
+                      CheckConstraint("end_date >= start_date", name="ck_mission_dates"),
+                      CheckConstraint("status IN ('draft','confirmed','cancelled','completed')", name="ck_mission_status"))
 
 
 class MonthlyBudget(TenantOwned, Base):
@@ -220,6 +299,36 @@ class PlanningPeriod(TenantOwned, Base):
     name: Mapped[str] = mapped_column(String(100))
     start_date: Mapped[date] = mapped_column(Date)
     end_date: Mapped[date] = mapped_column(Date)
+    archived_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))  # archivé = consultable, non modifiable
+    wizard_step: Mapped[Optional[int]] = mapped_column(Integer)  # étape de l'assistant à reprendre (brouillon)
+
+
+class PeriodEmployee(TenantOwned, Base):
+    """Effectif du mois : un collaborateur décoché est exclu de CE mois uniquement (fiche, historique et autres mois intacts)."""
+    __tablename__ = "period_employees"
+    period_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("planning_periods.id", ondelete="CASCADE"))
+    employee_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("employees.id", ondelete="CASCADE"))
+    included: Mapped[bool] = mapped_column(Boolean, default=True)
+    reason: Mapped[Optional[str]] = mapped_column(String(200))
+    __table_args__ = (UniqueConstraint("period_id", "employee_id"),)
+
+
+class PeriodBrand(TenantOwned, Base):
+    """Marque active ou inactive pour un mois (par défaut : active)."""
+    __tablename__ = "period_brands"
+    period_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("planning_periods.id", ondelete="CASCADE"))
+    brand_code: Mapped[str] = mapped_column(String(64))
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+    __table_args__ = (UniqueConstraint("period_id", "brand_code"),)
+
+
+class PeriodSite(TenantOwned, Base):
+    """Site actif ou inactif pour un mois (par défaut : actif)."""
+    __tablename__ = "period_sites"
+    period_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("planning_periods.id", ondelete="CASCADE"))
+    site_code: Mapped[str] = mapped_column(String(64))
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+    __table_args__ = (UniqueConstraint("period_id", "site_code"),)
 
 
 class Shift(TenantOwned, Base):
@@ -244,6 +353,23 @@ class Assignment(TenantOwned, Base):
     run_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True))
     source: Mapped[str] = mapped_column(String(16), default="solver")  # solver | manual
     locked: Mapped[bool] = mapped_column(Boolean, default=False)
+    __table_args__ = (UniqueConstraint("shift_id", name="uq_assignment_shift"),)  # un shift n'a jamais deux titulaires
+
+
+class EmployeeMonthParams(TenantOwned, Base):
+    """Paramètres propres à un mois (indépendants d'un mois à l'autre) : quota de dimanches du collaborateur."""
+    __tablename__ = "employee_month_params"
+    employee_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("employees.id", ondelete="CASCADE"))
+    month: Mapped[date] = mapped_column(Date)  # 1er du mois
+    sunday_quota: Mapped[Optional[int]] = mapped_column(Integer)  # NULL = pas de quota ce mois-là
+    sunday_mode: Mapped[str] = mapped_column(String(8), default="exact", server_default="exact")  # max | exact
+    # exception du mois sur le nombre maximum de jours (sinon : valeur habituelle de la fiche)
+    max_days_set: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    max_days_count: Mapped[Optional[int]] = mapped_column(Integer)
+    max_days_period: Mapped[Optional[str]] = mapped_column(String(8))
+    __table_args__ = (UniqueConstraint("tenant_id", "employee_id", "month"),
+                      CheckConstraint("sunday_quota IS NULL OR (sunday_quota >= 0 AND sunday_quota <= 5)", name="ck_month_sunday_quota"),
+                      CheckConstraint("sunday_mode IN ('max','exact')", name="ck_month_sunday_mode"))
 
 
 class Break(TenantOwned, Base):
@@ -277,6 +403,9 @@ class ConstraintDefinition(TenantOwned, Base):
     enabled_by: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True))
     exception_reason: Mapped[Optional[str]] = mapped_column(Text)
     legal_review_status: Mapped[str] = mapped_column(String(24), default="a_valider")
+    source_url: Mapped[Optional[str]] = mapped_column(String(300))  # texte de référence (ex. SECO)
+    reviewed_by: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True))
+    reviewed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
 
 
 class EmployeePreference(TenantOwned, Base):
@@ -292,8 +421,9 @@ class RelationshipPreference(TenantOwned, Base):
     __tablename__ = "relationship_preferences"
     employee_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("employees.id", ondelete="CASCADE"))
     other_employee_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("employees.id", ondelete="CASCADE"))
-    kind: Mapped[str] = mapped_column(String(32), default="opposite_shifts")
+    kind: Mapped[str] = mapped_column(String(32), default="opposite_shifts")  # opposite_shifts | avoid_together | work_together | mentor
     note: Mapped[Optional[str]] = mapped_column(String(200))
+    strict: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")  # contrainte dure (avoid_together, mentor) ; sinon préférence
 
 
 class OptimizationRun(TenantOwned, Base):
@@ -307,6 +437,8 @@ class OptimizationRun(TenantOwned, Base):
     started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     cancel_requested: Mapped[bool] = mapped_column(Boolean, default=False)
+    simulation: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")  # n'écrit JAMAIS dans le planning tant qu'elle n'est pas appliquée
+    applied_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     __table_args__ = (UniqueConstraint("tenant_id", "idempotency_key"),)
 
 
@@ -338,6 +470,13 @@ class ScheduleVersion(TenantOwned, Base):
     published: Mapped[bool] = mapped_column(Boolean, default=False)
     published_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     created_by: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True))
+    state: Mapped[str] = mapped_column(String(16), default="snapshot", server_default="snapshot")  # snapshot | in_review | validated | published | superseded
+    kind: Mapped[str] = mapped_column(String(16), default="manual", server_default="manual")  # manual | generated | safety (copie automatique avant une opération)
+    run_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True))
+    validated_by: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True))
+    validated_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    published_by: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True))
+    note: Mapped[Optional[str]] = mapped_column(String(300))
 
 
 class LockedAssignment(TenantOwned, Base):
@@ -354,6 +493,48 @@ class AuditLog(TenantOwned, Base):
     entity: Mapped[Optional[str]] = mapped_column(String(64))
     entity_id: Mapped[Optional[str]] = mapped_column(String(64))
     detail: Mapped[Any] = mapped_column(JSONB, default=dict)  # jamais de secrets/mots de passe
+
+
+class TimeEntry(TenantOwned, Base):
+    """Heures réellement effectuées d'un shift : le prévu est recopié à la saisie et le planning n'est JAMAIS modifié."""
+    __tablename__ = "time_entries"
+    shift_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("shifts.id", ondelete="SET NULL"))
+    period_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("planning_periods.id", ondelete="CASCADE"))
+    employee_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("employees.id"))
+    day: Mapped[date] = mapped_column(Date)
+    site_code: Mapped[str] = mapped_column(String(64))
+    allocations: Mapped[Any] = mapped_column(JSONB, default=dict)  # imputations prévues (marque -> minutes), figées à la saisie
+    planned_start: Mapped[time] = mapped_column(Time)
+    planned_end: Mapped[time] = mapped_column(Time)
+    planned_break_minutes: Mapped[int] = mapped_column(Integer)
+    planned_minutes: Mapped[int] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(String(16), default="worked")  # worked | absent
+    actual_start: Mapped[Optional[time]] = mapped_column(Time)
+    actual_end: Mapped[Optional[time]] = mapped_column(Time)
+    actual_break_minutes: Mapped[Optional[int]] = mapped_column(Integer)
+    worked_minutes: Mapped[int] = mapped_column(Integer, default=0)
+    late_minutes: Mapped[int] = mapped_column(Integer, default=0)
+    overtime_minutes: Mapped[int] = mapped_column(Integer, default=0)
+    absence_reason: Mapped[Optional[str]] = mapped_column(String(200))
+    note: Mapped[Optional[str]] = mapped_column(String(300))
+    entered_by: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True))
+    validated_by: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True))
+    validated_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    __table_args__ = (UniqueConstraint("tenant_id", "shift_id", "employee_id", name="uq_time_entry_shift_employee"),
+                      CheckConstraint("status IN ('worked','absent')", name="ck_time_status"),
+                      CheckConstraint("worked_minutes >= 0", name="ck_time_worked"))
+
+
+class Notification(TenantOwned, Base):
+    """Notification interne : regroupée par publication (une seule par collaborateur, jamais une par modification)."""
+    __tablename__ = "notifications"
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    kind: Mapped[str] = mapped_column(String(32))  # planning_published | planning_changed | replacement | ...
+    title: Mapped[str] = mapped_column(String(200))
+    body: Mapped[Optional[str]] = mapped_column(Text)
+    payload: Mapped[Any] = mapped_column(JSONB, default=dict)
+    read_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
 
 
 class ExportJob(TenantOwned, Base):

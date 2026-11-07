@@ -2,19 +2,21 @@
 PERMISSIONS = [
     "tenant.manage", "users.manage", "referential.read", "referential.write", "employees.read",
     "employees.write", "contracts.write", "availability.write", "rules.write", "budgets.write",
-    "planning.read", "planning.edit", "planning.optimize", "planning.publish", "audit.read", "export.run",
-    "import.run", "self.read",
+    "planning.read", "planning.brand", "planning.edit", "planning.optimize", "planning.publish", "planning.validate", "audit.read", "export.run",
+    "import.run", "self.read", "time.write", "time.validate", "reports.read", "finance.read", "legal.review", "planning.admin",
 ]
-_RO = {"referential.read", "employees.read", "planning.read", "audit.read", "export.run"}
+_RO = {"referential.read", "employees.read", "planning.read", "planning.brand", "audit.read", "export.run", "reports.read"}
 _PLAN = _RO | {"referential.write", "employees.write", "contracts.write", "availability.write", "rules.write",
-               "budgets.write", "planning.edit", "planning.optimize", "planning.publish", "import.run"}
+               "budgets.write", "planning.edit", "planning.optimize", "planning.publish", "import.run", "time.write"}
 ROLES = {
     "owner": ("Propriétaire", set(PERMISSIONS)),
     "admin": ("Administrateur", set(PERMISSIONS) - {"tenant.manage"}),
-    "manager": ("Manager", _PLAN | {"audit.read"}),
-    "planner": ("Planificateur", _PLAN - {"planning.publish", "audit.read"}),
-    "employee": ("Collaborateur", {"planning.read", "self.read"}),
-    "auditor": ("Lecture seule / auditeur", _RO),
+    "manager": ("Manager", _PLAN | {"audit.read", "planning.validate", "time.validate", "finance.read", "self.read"}),
+    "planner": ("Planificateur", (_PLAN - {"planning.publish", "audit.read"}) | {"self.read"}),
+    # « planning.brand » : planning limité aux marques du périmètre (users.scope) ; « planning.read » : tout le planning du tenant
+    "brand_manager": ("Responsable de marque", {"planning.brand", "referential.read", "reports.read", "time.validate", "self.read"}),
+    "employee": ("Collaborateur", {"self.read"}),  # uniquement son planning publié (/me/planning) et ses notifications
+    "auditor": ("Lecture seule / auditeur", _RO | {"self.read"}),
 }
 
 
