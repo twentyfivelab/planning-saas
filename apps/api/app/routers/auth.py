@@ -87,5 +87,5 @@ def logout(request: Request, response: Response, ctx: Ctx = Depends(get_ctx)):
 @router.get("/me")
 def me(ctx: Ctx = Depends(get_ctx)):
     return {"id": str(ctx.user.id), "email": ctx.user.email, "name": ctx.user.name, "role": ctx.user.role,
-            "tenant_id": str(ctx.tenant_id), "csrf_token": ctx.csrf,
+            "tenant_id": str(ctx.tenant_id), "csrf_token": ctx.csrf, "employee_id": str(ctx.user.employee_id) if ctx.user.employee_id else None,
             "permissions": sorted(ROLES[ctx.user.role][1])}

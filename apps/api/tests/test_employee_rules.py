@@ -84,9 +84,9 @@ def test_sunday_counter_updates_immediately_without_running_the_solver(t):
     put(t, "abdu", sunday_quota=3, sunday_mode="exact")
     c = counter(t)
     assert (c["reserved"], c["remaining_to_reserve"]) == (5, 30)
-    put(t, "sabrina", sunday_quota=4, sunday_mode="max")  # plafond : ne réserve rien
+    put(t, "sabrina", sunday_quota=4, sunday_mode="max")  # « maximum » : attribué aussi, détaillé à part
     c = counter(t)
-    assert c["reserved"] == 5 and c["remaining_to_reserve"] == 30 and c["capacity_max"] == 9
+    assert (c["reserved"], c["reserved_exact"], c["reserved_max"], c["remaining_to_reserve"]) == (9, 5, 4, 26)
     for code in ("mila", "abdu", "sabrina"):
         reset(t, code)
     assert counter(t)["remaining_to_reserve"] == 35

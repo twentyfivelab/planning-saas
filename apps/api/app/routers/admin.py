@@ -1,5 +1,5 @@
 import uuid
-from typing import Optional
+from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
@@ -27,10 +27,13 @@ class UserPatch(BaseModel):
     model_config = ConfigDict(extra="forbid")
     role: Optional[str] = None
     is_active: Optional[bool] = None
+    employee_id: Optional[uuid.UUID] = None  # fiche collaborateur liée au compte (planning publié, notifications, aucune auto-approbation)
+    scope_brands: Optional[List[str]] = Field(None, max_length=500)  # périmètre d'un responsable de marque
 
 
 def _view(u: m.User) -> dict:
-    return {"id": str(u.id), "email": u.email, "name": u.name, "role": u.role, "is_active": u.is_active}
+    return {"id": str(u.id), "email": u.email, "name": u.name, "role": u.role, "is_active": u.is_active,
+            "employee_id": str(u.employee_id) if u.employee_id else None, "scope_brands": (u.scope or {}).get("brands", [])}
 
 
 @router.get("/users")
@@ -66,7 +69,16 @@ def patch_user(uid: str, body: UserPatch, ctx: Ctx = Depends(require("users.mana
         u.role = body.role
     if body.is_active is not None:
         u.is_active = body.is_active
-    audit(ctx, "user.update", "user", u.id, body.model_dump(exclude_none=True))
+    if body.employee_id is not None:
+        if ctx.db.get(m.Employee, body.employee_id) is None:
+            raise HTTPException(422, "Collaborateur inconnu")
+        u.employee_id = body.employee_id
+    if body.scope_brands is not None:
+        known = {b.code for b in ctx.db.scalars(select(m.Brand))}
+        if any(b not in known for b in body.scope_brands):
+            raise HTTPException(422, "Marque inconnue")
+        u.scope = {**(u.scope or {}), "brands": body.scope_brands}
+    audit(ctx, "user.update", "user", u.id, {k: str(v) for k, v in body.model_dump(exclude_none=True).items()})
     return _view(u)
 
 
@@ -95,7 +107,7 @@ def data_subject_export(employee_id: str, ctx: Ctx = Depends(require("tenant.man
     out = {"employee": serialize(e)}
     for name, model in (("contracts", m.EmploymentContract), ("availabilities", m.Availability),
                         ("unavailabilities", m.Unavailability), ("leaves", m.LeaveRequest),
-                        ("preferences", m.EmployeePreference), ("assignments", m.Assignment)):
+                        ("preferences", m.EmployeePreference), ("assignments", m.Assignment), ("skills", m.EmployeeSkill), ("time_entries", m.TimeEntry)):
         out[name] = [serialize(o) for o in ctx.db.scalars(select(model).where(model.employee_id == e.id))]
     audit(ctx, "gdpr.access_export", "employee", e.id)
     return out
@@ -105,8 +117,16 @@ def data_subject_export(employee_id: str, ctx: Ctx = Depends(require("tenant.man
 def data_subject_erase(employee_id: str, ctx: Ctx = Depends(require("tenant.manage"))):
     """Droit à l'effacement : anonymise le collaborateur, conserve les agrégats de planning."""
     e = get_or_404(ctx, m.Employee, employee_id)
+    before = e.name
     e.name, e.active = f"Anonymisé {str(e.id)[:8]}", False
-    for model in (m.EmploymentContract, m.Availability, m.Unavailability, m.LeaveRequest, m.EmployeePreference):
+    for model in (m.EmploymentContract, m.Availability, m.Unavailability, m.LeaveRequest, m.EmployeePreference, m.EmployeeSkill):
         for o in ctx.db.scalars(select(model).where(model.employee_id == e.id)):
             ctx.db.delete(o)
+    for r in ctx.db.scalars(select(m.RelationshipPreference).where((m.RelationshipPreference.employee_id == e.id) | (m.RelationshipPreference.other_employee_id == e.id))):
+        ctx.db.delete(r)
+    for t in ctx.db.scalars(select(m.TimeEntry).where(m.TimeEntry.employee_id == e.id)):  # les heures restent pour les agrégats, pas les remarques libres
+        t.note, t.absence_reason = None, None
+    for v in ctx.db.scalars(select(m.ScheduleVersion)):  # le nom ne reste pas dans les copies de planning
+        if any(x.get("employee_id") == str(e.id) or x.get("employee") == before for x in v.snapshot or []):
+            v.snapshot = [{**x, "employee": e.name} if x.get("employee_id") == str(e.id) or x.get("employee") == before else x for x in v.snapshot]
     audit(ctx, "gdpr.erasure", "employee", e.id)

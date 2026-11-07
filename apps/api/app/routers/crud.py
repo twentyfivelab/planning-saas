@@ -43,6 +43,7 @@ class BrandIn(S):
 class SkillIn(S):
     code: str = Field(min_length=1, max_length=64)
     name: str = Field(max_length=200)
+    category: Literal["competence", "formation", "langue", "certification", "qualification"] = "competence"
 
 
 class EmployeeIn(S):
@@ -74,20 +75,24 @@ class EmployeeIn(S):
     @field_validator("brands")
     @classmethod
     def _b(cls, v):
-        if any(x not in ("priority", "reinforce") for x in v.values()):
-            raise ValueError("niveau: priority | reinforce")
+        if any(x not in ("priority", "secondary", "reinforce") for x in v.values()):
+            raise ValueError("niveau: priority | secondary | reinforce")
         return v
 
 
 class EmployeeSkillIn(S):
     employee_id: uuid.UUID
     skill_id: uuid.UUID
+    valid_until: Optional[date] = None
 
 
 class ContractIn(S):
     employee_id: uuid.UUID
     start_date: Optional[date] = None
     end_date: Optional[date] = None
+    contract_type: Optional[str] = Field(None, max_length=32)
+    hourly_cost_cents: Optional[int] = Field(None, ge=0, le=10_000_000)
+    legal_regime: Optional[str] = Field(None, max_length=64)
     activity_rate: Optional[float] = Field(None, gt=0, le=1)
     weekly_minutes: Optional[int] = Field(None, ge=0, le=7 * 24 * 60)
     monthly_min_minutes: Optional[int] = Field(None, ge=0)
@@ -150,7 +155,7 @@ class TemplateIn(S):
     tag: str = Field("day", pattern="^(open|day|mid|close)$")
     is_hypothesis: bool = False
     hypothesis_note: Optional[str] = Field(None, max_length=300)
-    scope_type: Optional[Literal["site", "brand", "group"]] = None
+    scope_type: Optional[Literal["site", "brand", "group", "pair"]] = None
     scope_code: Optional[str] = Field(None, max_length=64)
 
     @model_validator(mode="after")
@@ -173,6 +178,7 @@ class RequirementIn(S):
     flex_group: Optional[str] = Field(None, max_length=64)
     stagger_group: Optional[str] = Field(None, max_length=64)
     required_skills: List[str] = []
+    priority: int = Field(3, ge=1, le=5)
     _v = field_validator("weekdays")(_weekdays)
 
     @field_validator("dates")
@@ -200,17 +206,38 @@ class BudgetIn(S):
 
 class PreferenceIn(S):
     employee_id: uuid.UUID
-    kind: str = Field(pattern="^(latest_start|preferred_times|preferred_tags|weekly_rest_days)$")
+    kind: str = Field(pattern="^(latest_start|preferred_times|preferred_tags|weekly_rest_days|rest_weekdays|sites)$")
     params: dict
     strength: int = Field(1, ge=1, le=5)
     is_hard: bool = False
+
+    @model_validator(mode="after")
+    def _params(self):
+        if self.kind == "rest_weekdays":
+            days = self.params.get("weekdays")
+            if not isinstance(days, list) or any(not isinstance(d, int) or isinstance(d, bool) or d < 0 or d > 6 for d in days):
+                raise ValueError("jours de repos : liste de jours de 0 (lundi) à 6 (dimanche)")
+        if self.kind == "sites":
+            sites = self.params.get("sites")
+            if not isinstance(sites, list) or any(not isinstance(x, str) for x in sites):
+                raise ValueError("sites : liste de codes de sites")
+        return self
 
 
 class RelationshipIn(S):
     employee_id: uuid.UUID
     other_employee_id: uuid.UUID
-    kind: str = Field("opposite_shifts", pattern="^opposite_shifts$")
+    kind: str = Field("opposite_shifts", pattern="^(opposite_shifts|avoid_together|work_together|mentor)$")
     note: Optional[str] = Field(None, max_length=200)
+    strict: bool = False
+
+    @model_validator(mode="after")
+    def _rel(self):
+        if self.employee_id == self.other_employee_id:
+            raise ValueError("une relation concerne deux collaborateurs différents")
+        if self.strict and self.kind not in ("avoid_together", "mentor"):
+            raise ValueError("seules les relations « à séparer » et « tuteur » peuvent être strictes")
+        return self
 
 
 class ConstraintIn(S):

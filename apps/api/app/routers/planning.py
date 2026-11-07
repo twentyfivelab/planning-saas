@@ -4,11 +4,12 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel, ConfigDict, Field, model_validator
-from sqlalchemy import func, select
+from sqlalchemy import select
 
 from .. import models as m
 from ..deps import Ctx, audit, get_or_404, require
 from ..optimize import enqueue
+from ..period_state import ensure_editable, has_official_version, statuses
 from ..services_bridge import assignments_for_validation, build_input
 from planning_solver.sundays import sunday_summary
 from planning_solver.timecalc import shift_hours, split_allocation
@@ -37,11 +38,19 @@ class RunIn(BaseModel):
     time_limit_s: float = Field(30, gt=0, le=600)
     strict_coverage: bool = False
     weights: dict = {}
+    confirm_replace: bool = False  # un planning validé ou publié n'est jamais remplacé sans confirmation explicite
+
+
+def scope_brands(ctx: Ctx) -> Optional[set]:
+    """Périmètre d'un responsable de marque (ses marques uniquement) ; None = tout le tenant."""
+    return set((ctx.user.scope or {}).get("brands") or []) if ctx.user.role == "brand_manager" else None
 
 
 @router.get("/periods")
-def periods(ctx: Ctx = Depends(require("planning.read"))):
-    return [serialize(p) for p in ctx.db.scalars(select(m.PlanningPeriod).order_by(m.PlanningPeriod.start_date))]
+def periods(ctx: Ctx = Depends(require("self.read"))):  # mois et statuts seulement : aucune donnée de collaborateur
+    rows = list(ctx.db.scalars(select(m.PlanningPeriod).order_by(m.PlanningPeriod.start_date)))
+    st = statuses(ctx.db, rows)
+    return [{**serialize(p), **st[p.id]} for p in rows]
 
 
 @router.post("/periods", status_code=201)
@@ -54,9 +63,11 @@ def create_period(body: PeriodIn, ctx: Ctx = Depends(require("planning.edit"))):
 
 
 @router.get("/periods/{pid}/schedule")
-def schedule(pid: str, ctx: Ctx = Depends(require("planning.read"))):
+def schedule(pid: str, ctx: Ctx = Depends(require("planning.brand"))):
     p = get_or_404(ctx, m.PlanningPeriod, pid)
+    scope = scope_brands(ctx)
     emp = {e.id: e for e in ctx.db.scalars(select(m.Employee))}
+    site_names = {x.code: x.name for x in ctx.db.scalars(select(m.Site))}  # nom actuel ; le code (stable) reste la référence
     shifts = {s.id: s for s in ctx.db.scalars(select(m.Shift).where(m.Shift.period_id == p.id))}
     allocs: dict = {}
     for b in ctx.db.scalars(select(m.BrandAllocation)):
@@ -66,16 +77,20 @@ def schedule(pid: str, ctx: Ctx = Depends(require("planning.read"))):
     for a in ctx.db.scalars(select(m.Assignment).where(m.Assignment.period_id == p.id)):
         s = shifts[a.shift_id]
         assigned.add(s.id)
+        if scope is not None and not (scope & set(allocs.get(a.id, {}))):
+            continue
         out.append({"assignment_id": str(a.id), "shift_id": str(s.id), "slot_key": s.slot_key,
-                    "day": s.day.isoformat(), "site": s.site_code, "start": s.start_time.isoformat(),
+                    "day": s.day.isoformat(), "site": s.site_code, "site_name": site_names.get(s.site_code, s.site_code), "start": s.start_time.isoformat(),
                     "end": s.end_time.isoformat(), "presence_minutes": s.presence_minutes,
                     "break_minutes": s.break_minutes, "effective_minutes": s.effective_minutes,
                     "employee_id": str(a.employee_id), "employee": emp[a.employee_id].name, "locked": a.locked,
                     "source": a.source, "allocations": allocs.get(a.id, {})})
     out.sort(key=lambda r: (r["day"], r["start"], r["slot_key"]))
-    uncovered = [{"shift_id": str(s.id), "slot_key": s.slot_key, "day": s.day.isoformat(), "site": s.site_code,
+    uncovered = [{"shift_id": str(s.id), "slot_key": s.slot_key, "day": s.day.isoformat(), "site": s.site_code, "site_name": site_names.get(s.site_code, s.site_code),
                   "start": s.start_time.isoformat(), "end": s.end_time.isoformat()}
                  for s in shifts.values() if s.id not in assigned]
+    if scope is not None:
+        uncovered = []  # un shift non couvert n'a pas encore d'imputation : il n'est pas attribuable à une marque du périmètre
     return {"period": serialize(p), "assignments": out, "uncovered": uncovered}
 
 
@@ -83,10 +98,13 @@ def schedule(pid: str, ctx: Ctx = Depends(require("planning.read"))):
 def start_run(pid: str, body: RunIn, ctx: Ctx = Depends(require("planning.optimize")),
               idempotency_key: Optional[str] = Header(None, max_length=100)):
     p = get_or_404(ctx, m.PlanningPeriod, pid)
+    ensure_editable(ctx.db, p.id)
     if idempotency_key:
         prev = ctx.db.scalar(select(m.OptimizationRun).where(m.OptimizationRun.idempotency_key == idempotency_key))
         if prev is not None:
             return {"run_id": str(prev.id), "status": prev.status, "idempotent_replay": True}
+    if has_official_version(ctx.db, p.id) and not body.confirm_replace:
+        raise HTTPException(409, detail={"code": "official_version", "message": f"{p.name} a une version validée ou publiée : elle reste conservée, mais le planning en cours serait remplacé. Confirmez pour continuer, ou utilisez une simulation."})
     cfg = {"time_limit_s": body.time_limit_s, "strict_coverage": body.strict_coverage, "weights": body.weights}
     run = m.OptimizationRun(tenant_id=ctx.tenant_id, period_id=p.id, kind=body.kind, config=cfg,
                             idempotency_key=idempotency_key, requested_by=ctx.user.id)
@@ -114,14 +132,14 @@ def _run_view(ctx: Ctx, run: m.OptimizationRun) -> dict:
     res = ctx.db.scalar(select(m.OptimizationResult).where(m.OptimizationResult.run_id == run.id))
     return {"id": str(run.id), "period_id": str(run.period_id), "status": run.status, "kind": run.kind,
             "config": run.config, "started_at": run.started_at, "finished_at": run.finished_at,
-            "cancel_requested": run.cancel_requested,
+            "cancel_requested": run.cancel_requested, "simulation": run.simulation, "applied_at": run.applied_at,
             "result_status": res.status if res else None, "mode": res.mode if res else None,
             "duration_s": res.duration_s if res else None}
 
 
 @router.get("/runs")
 def runs(ctx: Ctx = Depends(require("planning.read"))):
-    return [_run_view(ctx, r) for r in ctx.db.scalars(select(m.OptimizationRun).order_by(
+    return [_run_view(ctx, r) for r in ctx.db.scalars(select(m.OptimizationRun).where(m.OptimizationRun.simulation.is_(False)).order_by(
         m.OptimizationRun.created_at.desc()).limit(50))]
 
 
@@ -152,6 +170,7 @@ def diagnostic(rid: str, ctx: Ctx = Depends(require("planning.read"))):
 
 def _set_lock(ctx: Ctx, aid: str, locked: bool) -> dict:
     a = get_or_404(ctx, m.Assignment, aid)
+    ensure_editable(ctx.db, a.period_id)
     a.locked = locked
     if locked:
         ctx.db.add(m.LockedAssignment(tenant_id=ctx.tenant_id, assignment_id=a.id, locked_by=ctx.user.id))
@@ -181,14 +200,21 @@ class MoveIn(BaseModel):
 def reassign(aid: str, body: MoveIn, ctx: Ctx = Depends(require("planning.edit"))):
     """Modification manuelle : enregistrée, et les conflits sont recalculés et renvoyés immédiatement."""
     a = get_or_404(ctx, m.Assignment, aid)
+    ensure_editable(ctx.db, a.period_id)
     if a.locked:
         raise HTTPException(409, "Affectation verrouillée : déverrouiller d'abord")
     if ctx.db.get(m.Employee, body.employee_id) is None:
         raise HTTPException(422, "Collaborateur inconnu")
-    before = str(a.employee_id)
+    new = ctx.db.get(m.Employee, body.employee_id)
+    brands = {r.brand_code for r in ctx.db.scalars(select(m.BrandAllocation).where(m.BrandAllocation.assignment_id == a.id))}
+    missing = sorted(b for b in brands if b not in (new.brands or {}))
+    if missing:  # une marque non sélectionnée dans la fiche n'est jamais attribuée
+        raise HTTPException(422, f"{', '.join(missing)} n'est pas autorisée pour {new.name} (fiche collaborateur).")
+    old = ctx.db.get(m.Employee, a.employee_id)
     a.employee_id, a.source = body.employee_id, "manual"
     ctx.db.flush()
-    audit(ctx, "assignment.reassign", "assignment", a.id, {"from": before, "to": str(body.employee_id)})
+    from ..history import assignment_detail
+    audit(ctx, "assignment.reassign", "assignment", a.id, assignment_detail(ctx.db, ctx.db.get(m.Shift, a.shift_id), old, new))
     return {"id": str(a.id), "conflicts": _conflicts(ctx, a.period_id)}
 
 
@@ -198,7 +224,7 @@ def _allowed_schedules(ctx: Ctx, sh: m.Shift) -> list:
         select(m.BrandAllocation).join(m.Assignment, m.Assignment.id == m.BrandAllocation.assignment_id)
         .where(m.Assignment.shift_id == sh.id))}
     groups = {b.group_code for b in ctx.db.scalars(select(m.Brand).where(m.Brand.code.in_(brands))) if b.group_code} if brands else set()
-    keys = {sh.site_code} | brands | groups
+    keys = {sh.site_code} | brands | groups | {f"{b}@{sh.site_code}" for b in brands}
     out = []
     for t in ctx.db.scalars(select(m.ShiftTemplate).where(m.ShiftTemplate.scope_code.in_(keys)).order_by(m.ShiftTemplate.start_time)):
         out.append({"template": t.code, "start": t.start_time.isoformat(), "end": t.end_time.isoformat(),
@@ -237,11 +263,16 @@ class ShiftPatch(BaseModel):
 def edit_shift(sid: str, body: ShiftPatch, ctx: Ctx = Depends(require("planning.edit"))):
     """Modification d'horaire : durées recalculées côté serveur, imputations proportionnelles, conflits renvoyés."""
     sh = get_or_404(ctx, m.Shift, sid)
+    ensure_editable(ctx.db, sh.period_id)
     allowed = _allowed_schedules(ctx, sh)
     if allowed and not any(a["start"] == body.start_time.isoformat() and a["end"] == body.end_time.isoformat() for a in allowed):
         if ctx.user.role not in ("owner", "admin"):
             ok = ", ".join(f"{a['start'][:5]}–{a['end'][:5]}" for a in allowed)
             raise HTTPException(422, f"Horaire non autorisé pour {sh.site_code}. Horaires autorisés : {ok}. Seul un administrateur peut déroger.")
+        from ..approval import override_refusal
+        mine = override_refusal(ctx, [a.employee_id for a in ctx.db.scalars(select(m.Assignment).where(m.Assignment.shift_id == sh.id))])
+        if mine:
+            raise HTTPException(403, mine)  # personne n'approuve une dérogation qui la concerne
         audit(ctx, "shift.schedule_override", "shift", sh.id, {"start": str(body.start_time), "end": str(body.end_time)})
     ass = list(ctx.db.scalars(select(m.Assignment).where(m.Assignment.shift_id == sh.id)))
     if any(a.locked for a in ass):
@@ -277,57 +308,3 @@ def _conflicts(ctx: Ctx, period_id) -> list:
 def conflicts(pid: str, ctx: Ctx = Depends(require("planning.read"))):
     p = get_or_404(ctx, m.PlanningPeriod, pid)
     return {"hard_violations": _conflicts(ctx, p.id)}
-
-
-# ---- versions ----
-def _snapshot(ctx: Ctx, p: m.PlanningPeriod) -> list:
-    data = schedule(str(p.id), ctx)
-    return [{"slot_key": a["slot_key"], "employee": a["employee"], "day": a["day"], "start": a["start"],
-             "end": a["end"], "locked": a["locked"], "allocations": a["allocations"]} for a in data["assignments"]]
-
-
-@router.post("/periods/{pid}/versions", status_code=201)
-def create_version(pid: str, ctx: Ctx = Depends(require("planning.edit")), label: Optional[str] = None):
-    p = get_or_404(ctx, m.PlanningPeriod, pid)
-    n = (ctx.db.scalar(select(func.max(m.ScheduleVersion.number)).where(m.ScheduleVersion.period_id == p.id))
-         or 0) + 1
-    last = ctx.db.scalar(select(m.OptimizationResult).order_by(m.OptimizationResult.created_at.desc()).limit(1))
-    v = m.ScheduleVersion(tenant_id=ctx.tenant_id, period_id=p.id, number=n, label=label, snapshot=_snapshot(ctx, p),
-                          exploratory=(last is None or last.mode != "validable"), created_by=ctx.user.id)
-    ctx.db.add(v)
-    ctx.db.flush()
-    audit(ctx, "version.create", "version", v.id, {"number": n})
-    return {"id": str(v.id), "number": n, "exploratory": v.exploratory}
-
-
-@router.get("/periods/{pid}/versions")
-def versions(pid: str, ctx: Ctx = Depends(require("planning.read"))):
-    p = get_or_404(ctx, m.PlanningPeriod, pid)
-    return [{"id": str(v.id), "number": v.number, "label": v.label, "published": v.published,
-             "exploratory": v.exploratory, "created_at": v.created_at, "assignments": len(v.snapshot)}
-            for v in ctx.db.scalars(select(m.ScheduleVersion).where(m.ScheduleVersion.period_id == p.id)
-                                    .order_by(m.ScheduleVersion.number))]
-
-
-@router.post("/versions/{vid}/publish")
-def publish(vid: str, ctx: Ctx = Depends(require("planning.publish"))):
-    v = get_or_404(ctx, m.ScheduleVersion, vid)
-    if v.exploratory:
-        raise HTTPException(409, "Simulation exploratoire : contrats/besoins incomplets, publication refusée "
-                                 "(un planning validable exige des données complètes).")
-    if _conflicts(ctx, v.period_id):
-        raise HTTPException(409, "Des violations de contraintes dures subsistent")
-    v.published = True
-    v.published_at = func.now()
-    audit(ctx, "version.publish", "version", v.id)
-    return {"id": str(v.id), "published": True}
-
-
-@router.get("/versions/compare")
-def compare(a: str, b: str, ctx: Ctx = Depends(require("planning.read"))):
-    va, vb = get_or_404(ctx, m.ScheduleVersion, a), get_or_404(ctx, m.ScheduleVersion, b)
-    A = {x["slot_key"]: x["employee"] for x in va.snapshot}
-    B = {x["slot_key"]: x["employee"] for x in vb.snapshot}
-    return {"added": sorted(set(B) - set(A)), "removed": sorted(set(A) - set(B)),
-            "changed": [{"slot_key": k, "from": A[k], "to": B[k]} for k in sorted(set(A) & set(B)) if A[k] != B[k]],
-            "unchanged": sum(1 for k in set(A) & set(B) if A[k] == B[k])}

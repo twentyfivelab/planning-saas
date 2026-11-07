@@ -227,7 +227,7 @@ async def import_employees(file: UploadFile = File(...), commit: bool = False,
         brands = {}
         for part in filter(None, (r.get("brands") or "").split(";")):
             b, _, lvl = part.partition(":")
-            if lvl.strip() not in ("priority", "reinforce"):
+            if lvl.strip() not in ("priority", "secondary", "reinforce"):
                 errs.append(f"niveau marque invalide: {part}")
             else:
                 brands[b.strip()] = lvl.strip()
