@@ -1,13 +1,13 @@
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
 from sqlalchemy import text
 
 from .. import models as m
 from ..config import settings
 from ..db import SessionLocal, tenant_session
-from ..deps import COOKIE, Ctx, audit, get_ctx
+from ..deps import CtxDep, COOKIE, Ctx, audit
 from ..rbac import ROLES
 from ..security import client_ip, expiry, hash_password, new_csrf, new_token, rate_limit, verify_password, token_hash
 
@@ -76,7 +76,7 @@ def login(body: LoginIn, request: Request, response: Response):
 
 
 @router.post("/logout", status_code=204)
-def logout(request: Request, response: Response, ctx: Ctx = Depends(get_ctx)):
+def logout(request: Request, response: Response, ctx: Ctx = CtxDep):
     tok = request.cookies.get(COOKIE)
     with SessionLocal() as s, s.begin():
         s.execute(text("delete from sessions where token_hash=:h"), {"h": token_hash(tok)})
@@ -85,7 +85,7 @@ def logout(request: Request, response: Response, ctx: Ctx = Depends(get_ctx)):
 
 
 @router.get("/me")
-def me(ctx: Ctx = Depends(get_ctx)):
+def me(ctx: Ctx = CtxDep):
     return {"id": str(ctx.user.id), "email": ctx.user.email, "name": ctx.user.name, "role": ctx.user.role,
             "tenant_id": str(ctx.tenant_id), "csrf_token": ctx.csrf, "employee_id": str(ctx.user.employee_id) if ctx.user.employee_id else None,
             "permissions": sorted(ROLES[ctx.user.role][1])}

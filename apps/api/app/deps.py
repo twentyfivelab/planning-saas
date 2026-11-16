@@ -45,8 +45,14 @@ def get_ctx(request: Request) -> Iterator[Ctx]:
         yield Ctx(db, user, row.tenant_id, row.csrf_token)
 
 
+# Portée « function » : la transaction est validée AVANT l'envoi de la réponse. Avec la portée par défaut, FastAPI enverrait la
+# réponse d'abord : une lecture immédiate (le navigateur relit l'objet qu'il vient de créer) ne le trouverait pas encore, et un échec
+# de validation surviendrait après un « OK » déjà reçu par le client.
+CtxDep = Depends(get_ctx, scope="function")
+
+
 def require(perm: str):
-    def dep(ctx: Ctx = Depends(get_ctx)) -> Ctx:
+    def dep(ctx: Ctx = CtxDep) -> Ctx:
         if not has_permission(ctx.user.role, perm):
             raise HTTPException(403, f"Permission requise : {perm}")
         return ctx

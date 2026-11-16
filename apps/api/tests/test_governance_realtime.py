@@ -204,3 +204,37 @@ def test_legacy_sunday_quota_report_never_changes_history_or_validated_plans(t):
     n = o.put(f"/employees/{e['id']}/month-params/2026-11", json={"sunday_quota": 1, "sunday_mode": "max"}).json()
     assert n["published"] is True and n["notice"]
     assert o.get(f"/periods/{t['pid']}/versions").json() == snap_v and sorted((x["slot_key"], x["employee"]) for x in sched(t)) == snap_a
+
+
+
+def test_la_transaction_est_validee_avant_l_envoi_de_la_reponse(t):
+    """Un client qui relit immédiatement ce qu'il vient de créer doit le trouver, et un échec de validation ne doit jamais suivre un « OK »."""
+    from sqlalchemy import event
+    from starlette.testclient import TestClient
+    from app.db import SessionLocal
+    from app.main import app as api
+    order = []
+
+    async def traced(scope, receive, send):
+        async def send_(message):
+            if message["type"] == "http.response.start":
+                order.append("réponse")
+            await send(message)
+        await api(scope, receive, send_)
+
+    def committed(_session):
+        order.append("validation")
+    event.listen(SessionLocal, "after_commit", committed)
+    try:
+        c = TestClient(traced, base_url="http://localhost")
+        c.cookies.update(t["o"].cookies)
+        c.headers["X-CSRF-Token"] = t["o"].headers["X-CSRF-Token"]
+        pid = t["o"].get("/periods").json()[0]["id"]
+        order.clear()
+        r = c.post(f"/periods/{pid}/versions", json={"label": "ordre de validation"})
+        assert r.status_code == 201
+        assert "validation" in order and order.index("réponse") > max(i for i, x in enumerate(order) if x == "validation"), order
+        assert c.get(f"/versions/compare?a={r.json()['id']}&b={r.json()['id']}").status_code == 200
+        c.delete(f"/versions/{r.json()['id']}")
+    finally:
+        event.remove(SessionLocal, "after_commit", committed)
