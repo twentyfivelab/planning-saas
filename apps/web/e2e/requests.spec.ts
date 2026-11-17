@@ -89,6 +89,30 @@ test("absence sur une partie de la journée approuvée : appliquée comme absenc
   await c.ctx.close();
 });
 
+test("indisponibilités hebdomadaires demandées (cases pré-remplies), décision du responsable", async ({ browser, page }) => {
+  const u = users[1];
+  const current = ((await j(page, `/employees/${u.employee_id}/availability`)) as { weekdays: number[] }).weekdays;
+  const c = await as(browser, u.email);
+  await c.page.goto("/me"); await c.page.waitForLoadState("networkidle");
+  const box = c.page.getByTestId("my-requests");
+  await box.getByLabel("Type de demande").selectOption("availability");
+  const group = box.getByRole("group", { name: "Jours où je ne peux pas travailler chaque semaine" });
+  const days = ["Lun", "Mar", "Mer", "Jeu", "Ven", "Sam", "Dim"];
+  for (let i = 0; i < 7; i++) await expect(group.getByRole("checkbox", { name: days[i] })).toBeChecked({ checked: current.includes(i) }); // valeurs actuelles
+  await expect(box.getByRole("button", { name: "Envoyer" })).toBeDisabled(); // rien de changé : rien à demander
+  const target = current.includes(6) ? 5 : 6;
+  await group.getByRole("checkbox", { name: days[target] }).check();
+  await box.getByRole("button", { name: "Envoyer" }).click();
+  await expect(box.getByTestId("my-request").first()).toContainText("Indisponibilités hebdomadaires");
+  await page.goto("/requests"); await page.waitForLoadState("networkidle");
+  const card = page.getByTestId("request").filter({ hasText: "Disponibilités" }).filter({ hasText: u.name });
+  await expect(card).toContainText("prochains plannings");
+  await card.getByRole("button", { name: "Refuser" }).click();
+  await expect(card).toBeHidden();
+  expect(((await j(page, `/employees/${u.employee_id}/availability`)) as { weekdays: number[] }).weekdays).toEqual(current); // refus : fiche inchangée
+  await c.ctx.close();
+});
+
 test("échange proposé, accepté par le collègue, approuvé par le responsable", async ({ browser, page }) => {
   const pid = ((await j(page, "/periods")) as { id: string; start_date: string }[]).find((p) => p.start_date === "2026-11-01")!.id;
   const rows = (await j(page, `/periods/${pid}/schedule`)).assignments as Row[];

@@ -133,3 +133,22 @@ def test_compte_non_relie_et_cloisonnement(t):
     other = make_client()
     register(other, "Autre SA", f"autre-{uuid.uuid4().hex[:6]}@example.com")
     assert other.get("/requests").json() == []  # demandes d'un autre tenant invisibles (RLS)
+
+
+def test_indisponibilites_hebdomadaires_demandees_puis_appliquees_sans_toucher_les_plannings_existants(t):
+    ana, mgr, o, pid, emps = t["ana"], t["mgr"], t["o"], t["pid"], t["emps"]
+    assert ana.post("/me/requests", json={"kind": "availability", "unavailable_weekdays": [0, 1, 2, 3, 4, 5, 6]}).status_code == 422
+    assert ana.post("/me/requests", json={"kind": "availability", "unavailable_weekdays": []}).status_code == 422  # déjà le cas
+    assert ana.get("/me/requests").json()["weekly_unavailable"] == []
+    before = rows(o, pid)
+    compat_before = o.get(f"/periods/{pid}/compatibility").json()["compatible"]
+    r = ana.post("/me/requests", json={"kind": "availability", "unavailable_weekdays": [5, 6], "note": "cours le week-end"})
+    assert r.status_code == 201 and r.json()["summary"] == "Indisponibilités hebdomadaires : samedi, dimanche"
+    d = mgr.post(f"/requests/{r.json()['id']}/decide", json={"approve": True})
+    assert d.status_code == 200 and d.json()["result"] == {"before": [], "after": [5, 6]}
+    assert o.get(f"/employees/{emps['ana']['id']}/availability").json()["weekdays"] == [5, 6]
+    assert ana.get("/me/requests").json()["weekly_unavailable"] == [5, 6]
+    assert rows(o, pid) == before  # aucun shift retiré
+    assert o.get(f"/periods/{pid}/compatibility").json()["compatible"] == compat_before  # planning existant : paramètres conservés
+    diffs = o.get(f"/periods/{pid}/params").json()["differences"]
+    assert any(x["field"] == "unavailable_weekdays" and x["employee"] == "Ana" for x in diffs)  # différence seulement signalée

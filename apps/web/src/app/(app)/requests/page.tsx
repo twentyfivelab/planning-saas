@@ -8,11 +8,11 @@ import { api, ApiError } from "@/lib/api";
 import { invalidate } from "@/lib/invalidate";
 import { errText } from "@/lib/wfm";
 
-type Req = { id: string; kind: "leave" | "absence" | "swap"; status: string; status_label: string; employee: string; colleague: string | null; summary: string;
+type Req = { id: string; kind: "leave" | "absence" | "swap" | "availability"; status: string; status_label: string; employee: string; colleague: string | null; summary: string;
   note: string | null; created_at: string; decided_at: string | null; decision_note: string | null; impact?: string[]; stale?: boolean };
 type Issue = { code: string; level: string; message: string };
 type Refused = { code: string; issues: Issue[]; can_override: boolean; refusal?: string | null; message: string };
-const KIND = { leave: "Congé", absence: "Absence", swap: "Échange" } as const;
+const KIND = { leave: "Congé", absence: "Absence", swap: "Échange", availability: "Disponibilités" } as const;
 const STATUS_TONE: Record<string, "warn" | "ok" | "bad" | "neutral" | "info"> = { pending: "warn", awaiting_colleague: "info", approved: "ok", refused: "bad", declined: "bad", cancelled: "neutral" };
 
 /** Demandes des collaborateurs : décision du responsable. Un congé ou une absence approuvés ne retirent aucun shift (les shifts concernés
@@ -68,6 +68,7 @@ function RequestCard({ r, canDecide, onChanged }: { r: Req; canDecide: boolean; 
           <ul style={{ margin: 0, paddingLeft: "1.1rem" }}>{r.impact.map((x) => <li key={x}>{x}</li>)}</ul>
           <p className="help" style={{ margin: "var(--sp-1) 0 0" }}>L&apos;approbation ne retire aucun shift : remplacez-les ensuite (« Voir les remplaçants »). Si le planning est validé ou publié, une révision est proposée.</p>
         </Callout>) : <p className="help" style={{ margin: "var(--sp-1) 0 0" }}>Aucun shift concerné dans les plannings existants.</p>)}
+      {r.kind === "availability" && r.status === "pending" && <p className="help" style={{ margin: "var(--sp-1) 0 0" }}>Modifie la fiche du collaborateur pour les prochains plannings ; les plannings déjà créés gardent leurs paramètres (la différence y est signalée).</p>}
       {r.stale && <Callout kind="bad" title="Échange devenu impossible">Le planning a changé depuis la demande : ces shifts ne sont plus tenus par ces collaborateurs. Refusez-la ; une nouvelle demande pourra être faite.</Callout>}
       {r.decision_note && <p className="help" style={{ margin: "var(--sp-1) 0 0" }}>Décision : {r.decision_note}</p>}
       {refused && (

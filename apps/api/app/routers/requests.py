@@ -28,7 +28,7 @@ DAYS = ("lun.", "mar.", "mer.", "jeu.", "ven.", "sam.", "dim.")
 
 class RequestIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    kind: Literal["leave", "absence", "swap"]
+    kind: Literal["leave", "absence", "swap", "availability"]
     start_date: Optional[date] = None
     end_date: Optional[date] = None
     leave_kind: str = Field("conge", pattern="^(conge|formation|maladie|autre)$")
@@ -38,6 +38,7 @@ class RequestIn(BaseModel):
     my_day: Optional[date] = None
     colleague_id: Optional[uuid.UUID] = None
     colleague_day: Optional[date] = None
+    unavailable_weekdays: Optional[List[int]] = None  # indisponibilités hebdomadaires souhaitées (0 = lundi)
     note: Optional[str] = Field(None, max_length=500)
 
     @model_validator(mode="after")
@@ -54,6 +55,12 @@ class RequestIn(BaseModel):
                 raise ValueError("absence partielle : heure de début et heure de fin")
             if self.start_time is not None and self.end_time <= self.start_time:
                 raise ValueError("absence partielle : la fin doit suivre le début")
+        elif self.kind == "availability":
+            w = self.unavailable_weekdays
+            if w is None or len(set(w)) != len(w) or any(not isinstance(x, int) or isinstance(x, bool) or x < 0 or x > 6 for x in w):
+                raise ValueError("indisponibilités hebdomadaires : jours de 0 (lundi) à 6 (dimanche), sans doublon")
+            if len(w) == 7:
+                raise ValueError("indisponibilités hebdomadaires : au moins un jour doit rester disponible")
         else:
             if not (self.my_day and self.colleague_id and self.colleague_day):
                 raise ValueError("échange : votre jour, le collègue et son jour")
@@ -91,8 +98,18 @@ def _approvers(ctx: Ctx, kind: str) -> list:
     return [u for u in ctx.db.scalars(select(m.User).where(m.User.is_active.is_(True))) if has_permission(u.role, perm) and u.id != ctx.user.id]
 
 
+WEEKDAYS = ("lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi", "dimanche")
+
+
+def _weekly(ctx: Ctx, eid) -> List[int]:
+    return sorted({u.weekday for u in ctx.db.scalars(select(m.Unavailability).where(m.Unavailability.employee_id == eid, m.Unavailability.weekday.is_not(None)))})
+
+
 def _summary(r: m.EmployeeRequest, names: dict) -> str:
     P = r.payload or {}
+    if r.kind == "availability":
+        days = ", ".join(WEEKDAYS[d] for d in P.get("unavailable_weekdays", []))
+        return f"Indisponibilités hebdomadaires : {days}" if days else "Plus aucune indisponibilité hebdomadaire"
     if r.kind == "leave":
         return f"{LEAVE_KINDS.get(P.get('leave_kind'), 'Congé')} du {date.fromisoformat(P['start_date']):%d/%m/%Y} au {date.fromisoformat(P['end_date']):%d/%m/%Y}"
     if r.kind == "absence":
@@ -138,7 +155,7 @@ def my_requests(ctx: Ctx = Depends(require("self.read"))):
     colleagues = [{"id": str(x.id), "name": x.name} for x in ctx.db.scalars(select(m.Employee).where(m.Employee.active.is_(True), m.Employee.deleted_at.is_(None),
                                                                                                    m.Employee.id != e.id).order_by(m.Employee.name))]
     return {"employee": {"id": str(e.id), "name": e.name}, "mine": [_out(ctx, r, names) for r in mine], "received": [_out(ctx, r, names) for r in received],
-            "colleagues": colleagues}
+            "colleagues": colleagues, "weekly_unavailable": _weekly(ctx, e.id)}
 
 
 @router.post("/me/requests", status_code=201)
@@ -149,6 +166,11 @@ def create_request(body: RequestIn, ctx: Ctx = Depends(require("self.read"))):
     status = "pending"
     if body.kind == "leave":
         payload = {"start_date": body.start_date.isoformat(), "end_date": body.end_date.isoformat(), "leave_kind": body.leave_kind}
+    elif body.kind == "availability":
+        before = _weekly(ctx, e.id)
+        if sorted(body.unavailable_weekdays) == before:
+            raise HTTPException(422, "Ce sont déjà vos indisponibilités hebdomadaires : rien à demander.")
+        payload = {"unavailable_weekdays": sorted(body.unavailable_weekdays), "before": before}
     elif body.kind == "absence":
         payload = {"on_date": body.on_date.isoformat(), "start_time": body.start_time.strftime("%H:%M") if body.start_time else None,
                    "end_time": body.end_time.strftime("%H:%M") if body.end_time else None}
@@ -260,6 +282,16 @@ def decide(rid: str, body: DecisionIn, ctx: Ctx = Depends(require("employees.rea
             from ..revision import propose_revision
             days = [lo + timedelta(days=k) for k in range((hi - lo).days + 1)]
             result = {"leave_id": str(lv.id), "revisions": propose_revision(ctx.db, ctx.tenant_id, e, days, ctx.user.id)}
+        elif r.kind == "availability":
+            # fiche du collaborateur : s'applique aux prochains plannings ; les plannings existants gardent leurs paramètres conservés
+            before = _weekly(ctx, e.id)
+            for u in ctx.db.scalars(select(m.Unavailability).where(m.Unavailability.employee_id == e.id, m.Unavailability.weekday.is_not(None))):
+                ctx.db.delete(u)
+            ctx.db.flush()
+            for wd in P["unavailable_weekdays"]:
+                ctx.db.add(m.Unavailability(tenant_id=ctx.tenant_id, employee_id=e.id, weekday=wd, reason="demande du collaborateur"))
+            ctx.db.flush()
+            result = {"before": before, "after": P["unavailable_weekdays"]}
         elif r.kind == "absence":
             d = date.fromisoformat(P["on_date"])
             if P.get("start_time"):
