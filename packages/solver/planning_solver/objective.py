@@ -7,7 +7,7 @@ from collections import defaultdict
 from typing import Dict, Iterable, List, Optional, Tuple
 
 from .context import (Prepared, cost_units, coverage_cost, hours_units, individual_penalty, period_of, prepare,
-                      preference_checks, relation_pairs)
+                      preference_checks, relation_pairs, overlaps)
 from .model import Assignment, DEFAULT_WEIGHTS, REINFORCE, SECONDARY, Slot, SolverInput
 
 
@@ -100,8 +100,8 @@ class Evaluator:
         for e in self.inp.employees:
             if e.opposite_of and e.opposite_of in self.prep.emps and e.id < e.opposite_of:
                 out.append(("opposite", e.id, [e.opposite_of], False))
-        for kind, e, others, strict in relation_pairs(self.prep):
-            out.append((kind, e.id, others, strict))
+        for kind, e, others, strict, scope in relation_pairs(self.prep):
+            out.append((kind if scope == "site_day" else f"{kind}:{scope}", e.id, others, strict))
         return out
 
     def _relation_cost(self, entry, mine: Dict[str, List[Slot]]) -> int:
@@ -113,6 +113,10 @@ class Evaluator:
             a = {(s.day, period_of(s)) for s in mine.get(eid, [])}
             b = {(s.day, period_of(s)) for s in mine.get(others[0], [])}
             return w * len(a & b)
+        if kind == "avoid_together:day":
+            return w * len({s.day for s in mine.get(eid, [])} & {s.day for o in others for s in mine.get(o, [])})
+        if kind == "avoid_together:overlap":
+            return w * sum(1 for s in mine.get(eid, []) for o in others for t in mine.get(o, []) if overlaps(s, t))
         a = {(s.day, s.site) for s in mine.get(eid, [])}
         b = {(s.day, s.site) for o in others for s in mine.get(o, [])}
         if kind == "avoid_together":

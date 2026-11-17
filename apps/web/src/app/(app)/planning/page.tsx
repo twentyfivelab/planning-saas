@@ -12,6 +12,7 @@ import { SundayStrip } from "@/components/planning/SundayCounter";
 import { CompatBanner } from "@/components/planning/CompatBanner";
 import { AddShiftModal } from "@/components/planning/AddShiftModal";
 import { DayShiftsModal, RemoveDialog } from "@/components/planning/DayShiftsModal";
+import { DuplicateModal, SwapModal } from "@/components/planning/SwapDuplicate";
 import { EmployeeMonthModal } from "@/components/planning/EmployeeMonth";
 import { HistoryPanel } from "@/components/planning/HistoryPanel";
 import { ReplacementsModal, type ReplaceTarget } from "@/components/planning/ReplacementsModal";
@@ -78,6 +79,8 @@ export default function PlanningPage() {
   const inPeriod = (d: string) => days.includes(d);
   const regsApi = useApi<Reg[]>(period ? `/periods/${period.id}/regularizations` : null);
   const regs = regsApi.data ?? [];
+  const [swapping, setSwapping] = useState<Assignment | null>(null);
+  const [duplicating, setDuplicating] = useState<Assignment | null>(null);
   const [empMonth, setEmpMonth] = useState<{ id: string; name: string } | null>(null);
   const refresh = () => { sched.reload(); confl.reload(); sunday.reload(); regsApi.reload(); invalidate(); };
   const [adding, setAdding] = useState<{ emp: Emp; day: string } | null>(null);
@@ -246,7 +249,10 @@ export default function PlanningPage() {
       <AddShiftModal target={adding} periodId={period?.id ?? ""} onClose={() => setAdding(null)} onAdded={() => { setAdding(null); refresh(); }} />
       <ShiftModal a={sel} onClose={() => setSel(null)} canEdit={canEdit} emps={histEmps} alerts={sel ? alertMap.get(sel.assignment_id) ?? [] : []}
         onReassign={(a, to) => { setSel(null); reassign.request(a, to); }} onLock={toggleLock} onTimes={editTimes} onRemove={(a) => { setSel(null); setRemoving(a); }}
-        onExplain={(a) => setExplain(a.assignment_id)} onReplacements={(a) => { setSel(null); setReplace({ shift_id: a.shift_id, label: `${dayLabel(a.day)} · ${a.site} · ${timeShort(a.start)}–${timeShort(a.end)}` }); }} />
+        onExplain={(a) => setExplain(a.assignment_id)} onReplacements={(a) => { setSel(null); setReplace({ shift_id: a.shift_id, label: `${dayLabel(a.day)} · ${a.site} · ${timeShort(a.start)}–${timeShort(a.end)}` }); }}
+        onSwap={(a) => { setSel(null); setSwapping(a); }} onDuplicate={(a) => { setSel(null); setDuplicating(a); }} />
+      <SwapModal a={swapping} periodId={period?.id ?? ""} all={all} onClose={() => setSwapping(null)} onDone={() => { setSwapping(null); refresh(); }} />
+      <DuplicateModal a={duplicating} period={period ?? null} onClose={() => setDuplicating(null)} onDone={() => { setDuplicating(null); refresh(); }} />
       <ExplainModal assignmentId={explain} onClose={() => setExplain(null)} />
       <ReplacementsModal target={replace} periodId={period?.id ?? ""} canEdit={canEdit} onClose={() => setReplace(null)} onDone={() => { setReplace(null); refresh(); }} />
       <AbsenceModal open={absence} periodId={period?.id ?? ""} period={period} emps={emps.data ?? []} canOptimize={me.permissions.includes("planning.optimize")} canEdit={canEdit} onClose={() => setAbsence(false)} onChanged={refresh} />
@@ -480,7 +486,7 @@ function BrandView({ days, list, budgets }: { days: string[]; list: Assignment[]
 
 type Allowed = { allowed: { template: string; start: string; end: string; break_minutes: number }[]; can_override: boolean };
 
-function ShiftModal({ a, onClose, canEdit, emps, alerts, onReassign, onLock, onTimes, onRemove, onExplain, onReplacements }: { a: Assignment | null; onClose: () => void; canEdit: boolean; emps: Emp[]; alerts: string[]; onReassign: (a: Assignment, to: string) => void; onLock: (a: Assignment) => void; onTimes: (a: Assignment, f: FormData) => void; onRemove: (a: Assignment) => void; onExplain: (a: Assignment) => void; onReplacements: (a: Assignment) => void }) {
+function ShiftModal({ a, onClose, canEdit, emps, alerts, onReassign, onLock, onTimes, onRemove, onExplain, onReplacements, onSwap, onDuplicate }: { a: Assignment | null; onClose: () => void; canEdit: boolean; emps: Emp[]; alerts: string[]; onReassign: (a: Assignment, to: string) => void; onLock: (a: Assignment) => void; onTimes: (a: Assignment, f: FormData) => void; onRemove: (a: Assignment) => void; onExplain: (a: Assignment) => void; onReplacements: (a: Assignment) => void; onSwap: (a: Assignment) => void; onDuplicate: (a: Assignment) => void }) {
   const [to, setTo] = useState("");
   const [allowed, setAllowed] = useState<Allowed | null>(null);
   const [slotSel, setSlotSel] = useState("");
@@ -537,6 +543,8 @@ function ShiftModal({ a, onClose, canEdit, emps, alerts, onReassign, onLock, onT
                 <Button type="submit" disabled={a.locked || (restricted && !slotSel)}>Modifier l&apos;horaire</Button>
               </form>
               <div className="row"><Button icon="lock" onClick={() => onLock(a)}>{a.locked ? "Déverrouiller" : "Verrouiller"}</Button>
+                <Button onClick={() => onSwap(a)}>Échanger…</Button>
+                <Button onClick={() => onDuplicate(a)}>Dupliquer…</Button>
                 <Button icon="x" onClick={() => onRemove(a)}>Retirer du planning</Button>
                 <p className="help">{a.locked ? "Déverrouillez pour réaffecter ou modifier." : "Un shift verrouillé n'est jamais déplacé par la réoptimisation."}</p></div>
             </>

@@ -27,6 +27,17 @@ class Violation:
 
 # --- règles réécrites ici, SANS réutiliser le code du générateur (context.py, model.py) : une erreur commune aux deux ne passerait
 #     pas inaperçue. Un test compare ces fonctions à celles du générateur sur de nombreux cas. ---
+def _travel(inp: SolverInput, a: str, b: str) -> int:
+    """Temps de déplacement déclaré entre deux sites, dans un sens ou dans l'autre (lecture directe des données)."""
+    t = getattr(inp, "travel_minutes", {}) or {}
+    return max(t.get((a, b), 0), t.get((b, a), 0))
+
+
+def _interval(sl: Slot):
+    """Début et fin réels du shift (fuseau du planning, passage de minuit)."""
+    return shift_bounds(sl.day, sl.start, sl.end)
+
+
 def _break_needed(rules, effective_minutes: int) -> int:
     need = 0
     for over, brk in rules or []:
@@ -104,6 +115,16 @@ def violations(inp: SolverInput, assignments: List[Assignment]) -> List[Violatio
                     limit=f"plus de shift à partir du {e.left_on:%d/%m/%Y}", reached=f"shift le {s.day:%d/%m/%Y}")
             elif e.blocked(s.day):
                 add("UNAVAILABLE", f"UNAVAILABLE: {e.name} le {s.day} sur {a.slot_id}", eid, one, limit="disponible", reached="indisponible ce jour")
+            for wd_, wa, wb in sorted(getattr(e, "unavailable_windows", ()) or ()):
+                w0, w1 = shift_bounds(wd_, wa, wb)
+                s0, s1 = _interval(s)
+                if s0 < w1 and w0 < s1:
+                    add("UNAVAILABLE_PARTIAL", f"UNAVAILABLE_PARTIAL: {e.name} le {s.day} sur {a.slot_id} (absent·e de {wa:%H:%M} à {wb:%H:%M})", eid, one,
+                        limit=f"absent·e {wa:%H:%M}–{wb:%H:%M}", reached=f"shift {s.start:%H:%M}–{s.end:%H:%M}")
+            ww = getattr(e, "work_window", None)
+            if ww is not None and not (s.end > s.start and ww[0] <= s.start and s.end <= ww[1]):
+                add("WORK_WINDOW", f"WORK_WINDOW: {e.name} sur {a.slot_id} {s.start:%H:%M}-{s.end:%H:%M} hors de ses horaires obligatoires", eid, one,
+                    limit=f"{ww[0]:%H:%M}–{ww[1]:%H:%M}", reached=f"{s.start:%H:%M}–{s.end:%H:%M}")
             if s.tag in e.forbidden_tags:
                 add("FORBIDDEN_TAG", f"FORBIDDEN_TAG: {e.name} sur {s.id} ({s.tag})", eid, one, reached=s.tag)
             if any(b not in e.brands for b in s.brands):
@@ -134,6 +155,18 @@ def violations(inp: SolverInput, assignments: List[Assignment]) -> List[Violatio
                 gap = (sq - ep).total_seconds() / 3600
                 add("REST", f"REST<{cfg.rest_hours}h: {e.name} {p.slot_id} -> {q.slot_id}", eid, [p.slot_id, q.slot_id],
                     limit=f"{cfg.rest_hours} h", reached=f"{gap:.1f} h".replace(".0 h", " h"))
+        # temps de déplacement entre sites : toutes les paires proches (pas seulement les shifts consécutifs)
+        longest = max((getattr(inp, "travel_minutes", {}) or {}).values(), default=0)
+        for i, p in enumerate(lst):
+            ep, sp = slots[p.slot_id].bounds[1], slots[p.slot_id].site
+            for q in lst[i + 1:]:
+                gap = slots[q.slot_id].bounds[0] - ep
+                if gap >= timedelta(minutes=longest):
+                    break
+                need = _travel(inp, sp, slots[q.slot_id].site)
+                if timedelta(0) <= gap < timedelta(minutes=need):
+                    add("TRAVEL_TIME", f"TRAVEL_TIME: {e.name} {p.slot_id} -> {q.slot_id} ({sp} -> {slots[q.slot_id].site})", eid,
+                        [p.slot_id, q.slot_id], limit=f"{need} min", reached=f"{int(gap.total_seconds() // 60)} min")
         days = sorted({a.day for a in lst})
         # jours travaillés hors période (périodes voisines) : semaines à cheval, jours consécutifs, repos à la frontière
         out_days = {o.day for o in inp.outside_shifts if o.employee_id == eid and not (inp.period_start <= o.day <= inp.period_end)}
@@ -258,9 +291,33 @@ def violations(inp: SolverInput, assignments: List[Assignment]) -> List[Violatio
             if tutors and not any((d, site) in where.get(r.other, ()) for r in tutors):
                 add("MENTOR_MISSING", f"MENTOR_MISSING: {e.name} le {d} à {site} sans tuteur présent", eid, at(eid, d, site))
             for r in e.relations:
-                if r.kind == "avoid_together" and r.strict and (d, site) in where.get(r.other, ()) and (eid < r.other or not any(
-                        x.kind == r.kind and x.other == eid and x.strict for x in emps[r.other].relations)):
+                if r.kind == "avoid_together" and r.strict and getattr(r, "scope", "site_day") == "site_day" and (d, site) in where.get(r.other, ()) and (
+                        eid < r.other or not any(x.kind == r.kind and x.other == eid and x.strict for x in emps[r.other].relations)):
                     add("RELATION_AVOID", f"RELATION_AVOID: {e.name} et {emps[r.other].name} le {d} à {site}", eid, at(eid, d, site) + at(r.other, d, site))
+    # « à séparer » de portée élargie (vérification propre, sans le code du générateur) : même jour tous sites, ou horaires qui se chevauchent
+    for eid, lst in per_emp.items():
+        e = emps[eid]
+        for r in e.relations:
+            scope = getattr(r, "scope", "site_day")
+            if r.kind != "avoid_together" or not r.strict or scope == "site_day" or r.other not in per_emp:
+                continue
+            if r.other < eid and any(x.kind == r.kind and x.other == eid and x.strict and getattr(x, "scope", "site_day") == scope
+                                     for x in emps[r.other].relations):
+                continue  # relation réciproque : signalée une seule fois
+            for a in lst:
+                sa = slots[a.slot_id]
+                a0, a1 = _interval(sa)
+                for b in per_emp[r.other]:
+                    sb = slots[b.slot_id]
+                    if scope == "day":
+                        hit = sa.day == sb.day
+                    else:
+                        b0, b1 = _interval(sb)
+                        hit = a0 < b1 and b0 < a1
+                    if hit:
+                        what = f"le {sa.day}" if scope == "day" else f"{sa.day} {sa.start:%H:%M}-{sa.end:%H:%M} / {sb.day} {sb.start:%H:%M}-{sb.end:%H:%M}"
+                        add("RELATION_AVOID", f"RELATION_AVOID: {e.name} et {emps[r.other].name} {what} ({'même jour' if scope == 'day' else 'horaires qui se chevauchent'})",
+                            eid, [a.slot_id, b.slot_id])
 
     if inp.allowed_times:
         for a in assignments:

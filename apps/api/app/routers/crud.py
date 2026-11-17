@@ -29,7 +29,34 @@ class SiteIn(S):
     code: str = Field(min_length=1, max_length=32)
     name: str = Field(max_length=200)
     open_weekdays: List[int] = []
+    continuous_presence: bool = False  # pause sans relève signalée dans la couverture
     _v = field_validator("open_weekdays")(_weekdays)
+
+
+class SiteTravelIn(S):
+    from_site: str = Field(min_length=1, max_length=32)
+    to_site: str = Field(min_length=1, max_length=32)
+    minutes: int = Field(ge=0, le=600)
+
+    @model_validator(mode="after")
+    def _t(self):
+        if self.from_site == self.to_site:
+            raise ValueError("deux sites différents")
+        return self
+
+
+class PartialAbsenceIn(S):
+    employee_id: uuid.UUID
+    on_date: date
+    start_time: time
+    end_time: time
+    reason: Optional[str] = Field(None, max_length=200)
+
+    @model_validator(mode="after")
+    def _w(self):
+        if self.end_time <= self.start_time:
+            raise ValueError("l'heure de fin doit suivre l'heure de début (absence dans la journée)")
+        return self
 
 
 class BrandIn(S):
@@ -211,7 +238,7 @@ class BudgetIn(S):
 
 class PreferenceIn(S):
     employee_id: uuid.UUID
-    kind: str = Field(pattern="^(latest_start|preferred_times|preferred_tags|weekly_rest_days|rest_weekdays|sites)$")
+    kind: str = Field(pattern="^(latest_start|preferred_times|preferred_tags|weekly_rest_days|rest_weekdays|sites|work_window)$")
     params: dict
     strength: int = Field(1, ge=1, le=5)
     is_hard: bool = False
@@ -222,6 +249,14 @@ class PreferenceIn(S):
             days = self.params.get("weekdays")
             if not isinstance(days, list) or any(not isinstance(d, int) or isinstance(d, bool) or d < 0 or d > 6 for d in days):
                 raise ValueError("jours de repos : liste de jours de 0 (lundi) à 6 (dimanche)")
+        if self.kind == "work_window":  # horaires obligatoires : toujours une contrainte dure
+            try:
+                a, b = time.fromisoformat(self.params["start"]), time.fromisoformat(self.params["end"])
+            except (KeyError, TypeError, ValueError):
+                raise ValueError("horaires obligatoires : début et fin au format HH:MM")
+            if b <= a:
+                raise ValueError("horaires obligatoires : la fin doit suivre le début")
+            self.is_hard = True
         if self.kind == "sites":
             sites = self.params.get("sites")
             if not isinstance(sites, list) or any(not isinstance(x, str) for x in sites):
@@ -235,11 +270,14 @@ class RelationshipIn(S):
     kind: str = Field("opposite_shifts", pattern="^(opposite_shifts|avoid_together|work_together|mentor)$")
     note: Optional[str] = Field(None, max_length=200)
     strict: bool = False
+    scope: str = Field("site_day", pattern="^(site_day|day|overlap)$")
 
     @model_validator(mode="after")
     def _rel(self):
         if self.employee_id == self.other_employee_id:
             raise ValueError("une relation concerne deux collaborateurs différents")
+        if self.scope != "site_day" and self.kind != "avoid_together":
+            raise ValueError("la portée « même jour, tous sites » ou « horaires qui se chevauchent » s'applique aux collaborateurs à séparer")
         if self.strict and self.kind not in ("avoid_together", "mentor"):
             raise ValueError("seules les relations « à séparer » et « tuteur » peuvent être strictes")
         return self
@@ -277,6 +315,13 @@ def _check_refs(ctx: Ctx, data: dict) -> None:
         v = data.get(k)
         if v is not None and ctx.db.get(mdl, v) is None:
             raise HTTPException(422, f"{k}: référence inconnue")
+
+
+def _travel_extra(ctx: Ctx, data: dict) -> None:
+    codes = set(ctx.db.scalars(select(m.Site.code)))
+    unknown = [c for c in (data["from_site"], data["to_site"]) if c not in codes]
+    if unknown:
+        raise HTTPException(422, f"Site inconnu : {', '.join(unknown)}")
 
 
 def _constraint_extra(ctx: Ctx, data: dict) -> None:
@@ -317,7 +362,7 @@ def crud(path: str, model: Type, schema: Type[S], read_perm: str, write_perm: st
     @r.put("/{id_}")
     def update(id_: str, body: schema, ctx: Ctx = Depends(require(write_perm))):  # type: ignore[valid-type]
         obj = get_or_404(ctx, model, id_)
-        data = body.model_dump()
+        data = body.model_dump(exclude_unset=True)  # un champ non envoyé (écran plus ancien) n'est jamais remis à sa valeur par défaut
         _check_refs(ctx, data)
         for k, v in data.items():
             setattr(obj, k, v)
@@ -350,6 +395,8 @@ def routers() -> List[APIRouter]:
         crud("unavailabilities", m.Unavailability, UnavailabilityIn, "employees.read", "availability.write",
              "disponibilités"),
         crud("leaves", m.LeaveRequest, LeaveIn, "employees.read", "availability.write", "disponibilités"),
+        crud("partial-absences", m.PartialAbsence, PartialAbsenceIn, "employees.read", "availability.write", "disponibilités"),
+        crud("site-travel", m.SiteTravel, SiteTravelIn, "referential.read", "referential.write", "référentiels", extra_on_create=_travel_extra),
         crud("shift-templates", m.ShiftTemplate, TemplateIn, "referential.read", "referential.write", "besoins"),
         crud("staffing-requirements", m.StaffingRequirement, RequirementIn, "referential.read",
              "referential.write", "besoins"),

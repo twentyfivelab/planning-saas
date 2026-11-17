@@ -399,14 +399,34 @@ class _Spy:
         return out
 
 
-@pytest.mark.slow
-def test_performance_grand_effectif(monkeypatch):
-    """150 collaborateurs, 30 jours, 2 160 shifts : tous les niveaux s'exécutent dans le délai, couverture complète prouvée, aucune violation, statut honnête."""
+def test_grand_effectif_resultat_toujours_valide_et_statut_honnete(monkeypatch):
+    """Test de CORRECTION (pas une mesure de temps) : 150 collaborateurs, 2 160 shifts. Quel que soit le temps disponible ou la charge de la
+    machine, le résultat est soit un planning entièrement vérifié et sans violation, soit « interrompu » sans aucune affectation ; jamais un
+    optimum annoncé sans preuve, jamais un niveau prouvé sans solution."""
     from planning_solver import engine
     spy = _Spy(engine.validate)
     monkeypatch.setattr(engine, "validate", spy)
     inp = large_instance()
-    inp.config.time_limit_s = 45  # marge pour une machine chargée ; sur une machine disponible, la couverture est prouvée en moins de 10 s
+    inp.config.time_limit_s = 20
+    r = solve(inp)
+    if r.status == "interrompu":
+        assert r.assignments == [] and spy.calls == []
+        return
+    assert r.hard_violations == [] and spy.calls == [len(r.assignments)] and r.assignments
+    assert r.metrics["uncovered_shifts"] == len(r.uncovered_slots)
+    assert r.proved_optimal == all(x["proved_optimal"] for x in r.levels) and (r.status == "optimal") == r.proved_optimal
+    assert all(x["value"] is not None or not x["proved_optimal"] for x in r.levels)
+
+
+@pytest.mark.perf
+def test_performance_grand_effectif(monkeypatch):
+    """MESURE DE PERFORMANCE (marqueur perf, exécutée à part dans des conditions documentées : scripts/ops/perf_engine.sh).
+    150 collaborateurs, 30 jours, 2 160 shifts : tous les niveaux s'exécutent dans le délai, couverture complète prouvée, statut honnête."""
+    from planning_solver import engine
+    spy = _Spy(engine.validate)
+    monkeypatch.setattr(engine, "validate", spy)
+    inp = large_instance()
+    inp.config.time_limit_s = 45  # budget du produit pour cette taille ; sur une machine disponible, la couverture est prouvée en moins de 10 s
     t0 = _time.time()
     r = solve(inp)
     took = _time.time() - t0

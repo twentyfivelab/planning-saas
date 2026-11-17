@@ -2,6 +2,7 @@
 import { useMe } from "@/components/Shell";
 import { usePeriod } from "@/components/hooks";
 import { MonthSwitcher } from "@/components/MonthSwitcher";
+import { SiteRules } from "@/components/planning/SiteRules";
 import { SitesEditor } from "@/components/planning/SitesEditor";
 import { PageHead } from "@/components/ui/primitives";
 import { monthLabel } from "@/lib/months";
@@ -14,6 +15,7 @@ export default function Catalog() {
     <>
       <PageHead eyebrow={`Configuration en vigueur · ${monthLabel(month)}`} title="Sites et marques"><MonthSwitcher month={month} onChange={setMonth} /></PageHead>
       <SitesEditor month={month} canEdit={me.permissions.includes("referential.write")} />
+      <SiteRules canEdit={me.permissions.includes("referential.write")} />
     </>
   );
 }

@@ -13,4 +13,6 @@ include = ["planning_solver*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-markers = ["slow: tests de performance sur de grands effectifs"]
+# Tests de correction par défaut ; les mesures de temps (perf) s'exécutent à part : scripts/ops/perf_engine.sh (conditions consignées)
+addopts = "-m 'not perf'"
+markers = ["perf: mesures de performance (durées), exécutées à part dans des conditions documentées"]

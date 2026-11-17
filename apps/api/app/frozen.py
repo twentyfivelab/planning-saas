@@ -19,7 +19,12 @@ FICHE_FIELDS = ("brands", "skills", "weight", "contract", "legal_weekly_max_minu
                 "forbidden_tags", "max_days_per_week", "max_days_count", "max_days_period", "min_days_month", "max_days_month",
                 "time_pref", "time_pref_strict", "latest_start", "preferred_times", "preferred_tags", "preference_strength",
                 "weekly_rest_days_pref", "weekly_rest_days_hard", "rest_weekdays_hard", "rest_weekdays_soft", "allowed_sites",
-                "preferred_sites", "opposite_of", "relations")
+                "preferred_sites", "opposite_of", "relations", "work_window")
+# champs apparus après la création de plannings existants : absents d'un planning conservé = valeur par défaut du moteur (jamais la valeur
+# actuelle, qui créerait un effet rétroactif) ; une différence est signalée et ne s'applique qu'avec « Appliquer les paramètres actuels »
+LATE_FICHE = {"work_window": None}
+LATE_CONFIG = {"travel_minutes": []}
+RELATION_SCOPES = {"day": "même jour, tous sites", "overlap": "horaires qui se chevauchent"}
 # règles de l'entreprise et pondérations UTILISÉES lors de la génération : les conditions de génération restent retrouvables
 CONFIG_FIELDS = ("rest_hours", "max_consecutive_days", "weights", "hierarchical", "break_rules", "monthly_cap_minutes")
 ROSTER_FIELDS = ("contract_ended",)  # effectif : collaborateur hors effectif parce que son contrat était terminé
@@ -37,6 +42,7 @@ LABELS = {
     "opposite_of": "Horaires opposés avec", "relations": "Relations entre collaborateurs", "contract_ended": "Contrat terminé (hors effectif)",
     "rest_hours": "Repos quotidien minimum", "max_consecutive_days": "Jours consécutifs maximum", "weights": "Pondérations de l'algorithme",
     "hierarchical": "Optimisation hiérarchisée", "break_rules": "Pauses minimales", "monthly_cap_minutes": "Plafond mensuel d'heures",
+    "work_window": "Horaires obligatoires", "travel_minutes": "Temps de déplacement entre sites",
 }
 DAYS = ("lun.", "mar.", "mer.", "jeu.", "ven.", "sam.", "dim.")
 LEVELS = {"priority": "prioritaire", "secondary": "secondaire", "reinforce": "renfort"}
@@ -60,8 +66,8 @@ def fiche_of(se: SEmployee) -> dict:
         v = getattr(se, f)
         if f == "contract":
             v = None if v is None else {k: getattr(v, k) for k in Contract.__dataclass_fields__}
-        elif f == "relations":
-            v = sorted([r.kind, r.other, r.strict] for r in v)
+        elif f == "relations":  # portée par défaut omise : les plannings conservés avant son apparition restent identiques
+            v = sorted([r.kind, r.other, r.strict] + ([r.scope] if getattr(r, "scope", "site_day") != "site_day" else []) for r in v)
         out[f] = _jsonable(v)
     return out
 
@@ -70,12 +76,16 @@ def apply_fiche(se: SEmployee, d: dict) -> None:
     """Remet sur `se` les paramètres habituels conservés par le planning (types du moteur rétablis)."""
     for f in FICHE_FIELDS:
         if f not in d:
-            continue  # champ apparu après la conservation : valeur actuelle (sans effet sur les plannings existants : None par défaut)
+            if f in LATE_FICHE:
+                setattr(se, f, LATE_FICHE[f])  # champ apparu après la conservation : valeur par défaut, jamais la valeur actuelle
+            continue
         v = d[f]
         if f == "contract":
             v = None if v is None else Contract(**{k: v.get(k) for k in Contract.__dataclass_fields__})
         elif f == "relations":
-            v = [Relation(k, o, bool(s)) for k, o, s in v]
+            v = [Relation(r[0], r[1], bool(r[2]), r[3] if len(r) > 3 else "site_day") for r in v]
+        elif f == "work_window":
+            v = None if v is None else (time.fromisoformat(v[0]), time.fromisoformat(v[1]))
         elif f in ("skills", "unavailable_weekdays", "forbidden_tags", "preferred_tags", "rest_weekdays_hard", "rest_weekdays_soft", "preferred_sites"):
             v = set(v or [])
         elif f in ("available_weekdays", "allowed_sites"):
@@ -111,6 +121,8 @@ def snapshot(fiches: Dict[str, dict], cfg: dict, source: str) -> dict:
 
 def fmt(field: str, v: Any, names: Dict[str, str]) -> str:
     """Valeur lisible (comparaison des paramètres)."""
+    if field == "travel_minutes" and not v:
+        return "Aucun temps de déplacement"
     if v is None or v == [] or v == {}:
         return "Pas de préférence" if field not in ("contract", "skills", "brands") else "Non renseigné"
     if isinstance(v, bool):
@@ -128,7 +140,12 @@ def fmt(field: str, v: Any, names: Dict[str, str]) -> str:
         return names.get(v, v)
     if field == "relations":
         kinds = {"avoid_together": "à séparer de", "work_together": "en binôme avec", "mentor": "tuteur :"}
-        return "; ".join(f"{kinds.get(k, k)} {names.get(o, o)}{' (strict)' if s else ''}" for k, o, s in v)
+        return "; ".join(f"{kinds.get(r[0], r[0])} {names.get(r[1], r[1])}{' (' + RELATION_SCOPES[r[3]] + ')' if len(r) > 3 and r[3] in RELATION_SCOPES else ''}"
+                         f"{' (strict)' if r[2] else ''}" for r in v)
+    if field == "work_window":
+        return f"{v[0]}–{v[1]}"
+    if field == "travel_minutes":
+        return "; ".join(f"{a} ↔ {b} : {mi} min" for a, b, mi in v)
     if field == "contract":
         parts = []
         for k, lab in (("monthly_target_minutes", "objectif"), ("monthly_min_minutes", "minimum"), ("monthly_max_minutes", "maximum"),
@@ -159,6 +176,10 @@ def differences(frozen: Optional[dict], fiches: Dict[str, dict], cfg: dict, name
                             "current": ", ".join(changed)})
                 continue
             out.append({"employee": None, "field": f, "label": LABELS[f], "planning": fmt(f, old_cfg.get(f), names), "current": fmt(f, cfg.get(f), names)})
+    for f, default in LATE_CONFIG.items():
+        before = old_cfg.get(f, default)
+        if f in cfg and before != cfg[f]:
+            out.append({"employee": None, "field": f, "label": LABELS[f], "planning": fmt(f, before, names), "current": fmt(f, cfg[f], names)})
     old = frozen.get("employees", {})
     for code, cur in sorted(fiches.items(), key=lambda kv: names.get(kv[0], kv[0])):
         prev = old.get(code)
@@ -167,6 +188,8 @@ def differences(frozen: Optional[dict], fiches: Dict[str, dict], cfg: dict, name
                         "planning": "—", "current": "présent"})
             continue
         for f in FICHE_FIELDS + ROSTER_FIELDS:
+            if f not in prev and f in LATE_FICHE:
+                prev = {**prev, f: LATE_FICHE[f]}
             if f in prev and prev.get(f) != cur.get(f):
                 out.append({"employee": names.get(code, code), "employee_id": code, "field": f, "label": LABELS[f],
                             "planning": fmt(f, prev.get(f), names), "current": fmt(f, cur.get(f), names)})

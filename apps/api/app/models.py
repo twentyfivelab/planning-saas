@@ -124,7 +124,18 @@ class Site(TenantOwned, Base):
     open_weekdays: Mapped[Any] = mapped_column(JSONB, default=list)
     # le code est l'identifiant STABLE (référencé par les shifts et les besoins) ; seul le nom est modifiable.
     archived_from: Mapped[Optional[date]] = mapped_column(Date)  # 1er mois sans ce site ; les mois antérieurs restent intacts
+    # présence continue exigée : une pause sans relève (personne d'autre présent sur le site) est signalée dans la couverture
+    continuous_presence: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     __table_args__ = (UniqueConstraint("tenant_id", "code"),)
+
+
+class SiteTravel(TenantOwned, Base):
+    """Temps de déplacement entre deux sites (minutes, valable dans les deux sens) : écart minimal entre deux shifts d'un collaborateur."""
+    __tablename__ = "site_travel"
+    from_site: Mapped[str] = mapped_column(String(32))
+    to_site: Mapped[str] = mapped_column(String(32))
+    minutes: Mapped[int] = mapped_column(Integer)
+    __table_args__ = (UniqueConstraint("tenant_id", "from_site", "to_site"),)
 
 
 class Brand(TenantOwned, Base):
@@ -226,6 +237,16 @@ class Unavailability(TenantOwned, Base):
     employee_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("employees.id", ondelete="CASCADE"))
     weekday: Mapped[Optional[int]] = mapped_column(Integer)  # récurrent
     on_date: Mapped[Optional[date]] = mapped_column(Date)
+    reason: Mapped[Optional[str]] = mapped_column(String(200))
+
+
+class PartialAbsence(TenantOwned, Base):
+    """Absence sur une partie de la journée (rendez-vous, formation…) : seuls les shifts qui chevauchent ce créneau sont impossibles."""
+    __tablename__ = "partial_absences"
+    employee_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("employees.id", ondelete="CASCADE"))
+    on_date: Mapped[date] = mapped_column(Date)
+    start_time: Mapped[time] = mapped_column(Time)
+    end_time: Mapped[time] = mapped_column(Time)
     reason: Mapped[Optional[str]] = mapped_column(String(200))
 
 
@@ -456,6 +477,8 @@ class RelationshipPreference(TenantOwned, Base):
     kind: Mapped[str] = mapped_column(String(32), default="opposite_shifts")  # opposite_shifts | avoid_together | work_together | mentor
     note: Mapped[Optional[str]] = mapped_column(String(200))
     strict: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")  # contrainte dure (avoid_together, mentor) ; sinon préférence
+    # portée d'une relation « à séparer » : site_day (même jour, même site) | day (même jour, tous sites) | overlap (horaires qui se chevauchent)
+    scope: Mapped[str] = mapped_column(String(16), default="site_day", server_default="site_day")
 
 
 class OptimizationRun(TenantOwned, Base):

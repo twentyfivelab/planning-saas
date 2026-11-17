@@ -14,7 +14,7 @@ import { useReassign } from "./useReassign";
 
 type Item = { assignment_id: string; shift_id: string; period_id: string; start: string; end: string; break_minutes: number; presence_minutes: number;
   effective_minutes: number; site: string; site_name: string; brands: string[]; locked: boolean; source: string };
-type Day = { date: string; weekday: number; assignments: Item[]; off: { kind: string; label: string } | null };
+type Day = { date: string; weekday: number; assignments: Item[]; off: { kind: string; label: string } | null; partial?: { start: string; end: string; reason: string | null }[] };
 type MonthData = { employee: { id: string; name: string; deleted: boolean }; month: string; label: string; period: { id: string; name: string; archived: boolean } | null;
   has_plan: boolean; days: Day[]; totals: { effective_minutes: number; days_worked: number; sundays_worked: number; presence_minutes: number; break_minutes: number };
   limits: { monthly_cap_minutes: number | null; min_days_month: number | null; max_days_month: number | null } };
@@ -61,9 +61,10 @@ export function EmployeeMonthModal({ employee, initialMonth, onClose, emps }: { 
   if (!employee) return null;
   const cell = (x: Day) => (
     <div key={x.date} className="emonth-cell" data-weekend={x.weekday >= 5 || undefined} data-today={x.date === today || undefined} data-off={x.off?.kind}
-      role="gridcell" aria-label={`${dayLong(x.date)}${x.assignments.length ? `, ${x.assignments.length} shift(s)` : x.off ? `, ${x.off.label}` : ", sans affectation"}`}>
+      role="gridcell" aria-label={`${dayLong(x.date)}${x.assignments.length ? `, ${x.assignments.length} shift(s)` : x.off ? `, ${x.off.label}` : ", sans affectation"}${x.partial?.length ? `, absence partielle ${x.partial.map((p) => `${p.start}–${p.end}`).join(", ")}` : ""}`}>
       <div className="emonth-date"><span>{Number(x.date.slice(8))}</span><span className="emonth-dow">{DOW[x.weekday]}</span></div>
       {x.off && <Badge tone={x.off.kind === "conge" ? "info" : "warn"}>{x.off.label}</Badge>}
+      {x.partial?.map((p) => <Badge key={p.start} tone="warn">{`Absent·e ${p.start}–${p.end}`}{p.reason ? ` (${p.reason})` : ""}</Badge>)}
       {x.assignments.map((a) => (
         <button key={a.assignment_id} type="button" className="emonth-shift" style={{ ["--c" as string]: brandColor(a.brands[0] ?? "") }}
           aria-pressed={sel?.item.assignment_id === a.assignment_id} onClick={() => setSel({ day: x, item: a })}>
@@ -72,7 +73,7 @@ export function EmployeeMonthModal({ employee, initialMonth, onClose, emps }: { 
           <span className="faint">{a.brands.join(" / ")}{a.break_minutes ? ` · pause ${a.break_minutes} min` : ""}{a.locked ? " · verrouillé" : ""}</span>
         </button>
       ))}
-      {!x.assignments.length && !x.off && <span className="faint emonth-empty">—</span>}
+      {!x.assignments.length && !x.off && !x.partial?.length && <span className="faint emonth-empty">—</span>}
     </div>
   );
   return (

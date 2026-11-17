@@ -130,6 +130,36 @@ def test_minimums_compatibles_un_a_un_mais_pas_ensemble():
     assert "leurs minimums cumulés (40 jours) dépassent les 30 shifts" in issue.message
 
 
+def test_minimums_en_conflit_detectes_par_denombrement_avant_le_calcul():
+    """Le conflit de minimums entre collaborateurs qui se partagent les mêmes shifts est un simple dénombrement : il est signalé avant tout
+    calcul, avec un délai minuscule, donc indépendamment de la charge de la machine."""
+    slots = [slot(f"X|{d}", d) for d in NOV]
+    res = solve(SolverInput(NOV[0], NOV[-1], slots, [emp("ana", min_days_month=20), emp("ben", min_days_month=20), emp("eve")], [],
+                            cfg(time_limit_s=0.01)))
+    assert res.status == "infaisable" and not res.levels  # aucun niveau de calcul exécuté : signalé avant le solveur
+    issue = next(i for i in res.diagnostics if i.code == "MIN_DAYS_CONFLICT")
+    assert "Ana (20 jours" in issue.message and "Ben (20 jours" in issue.message and "Eve" not in issue.message
+    assert "(40 jours) dépassent les 30 shifts" in issue.message
+    # deux shifts par jour : 2 × 30 = 60 places, aucun conflit par dénombrement (le calcul a lieu normalement)
+    two = slots + [slot(f"Y|{d}", d, start=(10, 0), end=(19, 0)) for d in NOV]
+    res = solve(SolverInput(NOV[0], NOV[-1], two, [emp("ana", min_days_month=20), emp("ben", min_days_month=20)], [], cfg()))
+    assert res.status in ("optimal", "faisable", "partiellement_couvert") and not res.hard_violations
+    assert len(worked_days(res, "ana")) >= 20 and len(worked_days(res, "ben")) >= 20
+
+
+def test_minimums_en_conflit_avec_une_relation_stricte_noyau_du_solveur():
+    """Conflit invisible au dénombrement (deux shifts par jour) : une relation stricte « pas le même jour sur le même site » empêche les deux
+    minimums ensemble. Le noyau du solveur nomme les deux collaborateurs."""
+    from planning_solver.model import Relation
+    days = NOV[:10]
+    slots = [slot(f"{k}|{d}", d, start=(h, 0), end=(h + 9, 0)) for d in days for k, h in (("M", 6), ("S", 12))]
+    ana = emp("ana", min_days_month=6, relations=[Relation("avoid_together", "ben", strict=True)])
+    res = solve(SolverInput(NOV[0], NOV[-1], slots, [ana, emp("ben", min_days_month=6)], [], cfg()))
+    assert res.status == "infaisable"
+    issue = next(i for i in res.diagnostics if i.code == "MIN_DAYS_CONFLICT")
+    assert "Ana (6 jours" in issue.message and "Ben (6 jours" in issue.message and "relations entre collaborateurs" in issue.message
+
+
 def test_collaborateur_supprime_plus_aucun_shift_apres_son_retrait():
     slots = [slot(f"X|{d}", d) for d in NOV]
     inp = SolverInput(NOV[0], NOV[-1], slots, [emp("ana", left_on=NOV[14]), emp("ben")], [], cfg())
@@ -190,3 +220,67 @@ def test_controles_avant_generation_capacite_creneaux_orphelins_budget():
     assert "A : budget strict de 100 h pour 240 h" in codes["BUDGET_BELOW_DEMAND"].message
     ok = SolverInput(NOV[0], NOV[-1], slots[:30], [emp("ana"), emp("ben")], [], cfg(monthly_cap_minutes=CAP))
     assert pre_generation_checks(prepare(ok)) == []  # aucun faux signalement quand c'est faisable
+
+
+def _rel_case(scope, strict=True):
+    """Deux collaborateurs, deux sites, chaque jour un shift par site ; le second site en soirée chevauche le premier."""
+    from planning_solver.model import Relation
+    days = NOV[:6]
+    slots = [slot(f"A|{d}", d, site="S1", start=(8, 0), end=(17, 0)) for d in days] + \
+            [slot(f"B|{d}", d, site="S2", start=(14, 0), end=(23, 0)) for d in days]
+    ana = emp("ana", relations=[Relation("avoid_together", "ben", strict=strict, scope=scope)])
+    return SolverInput(NOV[0], NOV[-1], slots, [ana, emp("ben")], [], cfg(rest_hours=0)), slots
+
+
+def test_relation_a_separer_meme_jour_tous_sites():
+    inp, slots = _rel_case("day")
+    res = solve(inp)
+    assert not res.hard_violations
+    assert not set(worked_days(res, "ana")) & set(worked_days(res, "ben"))  # jamais le même jour, même sur deux sites différents
+    # le vérificateur indépendant refuse un planning qui les réunit le même jour sur deux sites
+    d = NOV[0]
+    a, b = slots[0], slots[6]
+    bad = [Assignment(a.id, "ana", d, a.start, a.end, 540, 60, 480, dict(a.allocations)), Assignment(b.id, "ben", d, b.start, b.end, 540, 60, 480, dict(b.allocations))]
+    v = [x for x in violations(inp, bad) if x.code == "RELATION_AVOID"]
+    assert len(v) == 1 and "même jour" in v[0].text
+
+
+def test_relation_a_separer_horaires_qui_se_chevauchent():
+    inp, slots = _rel_case("overlap")
+    a, b = slots[0], slots[6]  # 8 h–17 h sur S1 et 14 h–23 h sur S2 : chevauchement
+    d = NOV[0]
+    bad = [Assignment(a.id, "ana", d, a.start, a.end, 540, 60, 480, dict(a.allocations)), Assignment(b.id, "ben", d, b.start, b.end, 540, 60, 480, dict(b.allocations))]
+    assert [x.code for x in violations(inp, bad) if x.code == "RELATION_AVOID"] == ["RELATION_AVOID"]
+    res = solve(inp)
+    # chaque jour les deux shifts se chevauchent : ni un même collaborateur, ni Ana et Ben ensemble ne peuvent les tenir tous les deux
+    assert not res.hard_violations and len(res.uncovered_slots) == 6
+    assert sorted(s.split("|")[1] for s in res.uncovered_slots) == sorted(str(d) for d in NOV[:6])
+    # horaires qui ne se chevauchent pas (8 h–17 h et 18 h–23 h) : le même jour reste possible pour Ana et Ben
+    from planning_solver.model import Relation
+    late = [slot(f"C|{d}", d, site="S2", start=(18, 0), end=(23, 0), brk=0) for d in NOV[:6]]
+    ana = emp("ana", relations=[Relation("avoid_together", "ben", strict=True, scope="overlap")])
+    res = solve(SolverInput(NOV[0], NOV[-1], slots[:6] + late, [ana, emp("ben")], [], cfg(rest_hours=0)))
+    assert not res.hard_violations and not res.uncovered_slots
+
+
+def test_relation_a_separer_preference_souple_comptee_dans_l_objectif():
+    inp, _ = _rel_case("day", strict=False)
+    res = solve(inp)
+    assert not res.hard_violations and not res.uncovered_slots
+
+
+def test_relation_souple_elargie_cout_identique_solveur_et_evaluateur():
+    """Préférence « à séparer » (même jour ou chevauchement) imposée par la couverture : le coût recalculé sans CP-SAT est celui du solveur."""
+    from planning_solver.model import Relation
+    from planning_solver.objective import evaluate
+    for scope in ("day", "overlap"):
+        days = NOV[:4]
+        slots = [slot(f"A|{d}", d, site="S1", start=(8, 0), end=(17, 0)) for d in days] + \
+                [slot(f"B|{d}", d, site="S2", start=(14, 0), end=(23, 0)) for d in days]
+        ana = emp("ana", relations=[Relation("avoid_together", "ben", strict=False, scope=scope)])
+        inp = SolverInput(NOV[0], NOV[-1], slots, [ana, emp("ben")], [], cfg(rest_hours=0, hierarchical=False))
+        res = solve(inp)
+        assert res.proved_optimal and not res.uncovered_slots and not res.hard_violations
+        terms = evaluate(inp, res.assignments)
+        assert terms.get("family", 0) == res.objective["family"] > 0, scope  # réunis chaque jour pour couvrir : pénalité comptée
+        assert sum(terms.values()) == res.levels[0]["value"]

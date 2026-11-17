@@ -321,6 +321,18 @@ def _conflicts(ctx: Ctx, period_id) -> list:
     return validate(inp, assignments_for_validation(ctx.db, inp, p))
 
 
+@router.get("/periods/{pid}/break-coverage")
+def break_coverage(pid: str, ctx: Ctx = Depends(require("planning.read"))):
+    """Pauses sans relève possible sur les sites à présence continue (signalement de couverture, jamais un blocage)."""
+    from planning_solver.breaks import break_relief_gaps
+    p = get_or_404(ctx, m.PlanningPeriod, pid)
+    sites = {s.code for s in ctx.db.scalars(select(m.Site).where(m.Site.continuous_presence.is_(True)))}
+    if not sites:
+        return {"sites": [], "items": []}
+    inp = build_input(ctx.db, p)
+    return {"sites": sorted(sites), "items": break_relief_gaps(inp, assignments_for_validation(ctx.db, inp, p), sites)}
+
+
 @router.get("/periods/{pid}/conflicts")
 def conflicts(pid: str, ctx: Ctx = Depends(require("planning.read"))):
     p = get_or_404(ctx, m.PlanningPeriod, pid)

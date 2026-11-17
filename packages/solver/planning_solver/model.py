@@ -62,7 +62,8 @@ class Contract:
     hourly_cost_cents: Optional[int] = None  # coût horaire employeur saisi (jamais supposé) : sert aux estimations de coût
 
 
-RELATION_KINDS = ("avoid_together", "work_together", "mentor")  # « horaires opposés » : champ opposite_of (historique)
+RELATION_KINDS = ("avoid_together", "work_together", "mentor")
+RELATION_SCOPES = ("site_day", "day", "overlap")  # « horaires opposés » : champ opposite_of (historique)
 
 
 @dataclass(frozen=True)
@@ -72,10 +73,13 @@ class Relation:
     - work_together : travailler en binôme (même jour, même site) ;
     - mentor : quand ce collaborateur travaille, `other` (expérimenté) est présent le même jour sur le même site
       (plusieurs relations « mentor » = au moins un des tuteurs).
-    strict = contrainte dure (avoid_together, mentor) ; sinon préférence pénalisée."""
+    strict = contrainte dure (avoid_together, mentor) ; sinon préférence pénalisée.
+    scope (avoid_together seulement) : « site_day » même jour sur le même site (défaut) ; « day » même jour, tous sites ;
+    « overlap » horaires qui se chevauchent, tous sites."""
     kind: str
     other: str
     strict: bool = False
+    scope: str = "site_day"
 
 
 @dataclass
@@ -117,6 +121,10 @@ class Employee:
     min_days_month: Optional[int] = None  # limite dure, comme le maximum ; impossible -> calcul bloqué avec la raison
     max_days_month: Optional[int] = None  # limite dure
     left_on: Optional[date] = None  # retiré de l'équipe (suppression) à partir de cette date : plus aucun shift, l'historique antérieur reste
+    # absences partielles : (jour, début, fin) ; seuls les shifts qui chevauchent ce créneau sont impossibles, le reste du jour reste ouvert
+    unavailable_windows: Set[Tuple[date, time, time]] = field(default_factory=set)
+    # horaires obligatoires (contrainte dure) : chaque shift commence au plus tôt à [0] et se termine au plus tard à [1], le même jour
+    work_window: Optional[Tuple[time, time]] = None
 
     def blocked(self, d: date) -> bool:
         wd = d.weekday()
@@ -212,6 +220,13 @@ class SolverInput:
     site_starts: Dict[str, List[time]] = field(default_factory=dict)  # horaires autorisés par boutique (début)
     allowed_times: Dict[str, List[Tuple[time, time]]] = field(default_factory=dict)  # scope (site|marque) -> horaires
     frozen_empty: Set[str] = field(default_factory=set)  # réoptimisation locale : shifts hors périmètre laissés sans titulaire
+    # temps de déplacement entre deux sites (minutes, dans les deux sens) : écart minimal entre deux shifts d'un même collaborateur
+    travel_minutes: Dict[Tuple[str, str], int] = field(default_factory=dict)
+
+    def travel(self, a: str, b: str) -> int:
+        if a == b:
+            return 0
+        return max(self.travel_minutes.get((a, b), 0), self.travel_minutes.get((b, a), 0))
 
 
 @dataclass

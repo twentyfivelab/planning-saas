@@ -106,7 +106,7 @@ def data_subject_export(employee_id: str, ctx: Ctx = Depends(require("tenant.man
     from .crud import serialize
     out = {"employee": serialize(e)}
     for name, model in (("contracts", m.EmploymentContract), ("availabilities", m.Availability),
-                        ("unavailabilities", m.Unavailability), ("leaves", m.LeaveRequest),
+                        ("unavailabilities", m.Unavailability), ("partial_absences", m.PartialAbsence), ("leaves", m.LeaveRequest),
                         ("preferences", m.EmployeePreference), ("assignments", m.Assignment), ("skills", m.EmployeeSkill), ("time_entries", m.TimeEntry)):
         out[name] = [serialize(o) for o in ctx.db.scalars(select(model).where(model.employee_id == e.id))]
     audit(ctx, "gdpr.access_export", "employee", e.id)
@@ -125,7 +125,7 @@ def data_subject_erase(employee_id: str, ctx: Ctx = Depends(require("tenant.mana
         fp = pr.frozen_params or {}
         if e.code in (fp.get("employees") or {}):
             pr.frozen_params = {**fp, "employees": {k: v for k, v in fp["employees"].items() if k != e.code}}
-    for model in (m.EmploymentContract, m.Availability, m.Unavailability, m.LeaveRequest, m.EmployeePreference, m.EmployeeSkill):
+    for model in (m.EmploymentContract, m.Availability, m.Unavailability, m.PartialAbsence, m.LeaveRequest, m.EmployeePreference, m.EmployeeSkill):
         for o in ctx.db.scalars(select(model).where(model.employee_id == e.id)):
             ctx.db.delete(o)
     for r in ctx.db.scalars(select(m.RelationshipPreference).where((m.RelationshipPreference.employee_id == e.id) | (m.RelationshipPreference.other_employee_id == e.id))):

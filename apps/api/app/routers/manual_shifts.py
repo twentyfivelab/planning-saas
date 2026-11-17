@@ -1,5 +1,7 @@
 """Gestion manuelle des shifts depuis le calendrier : liste des shifts d'un jour, attribution / transfert avec vérification
 des contraintes (dérogation possible pour un administrateur, sauf règles non dérogeables) et historique des modifications."""
+import copy
+import dataclasses
 import re
 import uuid
 from datetime import date
@@ -53,6 +55,9 @@ LABELS = {
     "MONTHLY_CAP": "Plafond mensuel d'heures dépassé",
     "MIN_DAYS_NOT_MET": "Nombre minimum de jours par mois non atteint",
     "EMPLOYEE_REMOVED": "Collaborateur supprimé de l'équipe",
+    "UNAVAILABLE_PARTIAL": "Collaborateur absent pendant une partie de ce shift",
+    "WORK_WINDOW": "Shift hors des horaires obligatoires du collaborateur",
+    "TRAVEL_TIME": "Temps de déplacement entre les deux sites insuffisant",
 }
 LEGAL = {"REST", "CONSECUTIVE", "CONTRACT_WEEKLY_MAX", "CONTRACT_MONTHLY_MAX", "REST_DAYS_HARD", "LEGAL_WEEKLY_MAX", "BREAK_TOO_SHORT"}
 # Une règle paramétrée « derogable: false » dans les règles de l'entreprise reste bloquante (aucune valeur légale n'est inventée ici).
@@ -112,9 +117,12 @@ def _rest_gap_hours(pre: Pre, code: str, slot) -> Optional[float]:
     return best
 
 
-def _issues(ctx: Ctx, p: m.PlanningPeriod, e: m.Employee, sh: m.Shift, current: Optional[m.Assignment], pre: Optional[Pre] = None) -> list:
+def _issues(ctx: Ctx, p: m.PlanningPeriod, e: m.Employee, sh: m.Shift, current: Optional[m.Assignment], pre: Optional[Pre] = None, *,
+            slot=None, moves: Optional[dict] = None, released: tuple = ()) -> list:
     """Alertes si `e` prend le shift `sh`. level = blocking (jamais dérogeable) | override (dérogation d'administration) | soft
-    (préférence : confirmation simple). Chaque alerte précise la règle, la valeur autorisée, la valeur atteinte et la conséquence."""
+    (préférence : confirmation simple). Chaque alerte précise la règle, la valeur autorisée, la valeur atteinte et la conséquence.
+    Le MÊME contrôle sert aux opérations composées : `slot` = shift pas encore enregistré (duplication), `moves` = autres changements
+    simultanés {slot_id: code collaborateur} (échange réciproque), `released` = shifts que `e` libère dans la même opération."""
     out: list = []
     if not e.active:
         return [_issue("INACTIVE", "blocking", f"{e.name} est inactif·ve.", rule="Collaborateur actif")]
@@ -123,8 +131,9 @@ def _issues(ctx: Ctx, p: m.PlanningPeriod, e: m.Employee, sh: m.Shift, current: 
                        rule="Collaborateur supprimé")]
     if current is not None and current.employee_id == e.id:
         return [_issue("ALREADY_MINE", "blocking", f"Ce shift est déjà attribué à {e.name}.", rule="Un seul titulaire par shift")]
+    day = slot.day if slot is not None else sh.day
     other = ctx.db.execute(select(m.Shift).join(m.Assignment, m.Assignment.shift_id == m.Shift.id)
-                           .where(m.Assignment.employee_id == e.id, m.Shift.day == sh.day, m.Shift.id != sh.id)).scalars().first()
+                           .where(m.Assignment.employee_id == e.id, m.Shift.day == day, m.Shift.id.not_in([sh.id, *released]))).scalars().first()
     if other is not None:
         out.append(_issue("SAME_DAY", "override", f"{e.name} est déjà affecté·e ce jour-là ({other.site_code} {other.start_time:%Hh%M}–{other.end_time:%Hh%M}). "
                           "En confirmant, la nouvelle affectation est enregistrée provisoirement et un rappel « À régulariser » vous demandera "
@@ -132,8 +141,13 @@ def _issues(ctx: Ctx, p: m.PlanningPeriod, e: m.Employee, sh: m.Shift, current: 
                           limit="1 shift", reached="2 shifts",
                           consequence="Double affectation provisoire : conflit à corriger avant toute validation ou publication."))
     pre = pre or Pre(ctx, p)
+    if moves:  # changements simultanés appliqués au planning de référence (les valeurs « atteintes » en tiennent compte)
+        pre = copy.copy(pre)
+        pre.base = [dataclasses.replace(a, employee_id=moves[a.slot_id]) if a.slot_id in moves else a for a in pre.base]
     inp, base = pre.inp, pre.base
-    slot = pre.slots.get(sh.slot_key)
+    if slot is not None:  # shift pas encore enregistré : ajouté au problème, optionnel (aucun manque de couverture créé)
+        inp = dataclasses.replace(inp, slots=[*inp.slots, slot])
+    slot = slot if slot is not None else pre.slots.get(sh.slot_key)
     if slot is None:
         raise HTTPException(422, "Ce shift n'est pas connu du moteur : régénérez le planning.")
     missing = sorted(b for b in slot.allocations if b not in (e.brands or {}))
@@ -321,6 +335,139 @@ def manual_assign(pid: str, body: ManualIn, ctx: Ctx = Depends(require("planning
     audit(ctx, action, "assignment", a.id, assignment_detail(ctx.db, sh, from_emp, e, **extra))
     return {"assignment_id": str(a.id), "kind": "transfer" if from_emp else "assign", "forced": bool(issues), "conflicts": _conflicts(ctx, p.id),
             "regularizations": reminders}
+
+
+def _decide(ctx: Ctx, issues: list, people: tuple, force: bool, what: str) -> None:
+    """Même décision que pour une affectation manuelle : bloquant -> refus ; alertes sans confirmation -> 409 ; dérogation réservée."""
+    refusal = override_refusal(ctx, people)
+    if any(i["level"] == "blocking" for i in issues):
+        raise HTTPException(409, detail={"code": "blocked", "issues": issues, "can_override": False,
+                                         "message": f"{what} impossible : une règle non dérogeable est en cause."})
+    if issues and not force:
+        raise HTTPException(409, detail={"code": "needs_confirmation", "issues": issues, "can_override": refusal is None, "refusal": refusal,
+                                         "message": "Des contraintes ne sont pas respectées. Confirmez pour déroger, ou annulez."})
+    if issues and refusal is not None:
+        raise HTTPException(403, detail={"code": "forbidden", "issues": issues, "can_override": False, "message": refusal})
+
+
+def _lock_manual(ctx: Ctx, a: m.Assignment, reason: str) -> None:
+    a.source, a.locked = "manual", True
+    for lk in ctx.db.scalars(select(m.LockedAssignment).where(m.LockedAssignment.assignment_id == a.id)):
+        ctx.db.delete(lk)
+    ctx.db.flush()
+    ctx.db.add(m.LockedAssignment(tenant_id=ctx.tenant_id, assignment_id=a.id, locked_by=ctx.user.id, reason=reason))
+
+
+class SwapIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    a: uuid.UUID
+    b: uuid.UUID
+    force: bool = False
+    reason: Optional[str] = Field(None, max_length=300)
+
+
+@router.post("/periods/{pid}/swap")
+def swap(pid: str, body: SwapIn, ctx: Ctx = Depends(require("planning.edit"))):
+    """Échange réciproque de deux affectations entre deux collaborateurs, en UNE transaction (tout ou rien). Chacun est contrôlé sur le
+    planning qui résulte de l'échange complet, par le même contrôle qu'une affectation manuelle (règles, plafond, dérogations)."""
+    p = get_or_404(ctx, m.PlanningPeriod, pid)
+    ensure_editable(ctx.db, p.id)
+    rows = {a.id: a for a in ctx.db.execute(select(m.Assignment).where(m.Assignment.id.in_([body.a, body.b]), m.Assignment.period_id == p.id)
+                                            .with_for_update()).scalars()}
+    if body.a == body.b or len(rows) != 2:
+        raise HTTPException(404, "Deux affectations distinctes de ce planning sont attendues")
+    A, B = rows[body.a], rows[body.b]
+    if A.employee_id == B.employee_id:
+        raise HTTPException(422, "Les deux affectations appartiennent au même collaborateur : rien à échanger")
+    sa, sb = ctx.db.get(m.Shift, A.shift_id), ctx.db.get(m.Shift, B.shift_id)
+    e1, e2 = ctx.db.get(m.Employee, A.employee_id), ctx.db.get(m.Employee, B.employee_id)
+    pre = Pre(ctx, p)
+    issues = _issues(ctx, p, e2, sa, A, pre, moves={sb.slot_key: e1.code}, released=(sb.id,))
+    issues += [i for i in _issues(ctx, p, e1, sb, B, pre, moves={sa.slot_key: e2.code}, released=(sa.id,))
+               if (i["code"], i["message"]) not in {(x["code"], x["message"]) for x in issues}]
+    _decide(ctx, issues, (e1.id, e2.id), body.force, "Cet échange est")
+    months = sorted({(sa.day.year, sa.day.month), (sb.day.year, sb.day.month)})
+    before_minutes = month_minutes(ctx.db, [e1.id, e2.id], months)
+    A.employee_id, B.employee_id = e2.id, e1.id
+    _lock_manual(ctx, A, "échange réciproque")
+    _lock_manual(ctx, B, "échange réciproque")
+    ctx.db.flush()
+    guard_monthly_cap(ctx.db, ctx.tenant_id, before_minutes, [e1.id, e2.id], months)  # filet de sécurité : tout ou rien
+    ensure_frozen(ctx.db, p)
+    regularize.resolve(ctx.db, p.id)
+    reminders = regularize.register_doubles(ctx.db, ctx.tenant_id, p.id, e2.id, A.id, ctx.user.id)
+    reminders += regularize.register_doubles(ctx.db, ctx.tenant_id, p.id, e1.id, B.id, ctx.user.id)
+    extra = {"forced": bool(issues), "approved_by_role": ctx.user.role if issues else None, "reason": body.reason, "issues": [i["message"] for i in issues]}
+    audit(ctx, "assignment.swap", "assignment", A.id, {"a": assignment_detail(ctx.db, sa, e1, e2, **extra), "b": assignment_detail(ctx.db, sb, e2, e1)})
+    return {"swapped": [str(A.id), str(B.id)], "forced": bool(issues), "conflicts": _conflicts(ctx, p.id), "regularizations": reminders}
+
+
+class DuplicateIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    days: list[date] = Field(min_length=1, max_length=31)
+    force: bool = False
+    reason: Optional[str] = Field(None, max_length=300)
+
+
+@router.post("/assignments/{aid}/duplicate")
+def duplicate(aid: str, body: DuplicateIn, ctx: Ctx = Depends(require("planning.edit"))):
+    """Duplique un shift affecté (mêmes horaires, site, pause et marques) sur d'autres jours du même planning, pour le même collaborateur.
+    Chaque copie passe par le même contrôle qu'une affectation manuelle, en tenant compte des copies précédentes ; tout ou rien."""
+    from planning_solver.model import Slot
+    from planning_solver.timecalc import shift_hours, split_allocation
+    src = get_or_404(ctx, m.Assignment, aid)
+    p = ctx.db.get(m.PlanningPeriod, src.period_id)
+    ensure_editable(ctx.db, p.id)
+    sh = ctx.db.get(m.Shift, src.shift_id)
+    e = ctx.db.get(m.Employee, src.employee_id)
+    days = sorted(set(body.days))
+    bad = [d for d in days if not (p.start_date <= d <= p.end_date) or d == sh.day]
+    if bad:
+        raise HTTPException(422, "Jours hors du planning ou identiques au shift d'origine : " + ", ".join(f"{d:%d/%m/%Y}" for d in bad))
+    weights = {b.brand_code: b.minutes for b in ctx.db.scalars(select(m.BrandAllocation).where(m.BrandAllocation.assignment_id == src.id))}
+    if not weights:
+        raise HTTPException(422, "Ce shift n'a pas de marque imputée : il ne peut pas être dupliqué")
+    pre = copy.copy(Pre(ctx, p))
+    issues, plan = [], []
+    for d in days:
+        h = shift_hours(d, sh.start_time, sh.end_time, sh.break_minutes)
+        slot = Slot(f"MANUAL|{uuid.uuid4().hex[:10]}|{d.isoformat()}", d, sh.site_code, sh.start_time, sh.end_time, sh.break_minutes,
+                    split_allocation(h.effective_minutes, weights), tag="day", template_id="manual", mandatory=False)
+        for i in _issues(ctx, p, e, sh, None, pre, slot=slot):
+            issues.append({**i, "day": d.isoformat(), "message": f"{d:%d/%m} — {i['message']}"})
+        plan.append((slot, h))
+        # la copie suivante est contrôlée sur le planning qui contient déjà celle-ci
+        pre.inp = dataclasses.replace(pre.inp, slots=[*pre.inp.slots, slot])
+        pre.slots = {**pre.slots, slot.id: slot}
+        pre.base = [*pre.base, SAssign(slot.id, e.code, d, slot.start, slot.end, h.presence_minutes, h.break_minutes, h.effective_minutes, dict(slot.allocations), True)]
+        pre.before = set(validate(pre.inp, pre.base))
+        pre.minutes_before = {**pre.minutes_before, e.code: pre.minutes_before.get(e.code, 0) + h.effective_minutes}
+    _decide(ctx, issues, (e.id,), body.force, "Cette duplication est")
+    months = sorted({(d.year, d.month) for d in days})
+    before_minutes = month_minutes(ctx.db, [e.id], months)
+    created = []
+    for slot, h in plan:
+        nsh = m.Shift(tenant_id=ctx.tenant_id, period_id=p.id, slot_key=slot.id, day=slot.day, site_code=slot.site, start_time=slot.start, end_time=slot.end,
+                      break_minutes=slot.break_minutes, presence_minutes=h.presence_minutes, effective_minutes=h.effective_minutes)
+        ctx.db.add(nsh)
+        ctx.db.flush()
+        a = m.Assignment(tenant_id=ctx.tenant_id, period_id=p.id, shift_id=nsh.id, employee_id=e.id, source="manual", locked=True)
+        ctx.db.add(a)
+        ctx.db.flush()
+        ctx.db.add(m.Break(tenant_id=ctx.tenant_id, assignment_id=a.id, minutes=slot.break_minutes, paid=False))
+        for brand, minutes in slot.allocations.items():
+            ctx.db.add(m.BrandAllocation(tenant_id=ctx.tenant_id, assignment_id=a.id, brand_code=brand, minutes=minutes))
+        ctx.db.add(m.LockedAssignment(tenant_id=ctx.tenant_id, assignment_id=a.id, locked_by=ctx.user.id, reason="duplication"))
+        created.append((a, nsh))
+    ctx.db.flush()
+    guard_monthly_cap(ctx.db, ctx.tenant_id, before_minutes, [e.id], months)
+    ensure_frozen(ctx.db, p)
+    reminders = sum((regularize.register_doubles(ctx.db, ctx.tenant_id, p.id, e.id, a.id, ctx.user.id) for a, _s in created), 0)
+    for a, nsh in created:
+        audit(ctx, "assignment.duplicate", "assignment", a.id, assignment_detail(ctx.db, nsh, None, e, forced=bool(issues), reason=body.reason,
+                                                                               source=str(src.id), issues=[i["message"] for i in issues if i["day"] == nsh.day.isoformat()]))
+    return {"created": [{"assignment_id": str(a.id), "shift_id": str(nsh.id), "day": nsh.day.isoformat()} for a, nsh in created],
+            "forced": bool(issues), "conflicts": _conflicts(ctx, p.id), "regularizations": reminders}
 
 
 @router.get("/periods/{pid}/regularizations")

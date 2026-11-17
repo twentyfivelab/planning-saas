@@ -43,6 +43,10 @@ def employee_month(eid: str, month: str, ctx: Ctx = Depends(require("planning.re
     dated = {u.on_date: u.reason for u in unav if u.on_date and first <= u.on_date <= last}
     weekly = {u.weekday for u in unav if u.weekday is not None}
     avail = {a.weekday for a in ctx.db.scalars(select(m.Availability).where(m.Availability.employee_id == e.id))}
+    partial: dict = defaultdict(list)  # absences sur une partie de la journée : le reste du jour reste travaillable
+    for pa in ctx.db.scalars(select(m.PartialAbsence).where(m.PartialAbsence.employee_id == e.id, m.PartialAbsence.on_date >= first,
+                                                          m.PartialAbsence.on_date <= last).order_by(m.PartialAbsence.start_time)):
+        partial[pa.on_date].append({"start": pa.start_time.isoformat()[:5], "end": pa.end_time.isoformat()[:5], "reason": pa.reason})
     leaves = {}
     for lv in ctx.db.scalars(select(m.LeaveRequest).where(m.LeaveRequest.employee_id == e.id, m.LeaveRequest.status == "approved",
                                                           m.LeaveRequest.start_date <= last, m.LeaveRequest.end_date >= first)):
@@ -62,7 +66,7 @@ def employee_month(eid: str, month: str, ctx: Ctx = Depends(require("planning.re
             off = {"kind": "indisponible_recurrent", "label": "Indisponible (chaque semaine)"}
         else:
             off = None
-        days.append({"date": d.isoformat(), "weekday": d.weekday(), "assignments": items, "off": off})
+        days.append({"date": d.isoformat(), "weekday": d.weekday(), "assignments": items, "off": off, "partial": partial.get(d, [])})
         d += timedelta(days=1)
     worked = [x for x in days if x["assignments"]]
     eff = sum(a["effective_minutes"] for x in worked for a in x["assignments"])

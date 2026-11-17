@@ -28,7 +28,8 @@ jobs:
       - run: pip install -r apps/api/requirements-dev.txt
       - run: ruff check apps/api packages/solver
       - run: cd apps/api && alembic upgrade head
-      - run: pytest packages/solver apps/api -q
+      # tests de correction ; les mesures de performance (marqueur perf) se font à part : scripts/ops/perf_engine.sh
+      - run: pytest packages/solver apps/api -q -m "not perf"
   web:
     runs-on: ubuntu-latest
     defaults: {run: {working-directory: apps/web}}

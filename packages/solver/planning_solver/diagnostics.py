@@ -234,6 +234,81 @@ def min_days_blockers(prep) -> List[Issue]:
     return out
 
 
+def _group_day_bound(by_day: List[Dict[object, set]], members: List[int]) -> int:
+    """Majorant EXACT du nombre total de jours travaillés par un groupe : chaque jour, au plus un shift par collaborateur et un
+    collaborateur par shift, soit min(shifts admissibles pour le groupe, collaborateurs admissibles) jour par jour."""
+    days = set().union(*(by_day[i].keys() for i in members))
+    total = 0
+    for d in days:
+        present = [i for i in members if d in by_day[i]]
+        total += min(len(set().union(*(by_day[i][d] for i in present))), len(present))
+    return total
+
+
+def min_days_group_conflicts(prep) -> List[Issue]:
+    """Minimums de jours possibles un à un mais incompatibles ENSEMBLE parce que plusieurs collaborateurs se partagent les mêmes shifts,
+    détectés AVANT le calcul par simple dénombrement : résultat identique quelle que soit la charge de la machine ou la durée accordée.
+    Seuls les cas certains sont signalés (majorant exact) ; les conflits plus subtils restent identifiés par le noyau du solveur."""
+    from .context import min_days_need
+    out: List[Issue] = []
+    for key in prep.months:
+        group = []
+        for e in prep.inp.employees:
+            if not e.min_days_month or e.excluded or e.left_on is not None:
+                continue
+            need = min_days_need(prep, e, key)
+            if not need or min_days_reasons(prep, e, key):
+                continue  # pas de minimum à atteindre, ou déjà signalé seul (MIN_DAYS_IMPOSSIBLE)
+            days: Dict[object, set] = defaultdict(set)
+            for s in prep.by_emp.get(e.id, ()):
+                if (s.day.year, s.day.month) == key:
+                    days[s.day].add(s.id)
+            group.append((e, need, days))
+        if len(group) < 2:
+            continue
+        by_day = [g[2] for g in group]
+        slots_of = [set().union(*d.values()) if d else set() for d in by_day]
+        flagged: set = set()
+        for i in range(len(group)):  # paires d'abord : la cause la plus simple à corriger
+            for j in range(i + 1, len(group)):
+                if not slots_of[i] & slots_of[j]:
+                    continue  # aucun shift en commun : les deux minimums sont indépendants
+                bound = _group_day_bound(by_day, [i, j])
+                if group[i][1] + group[j][1] > bound:
+                    out.append(_group_issue([group[i], group[j]], key, bound))
+                    flagged |= {i, j}
+        # groupes plus larges : collaborateurs reliés par des shifts communs (composantes), si aucune paire n'explique déjà le conflit
+        seen: set = set()
+        for i in range(len(group)):
+            if i in seen:
+                continue
+            comp, todo = [], [i]
+            while todo:
+                k = todo.pop()
+                if k in seen:
+                    continue
+                seen.add(k)
+                comp.append(k)
+                todo += [j for j in range(len(group)) if j not in seen and slots_of[k] & slots_of[j]]
+            if len(comp) > 2 and not flagged & set(comp):
+                bound = _group_day_bound(by_day, comp)
+                if sum(group[k][1] for k in comp) > bound:
+                    out.append(_group_issue([group[k] for k in sorted(comp)], key, bound))
+    return out
+
+
+def _group_issue(members: List[tuple], key, bound: int) -> Issue:
+    names = ", ".join(f"{e.name} ({e.min_days_month} jours en {month_label(*key)})" for e, _n, _d in members)
+    need = sum(n for _e, n, _d in members)
+    done = sum(e.min_days_month - n for e, n, _d in members)
+    total = f"{need} jours" + (f" à travailler dans ce planning, {done} déjà travaillés ailleurs dans le mois" if done else "")
+    return Issue("MIN_DAYS_CONFLICT", "blocking",
+                 f"Minimum de jours impossible à respecter pour {names} : leurs minimums cumulés ({total}) dépassent les {bound} shifts "
+                 "qu'ils peuvent occuper (un jour compte une fois par collaborateur et chaque shift n'est tenu que par une personne).",
+                 constraints=["minimum de jours travaillés par mois"], employee=members[0][0].id if len(members) == 1 else None,
+                 suggestions=["Réduire l'un de ces minimums (ou « Pas de préférence ») pour ce mois.", "Ajouter des besoins ou des collaborateurs compatibles."])
+
+
 def min_days_core_issue(prep, core: List[tuple]) -> Issue:
     """Minimums de jours compatibles un à un mais incompatibles ENSEMBLE avec les autres contraintes obligatoires (noyau du solveur)."""
     emps = prep.emps

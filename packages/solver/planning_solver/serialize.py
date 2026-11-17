@@ -9,7 +9,7 @@ from typing import Any, Dict
 
 from .model import BrandBudget, Contract, Employee, OutsideShift, Relation, Slot, SolverConfig, SolverInput
 
-ENGINE_VERSION = "2026.11.17"  # à incrémenter à chaque changement de règle du moteur ou du vérificateur
+ENGINE_VERSION = "2026.11.17.2"  # à incrémenter à chaque changement de règle du moteur ou du vérificateur
 FORMAT = 1
 
 _SETS = {"skills", "unavailable_weekdays", "unavailable_dates", "forbidden_tags", "preferred_tags", "rest_weekdays_hard",
@@ -31,7 +31,9 @@ def _j(v: Any) -> Any:
 
 
 def input_to_dict(inp: SolverInput) -> Dict[str, Any]:
-    return {"format": FORMAT, "engine_version": ENGINE_VERSION, **_j(inp)}
+    out = {"format": FORMAT, "engine_version": ENGINE_VERSION, **_j(inp)}
+    out["travel_minutes"] = sorted([a, b, v] for (a, b), v in inp.travel_minutes.items())  # clés composées : liste explicite
+    return out
 
 
 def _t(v):
@@ -57,7 +59,7 @@ def _employee(d: dict) -> Employee:
         if k == "contract":
             v = None if v is None else Contract(**{f.name: v.get(f.name) for f in fields(Contract)})
         elif k == "relations":
-            v = [Relation(r["kind"], r["other"], bool(r.get("strict"))) for r in v or []]
+            v = [Relation(r["kind"], r["other"], bool(r.get("strict")), r.get("scope", "site_day")) for r in v or []]
         elif k == "unavailable_dates":
             v = {_d(x) for x in v or []}
         elif k in _SETS:
@@ -66,6 +68,10 @@ def _employee(d: dict) -> Employee:
             v = None if v is None else set(v)
         elif k in ("latest_start",):
             v = _t(v)
+        elif k == "unavailable_windows":
+            v = {(_d(a), _t(b), _t(c)) for a, b, c in v or []}
+        elif k == "work_window":
+            v = None if v is None else (_t(v[0]), _t(v[1]))
         elif k == "left_on":
             v = _d(v)
         elif k == "preferred_times":
@@ -87,4 +93,5 @@ def input_from_dict(d: Dict[str, Any]) -> SolverInput:
         history_provided=d.get("history_provided", False),
         site_starts={k: [_t(x) for x in v] for k, v in (d.get("site_starts") or {}).items()},
         allowed_times={k: [(_t(a), _t(b)) for a, b in v] for k, v in (d.get("allowed_times") or {}).items()},
-        frozen_empty=set(d.get("frozen_empty") or []))
+        frozen_empty=set(d.get("frozen_empty") or []),
+        travel_minutes={(a, b): int(v) for a, b, v in d.get("travel_minutes") or []})

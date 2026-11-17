@@ -109,6 +109,9 @@ def build_input(db: Session, period: m.PlanningPeriod, cfg_overrides: Optional[d
     for u in db.scalars(select(m.Unavailability)):
         (unav_wd if u.weekday is not None else unav_dt)[u.employee_id].add(u.weekday if u.weekday is not None
                                                                           else u.on_date)
+    partial: Dict[uuid.UUID, set] = defaultdict(set)  # absences sur une partie de la journée (données du mois, lues en direct)
+    for pa in db.scalars(select(m.PartialAbsence).where(m.PartialAbsence.on_date >= start - timedelta(days=1), m.PartialAbsence.on_date <= end)):
+        partial[pa.employee_id].add((pa.on_date, pa.start_time, pa.end_time))
     leaves = list(db.scalars(select(m.LeaveRequest).where(m.LeaveRequest.status == "approved")))
     for lv in leaves:
         x = lv.start_date
@@ -163,7 +166,7 @@ def build_input(db: Session, period: m.PlanningPeriod, cfg_overrides: Optional[d
                        available_weekdays=set(avail[e.id]) if avail.get(e.id) else None,
                        unavailable_weekdays=set(unav_wd[e.id]),
                        opposite_of=codes.get(rel.get(e.id)) if e.id in rel else None,
-                       relations=[Relation(r.kind, codes[r.other_employee_id], r.strict) for r in relationships
+                       relations=[Relation(r.kind, codes[r.other_employee_id], r.strict, r.scope or "site_day") for r in relationships
                                   if r.employee_id == e.id and r.kind != "opposite_shifts" and r.other_employee_id in codes])
         c = contracts.get(e.id)
         if c:
@@ -191,6 +194,8 @@ def build_input(db: Session, period: m.PlanningPeriod, cfg_overrides: Optional[d
                 se.weekly_rest_days_hard = p.is_hard
             elif p.kind == "rest_weekdays":
                 (se.rest_weekdays_hard if p.is_hard else se.rest_weekdays_soft).update(int(w) for w in P["weekdays"])
+            elif p.kind == "work_window":  # horaires obligatoires (contrainte dure)
+                se.work_window = (_t(P["start"]), _t(P["end"]))
             elif p.kind == "sites":
                 if p.is_hard:
                     se.allowed_sites = set(P["sites"])
@@ -206,6 +211,7 @@ def build_input(db: Session, period: m.PlanningPeriod, cfg_overrides: Optional[d
         added_later = bool(frozen) and kept is None and e.id not in roster_in
         se.excluded = e.id in roster_out or ended or added_later
         se.unavailable_dates = set(unav_dt[e.id])
+        se.unavailable_windows = set(partial[e.id])
         se.sunday_quota, se.sunday_mode = quota, qmode
         if mp is not None and mp.max_days_set:
             se.max_days_count, se.max_days_period = mp.max_days_count, mp.max_days_period
@@ -234,10 +240,13 @@ def build_input(db: Session, period: m.PlanningPeriod, cfg_overrides: Optional[d
             cfg.break_rules = [(int(x["over_minutes"]), int(x["break_minutes"])) for x in r.params.get("rules", [])]
     current_cap = tenant_cap(db, getattr(period, "tenant_id", None))
     cfg.monthly_cap_minutes = current_cap
+    travel_now = sorted([t.from_site, t.to_site, t.minutes] for t in db.scalars(select(m.SiteTravel)))
     if capture is not None:
-        capture.update({"employees": fiches, "config": config_of(cfg), "names": names})
+        capture.update({"employees": fiches, "config": {**config_of(cfg), "travel_minutes": travel_now}, "names": names})
+    travel = travel_now
     if frozen:
         apply_config(cfg, frozen.get("config", {}))
+        travel = frozen.get("config", {}).get("travel_minutes", [])  # temps de déplacement du planning (aucun s'il est antérieur à la règle)
     if cfg_overrides.get("cap") == "current":  # le plafond mensuel actuel s'applique à toute nouvelle génération et modification manuelle
         cfg.monthly_cap_minutes = current_cap
     for k, v in cfg_overrides.items():
@@ -277,7 +286,8 @@ def build_input(db: Session, period: m.PlanningPeriod, cfg_overrides: Optional[d
     outside = _outside_shifts(db, period)
     inp = SolverInput(start, end, slots, emps, budgets, cfg, leaves_provided=bool(leaves), hypotheses=sorted(hyp),
                       outside_shifts=outside, history_provided=bool(outside), site_starts=site_starts,
-                      allowed_times=dict(allowed))
+                      allowed_times=dict(allowed),
+                      travel_minutes={(a, b): int(mi) for a, b, mi in travel})
     return inp
 
 

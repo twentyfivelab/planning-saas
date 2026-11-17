@@ -14,6 +14,7 @@ export default function Alerts() {
   const { period } = usePeriod();
   const c = useApi<{ hard_violations: string[] }>(period ? `/periods/${period.id}/conflicts` : null);
   const s = useApi<{ uncovered: { slot_key: string; day: string; start: string; site: string }[] }>(period ? `/periods/${period.id}/schedule` : null);
+  const br = useApi<{ sites: string[]; items: { slot_id: string; message: string }[] }>(period ? `/periods/${period.id}/break-coverage` : null);
   const runs = useApi<{ id: string; status: string }[]>("/runs");
   const lastDone = runs.data?.find((r) => r.status === "termine");
   const diag = useApi<{ report: { missing_data: Issue[]; diagnostics: Issue[] }; status: string }>(lastDone ? `/runs/${lastDone.id}/diagnostic` : null);
@@ -32,6 +33,14 @@ export default function Alerts() {
             {s.data?.uncovered.length ? <ul className="stack" style={{ margin: 0, paddingLeft: "1.1rem" }}>{s.data.uncovered.map((u) => <li key={u.slot_key}>{dayLabel(u.day)} {timeShort(u.start)} — {u.site}</li>)}</ul>
               : <Callout kind="ok">Tous les shifts définis sont pourvus.</Callout>}
           </Card>
+          {!!br.data?.sites.length && (
+            <Card title="Pauses sans relève" eyebrow={`Présence continue : ${br.data.sites.join(", ")}`} actions={<Badge tone={br.data.items.length ? "warn" : "ok"}>{br.data.items.length}</Badge>}>
+              <div data-testid="break-coverage">
+                {br.data.items.length ? <ul className="stack" style={{ margin: 0, paddingLeft: "1.1rem" }}>{br.data.items.map((x) => <li key={x.slot_id}>{x.message}</li>)}</ul>
+                  : <Callout kind="ok">Chaque pause peut être prise pendant qu&apos;une autre personne est présente.</Callout>}
+                <p className="help" style={{ marginTop: "var(--sp-2)" }}>Signalement seulement : rien n&apos;est bloqué. Ajoutez un shift qui chevauche, ou retirez la présence continue du site dans « Sites et marques ».</p>
+              </div>
+            </Card>)}
           <Card title="Diagnostic de la dernière génération" actions={<Link href="/generate" className="btn btn-sm">Relancer</Link>}>
             {!issues.length ? <EmptyState icon="info" title="Aucun diagnostic">Lancez une génération pour obtenir un diagnostic.</EmptyState> : (
               <ul className="stack" style={{ listStyle: "none", padding: 0, margin: 0 }}>

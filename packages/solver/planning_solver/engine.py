@@ -15,8 +15,8 @@ from typing import Callable, Dict, List, Optional
 from ortools.sat.python import cp_model
 
 from .context import (cost_units, coverage_cost, hours_units, individual_penalty, ineligibility, min_days_need, period_of, prepare,
-                      preference_checks, relation_pairs)
-from .diagnostics import diagnose_uncovered, min_days_blockers, min_days_core_issue, missing_data, core_issue
+                      preference_checks, relation_pairs, scoped_avoid_pairs)
+from .diagnostics import diagnose_uncovered, min_days_blockers, min_days_core_issue, min_days_group_conflicts, missing_data, core_issue
 from .metrics import plan_metrics
 from .model import (Assignment, DEFAULT_WEIGHTS, Issue, LEVELS, REINFORCE, SECONDARY, Slot, SolverInput, SolverResult)
 from .objective import evaluate
@@ -85,7 +85,8 @@ def solve(inp: SolverInput, cancel: Optional[threading.Event] = None, progress: 
     by_emp = prep.by_emp
 
     # minimum de jours impossible à lui seul (jours possibles, maximum, plafond, limite hebdomadaire, jours consécutifs) : blocage expliqué
-    blockers = min_days_blockers(prep)
+    # minimums incompatibles entre collaborateurs qui se partagent les mêmes shifts : dénombrement, indépendant du temps de calcul
+    blockers = min_days_blockers(prep) + min_days_group_conflicts(prep)
     if blockers:
         report(phase="checking")
         return SolverResult(status="infaisable", mode="simulation_exploratoire" if any(i.code == "CONTRACT_MISSING" for i in missing_data(inp)) else "validable",
@@ -125,14 +126,19 @@ def solve(inp: SolverInput, cancel: Optional[threading.Event] = None, progress: 
 
     # Chevauchement + repos minimal (inclut double affectation multi-sites)
     rest = timedelta(hours=cfg.rest_hours)
+    # temps de déplacement entre sites : l'écart exigé est le plus grand des deux (repos quotidien, déplacement)
+    reach = max([rest] + [timedelta(minutes=v) for v in inp.travel_minutes.values()])
     ordered = sorted(inp.slots, key=lambda s: s.bounds[0])
     for e in inp.employees:
         mine = [s for s in ordered if (e.id, s.id) in x]
         for i, a in enumerate(mine):
             ea = a.bounds[1]
             for b in mine[i + 1:]:
-                if b.bounds[0] - ea >= rest:
+                gap = b.bounds[0] - ea
+                if gap >= reach:
                     break
+                if gap >= rest and gap >= timedelta(minutes=inp.travel(a.site, b.site)):
+                    continue
                 m.AddBoolOr([x[e.id, a.id].Not(), x[e.id, b.id].Not()])
         # note: break valide car trié par début ; les chevauchements antérieurs sont couverts par la boucle
 
@@ -394,7 +400,25 @@ def solve(inp: SolverInput, cancel: Optional[threading.Event] = None, progress: 
     def at(eid, d, st):
         return [x[eid, s.id] for s in by_emp[eid] if s.day == d and s.site == st]
 
-    for kind, e, others, strict in relation_pairs(prep):
+    for kind, e, others, strict, scope in relation_pairs(prep):
+        if kind == "avoid_together" and scope != "site_day":
+            # même jour tous sites (une pénalité par jour) ou horaires qui se chevauchent (une par paire de shifts)
+            per_day: Dict = {}
+            for d, a, o, b in scoped_avoid_pairs(prep, e.id, others, scope):
+                pair = x[e.id, a.id] + x[o, b.id]
+                if strict:
+                    m.Add(pair <= 1)
+                    continue
+                if scope == "day":
+                    if d not in per_day:
+                        per_day[d] = m.NewBoolVar(f"rel_day_{e.id}_{d}")
+                        terms["family"].append(W["family"] * per_day[d])
+                    m.Add(per_day[d] >= pair - 1)
+                else:
+                    v = m.NewBoolVar(f"rel_ovl_{e.id}_{a.id}_{b.id}")
+                    m.Add(v >= pair - 1)
+                    terms["family"].append(W["family"] * v)
+            continue
         for d in days:
             for st in sorted({s.site for s in by_emp[e.id] if s.day == d}):
                 a = at(e.id, d, st)
@@ -542,6 +566,15 @@ def solve(inp: SolverInput, cancel: Optional[threading.Event] = None, progress: 
                 last_push["t"] = now
                 report(phase="level", level=_name, index=_i + 1, count=len(groups_lv), solutions=n, best=int(value))
         st = sv.Solve(m, _StopAtZero(_seen) if keys else None)
+        if st == cp_model.UNKNOWN and solver is None and not last and not (cancel is not None and cancel.is_set()) and deadline - _time.time() > 0.5:
+            # ni solution ni preuve dans la part de ce niveau : il ne s'arrête pas là, il reçoit tout le temps restant (sinon « interrompu »
+            # serait annoncé alors que le budget n'est pas épuisé ; les niveaux suivants n'ont de sens qu'avec une première solution)
+            sv = cp_model.CpSolver()
+            sv.parameters.max_time_in_seconds = max(0.05, deadline - _time.time())
+            sv.parameters.num_workers = cfg.workers
+            sv.parameters.random_seed = cfg.seed
+            current["solver"] = sv
+            st = sv.Solve(m, _StopAtZero(_seen) if keys else None)
         if st in (cp_model.OPTIMAL, cp_model.FEASIBLE):
             value = int(sv.Value(expr)) if keys else 0
             # tous les coûts sont positifs ou nuls : atteindre 0 prouve l'optimum de ce niveau, sans attendre la preuve du solveur

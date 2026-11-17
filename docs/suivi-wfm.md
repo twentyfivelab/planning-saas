@@ -11,11 +11,17 @@ Une fonctionnalité n'est classée « terminée et vérifiée » que si une vér
 
 | Suite | Résultat | Environnement |
 |---|---|---|
-| Moteur (`packages/solver`) | **125 / 125** | local (deux tests chronométrés échouent si la suite e2e tourne en même temps ; seuls : 2 / 2) |
-| API (`apps/api`) | **140 / 140** | base PostgreSQL jetable par session (`planning_test_<pid>`) |
+| Moteur, tests de correction (`packages/solver`) | **135 / 135** | local ; aussi **127 / 127 sous forte charge** (charge moyenne 44 sur 10 cœurs) et pendant la suite e2e |
+| Moteur, mesures de performance (marqueur `perf`) | à part : `scripts/ops/perf_engine.sh` | conditions consignées dans `docs/mesures-moteur.md` |
+| API (`apps/api`) | **148 / 148** | base PostgreSQL jetable par session (`planning_test_<pid>`) |
 | Interface, unitaires, dont contrastes WCAG AA | **119 / 119** | Vitest |
-| Navigateur e2e | **63 / 63** | pile Docker isolée (`infra/compose.e2e.yaml`, base `planning_e2e`) |
+| Navigateur e2e | **66 / 66** | pile Docker isolée (`infra/compose.e2e.yaml`, base `planning_e2e`) |
 | ruff, TypeScript, ESLint | sans erreur | |
+
+Fiabilité du moteur (deux échecs observés sous charge, corrigés à la source, sans relance ni délai allongé) :
+- **Premier niveau abandonné trop tôt** : sans solution ni preuve dans sa part du temps, le niveau « couverture » s'arrêtait et annonçait « interrompu » alors que le budget n'était pas épuisé. Il reçoit désormais tout le temps restant.
+- **Conflit de minimums de jours dépendant du temps de calcul** : quand plusieurs collaborateurs se partagent les mêmes shifts, le conflit est un simple dénombrement. Il est maintenant signalé avant tout calcul (majorant exact, jour par jour), donc identique quelle que soit la charge. Les conflits plus subtils restent identifiés par le noyau du solveur (test dédié).
+- **Correction et performance séparées** : le test du grand effectif est scindé. La partie « correction » vérifie un invariant valable quel que soit le temps (planning entièrement vérifié, ou « interrompu » sans affectation ; jamais d'optimum annoncé sans preuve). La partie « performance » (marqueur `perf`) est exclue des suites par défaut et de l'intégration continue ; elle s'exécute par `scripts/ops/perf_engine.sh`, qui refuse de mesurer sur une machine chargée et consigne les conditions.
 
 Intermittences corrigées à la source :
 - **« mouvement réduit »** : la lecture se faisait en deux allers-retours, et le tableau de bord, rechargé par un événement temps réel, pouvait remplacer la carte entre les deux. Un élément détaché donne une durée vide, d'où NaN. Le test lit désormais toutes les cartes en une seule exécution dans la page : 20 passages sur 20, plus les suites complètes.
@@ -110,6 +116,15 @@ Intermittences corrigées à la source :
 - Planning mensuel de chaque collaborateur, ouvert depuis son nom (liste des collaborateurs ou planning général) : calendrier, horaires, pauses, sites, marques, congés et indisponibilités, totaux du mois et plafond applicable ; navigation entre les mois et les années ; rien n'est créé en consultant.
 - Rappels « À régulariser » persistants (table `regularizations`, migration 0012) après une double affectation confirmée ; rien n'est retiré ni réattribué automatiquement.
 
+**Règles et opérations de planning** (moteur, vérificateur indépendant, contrôle des modifications manuelles, écrans ; migration 0013)
+- Relations « à séparer » : portées « même jour, même site », « même jour, tous sites » et « horaires qui se chevauchent », strictes ou souples (coût identique entre le solveur et l'évaluateur indépendant).
+- Absences sur une partie de la journée : seuls les shifts qui chevauchent le créneau sont impossibles ; affichées dans le planning individuel.
+- Horaires obligatoires par collaborateur (contrainte stricte).
+- Temps de déplacement entre sites (écart exigé = le plus grand du repos quotidien et du déplacement).
+- Pauses sans relève sur les sites à présence continue : alerte de couverture (jamais un blocage).
+- Échange réciproque de deux shifts et duplication d'un shift sur d'autres jours : même contrôle et même confirmation qu'une affectation manuelle, tout ou rien, dérogations tracées, plafond mensuel jamais dérogeable.
+- Indépendance des plannings : horaires obligatoires et temps de déplacement sont conservés par chaque planning ; un planning antérieur à ces règles n'en hérite pas (différence seulement signalée, « Appliquer les paramètres actuels » reste explicite).
+
 **SaaS**
 - Rôles, cloisonnement RLS testé, périmètre d'un responsable de marque.
 - Journal d'audit, export et effacement RGPD.
@@ -138,11 +153,10 @@ Intermittences corrigées à la source :
 
   Les deux sont informatives : ni les affectations, ni le statut, ni les paramètres enregistrés ne sont modifiés. C'est vérifié par un test API.
 
-## B. Partiellement réalisé (9 points, par priorité)
+## B. Partiellement réalisé (8 points, par priorité)
 
 | Priorité | Élément | Ce qui manque |
 |---|---|---|
-| 1 | Relations entre collaborateurs | Portées « horaires qui se chevauchent » et « même jour, tous sites ». |
 | 2 | Performances | Au-delà de 150 collaborateurs : à 150, le niveau « engagements » manque de temps (ses critères sont reportés, jamais perdus). |
 | 3 | Solutions multiples | Diversité mesurée et affichée entre simulations. |
 | 4 | Temps rémunéré | Pauses payées distinguées dans les compteurs. |
@@ -154,8 +168,8 @@ Intermittences corrigées à la source :
 
 ## C. Restant (10 chantiers, par priorité)
 
-1. Échange réciproque et duplication de shifts, modifications groupées, tous vérifiés par le même contrôle.
-2. Absences partielles, horaires obligatoires par collaborateur, couverture pendant les pauses, temps de déplacement entre sites.
+1. Modifications groupées (plusieurs shifts en une opération), vérifiées par le même contrôle.
+2. Tuteur et binôme avec portée « horaires qui se chevauchent » (la portée élargie s'applique aujourd'hui aux collaborateurs à séparer).
 3. Espace collaborateur : disponibilités, congés, propositions d'échange, réponses aux remplacements, avec circuit d'approbation.
 4. Suivi de l'équité sur plusieurs mois.
 5. Vue semaine et vue client.
@@ -177,7 +191,7 @@ Intermittences corrigées à la source :
 
 ## Prochaines étapes (ordre de priorité)
 
-1. Échange réciproque et duplication de shifts.
-2. Portée des relations et absences partielles.
+1. Espace collaborateur et circuit d'approbation.
+2. Équité sur plusieurs mois, vues restantes.
 3. Moteur : LNS et mesures plus larges.
-4. Espace collaborateur et circuit d'approbation.
+4. Modifications groupées.

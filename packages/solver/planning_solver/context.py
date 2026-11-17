@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from typing import Dict, List, Optional, Set, Tuple
 
 from .model import Employee, Slot, SolverInput, site_start_times, slot_category
@@ -31,6 +31,18 @@ def hours_units(s: Slot) -> int:
     return max(1, round(s.effective_minutes / 60))
 
 
+def window_overlap(s: Slot, d: date, a: time, b: time) -> bool:
+    """Le shift chevauche le créneau [a, b[ du jour d (passage de minuit et changement d'heure compris)."""
+    w0, w1 = shift_bounds(d, a, b)
+    s0, s1 = s.bounds
+    return s0 < w1 and w0 < s1
+
+
+def within_window(s: Slot, w: Tuple[time, time]) -> bool:
+    """Le shift tient dans les horaires obligatoires : début >= w[0], fin <= w[1], sans passer minuit."""
+    return s.end > s.start and s.start >= w[0] and s.end <= w[1]
+
+
 def ineligibility(e: Employee, s: Slot, starts_by_site: Dict[str, list]) -> Optional[Tuple[str, str]]:
     """Première règle stricte qui empêche `e` de prendre `s` ((code, explication)), ou None si l'affectation est admissible.
     C'est le préfiltrage du moteur : aucune variable de décision n'est créée pour une affectation impossible."""
@@ -43,6 +55,11 @@ def ineligibility(e: Employee, s: Slot, starts_by_site: Dict[str, list]) -> Opti
         return "UNAVAILABLE", "indisponible ce jour-là"
     if e.available_weekdays is not None and wd not in e.available_weekdays:
         return "UNAVAILABLE", "jour hors de ses disponibilités déclarées"
+    for d, a, b in sorted(e.unavailable_windows):
+        if d == s.day and window_overlap(s, d, a, b):
+            return "UNAVAILABLE_PARTIAL", f"absent·e de {a:%H:%M} à {b:%H:%M} ce jour-là"
+    if e.work_window is not None and not within_window(s, e.work_window):
+        return "WORK_WINDOW", f"hors de ses horaires obligatoires ({e.work_window[0]:%H:%M}–{e.work_window[1]:%H:%M})"
     if wd in e.rest_weekdays_hard:
         return "REST_WEEKDAY", "jour de repos obligatoire (fiche)"
     if s.tag in e.forbidden_tags:
@@ -180,19 +197,44 @@ def preference_checks(e: Employee, s: Slot) -> List[tuple]:
     return out
 
 
-def relation_pairs(prep: Prepared) -> List[Tuple[str, Employee, List[str], bool]]:
-    """Relations exploitables (les deux collaborateurs sont dans le problème) : (type, collaborateur, autres, stricte).
+def relation_pairs(prep: Prepared) -> List[Tuple[str, Employee, List[str], bool, str]]:
+    """Relations exploitables (les deux collaborateurs sont dans le problème) : (type, collaborateur, autres, stricte, portée).
     Les relations « mentor » d'un même collaborateur sont regroupées : au moins un des tuteurs doit être présent."""
     out = []
     for e in prep.inp.employees:
         mentors = [r for r in e.relations if r.kind == "mentor" and r.other in prep.emps and r.other != e.id]
         if mentors:
-            out.append(("mentor", e, sorted({r.other for r in mentors}), any(r.strict for r in mentors)))
+            out.append(("mentor", e, sorted({r.other for r in mentors}), any(r.strict for r in mentors), "site_day"))
         for r in e.relations:
             if r.kind in ("avoid_together", "work_together") and r.other in prep.emps and r.other != e.id:
                 if e.id < r.other or not any(x.kind == r.kind and x.other == e.id for x in prep.emps[r.other].relations):
-                    out.append((r.kind, e, [r.other], r.strict and r.kind == "avoid_together"))
+                    scope = r.scope if r.kind == "avoid_together" else "site_day"
+                    out.append((r.kind, e, [r.other], r.strict and r.kind == "avoid_together", scope))
     return out
+
+
+def overlaps(a: Slot, b: Slot) -> bool:
+    """Horaires qui se chevauchent (passage de minuit et changement d'heure compris)."""
+    (s1, e1), (s2, e2) = a.bounds, b.bounds
+    return s1 < e2 and s2 < e1
+
+
+def scoped_avoid_pairs(prep: Prepared, eid: str, others: List[str], scope: str):
+    """Paires de shifts (jour, shift de eid, autre collaborateur, son shift) interdites ou pénalisées par une relation « à séparer » de portée
+    « day » (même jour, tous sites) ou « overlap » (horaires qui se chevauchent, tous sites)."""
+    for o in others:
+        theirs: Dict = defaultdict(list)
+        for s in prep.by_emp.get(o, ()):
+            theirs[s.day].append(s)
+        for a in prep.by_emp.get(eid, ()):
+            if scope == "day":
+                for b in theirs.get(a.day, ()):
+                    yield a.day, a, o, b
+            else:
+                for dd in (a.day - timedelta(days=1), a.day, a.day + timedelta(days=1)):
+                    for b in theirs.get(dd, ()):
+                        if overlaps(a, b):
+                            yield a.day, a, o, b
 
 
 def individual_penalty(prep: Prepared, e: Employee) -> int:
