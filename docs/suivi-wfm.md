@@ -172,14 +172,14 @@ Intermittences corrigées à la source :
 
 | Priorité | Élément | Ce qui manque |
 |---|---|---|
-| 2 | Performances | Au-delà de 150 collaborateurs : à 150, le niveau « engagements » manque de temps (ses critères sont reportés, jamais perdus). |
-| 3 | Solutions multiples | Diversité mesurée et affichée entre simulations. |
-| 4 | Temps rémunéré | Pauses payées distinguées dans les compteurs. |
-| 5 | Espace collaborateur | Pas encore de réponse du collaborateur aux propositions de remplacement. |
-| 6 | API | Documentation métier (OpenAPI générée). |
-| 7 | Notifications | Dans l'application seulement ; l'e-mail dépend de la décision D2. |
-| 8 | Comptes | Créés par l'administrateur ; les invitations dépendent de D2. |
-| 9 | Environnements | Développement et tests séparés ; production à décider (D1). |
+| 1 | Performances | Au-delà de 150 collaborateurs : à 150, le niveau « engagements » manque de temps (ses critères sont reportés, jamais perdus). |
+| 2 | Solutions multiples | Diversité mesurée et affichée entre simulations. |
+| 3 | Temps rémunéré | Pauses payées distinguées dans les compteurs. |
+| 4 | Espace collaborateur | Pas encore de réponse du collaborateur aux propositions de remplacement. |
+| 5 | API | Documentation métier (OpenAPI générée). |
+| 6 | Notifications | Dans l'application seulement ; l'e-mail dépend de la décision D2. |
+| 7 | Comptes | Créés par l'administrateur ; les invitations dépendent de D2. |
+| 8 | Environnements | Développement et tests séparés ; production à décider (D1). |
 
 ## C. Restant (8 chantiers, par priorité)
 
@@ -198,9 +198,10 @@ Intermittences corrigées à la source :
 2. **Envoi d'e-mails** (invitations, notifications) : service et coût.
 3. **Assistant en langage naturel** : fournisseur et coût, s'il est souhaité.
 4. **Validation juridique** des règles réglementaires par un spécialiste du droit suisse.
-5. **Identités incertaines** : répartition prénom / nom de deux fiches, en attente de votre confirmation (libellés actuels conservés).
-6. **Tenants conservés** : 106 tenants douteux et l'ancien tenant e2e de la base de développement, conservés à votre demande.
-7. **Couleur** : le rose est appliqué tel qu'il s'affiche dans votre image (profil Display P3). La valeur brute du fichier, #BB2757 lue en sRGB, serait plus terne. À confirmer après lecture de `docs/identite-visuelle.md`.
+5. **Identités incertaines** (facultatif) : répartition prénom / nom de deux fiches ; les libellés actuels restent tels quels tant que vous ne la précisez pas.
+6. **Couleur** : le rose est appliqué tel qu'il s'affiche dans votre image (profil Display P3). La valeur brute du fichier, #BB2757 lue en sRGB, serait plus terne. À confirmer après lecture de `docs/identite-visuelle.md`.
+
+Déjà décidé (rappel) : les 106 tenants douteux et l'ancien tenant e2e de la base de développement sont conservés ; le mode sombre reste optionnel ; le plafond de 176 h, les minimums et maximums de jours et l'indépendance des plannings s'appliquent comme convenu.
 
 ## Prochaines étapes (ordre de priorité)
 

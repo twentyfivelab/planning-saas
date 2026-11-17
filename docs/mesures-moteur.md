@@ -5,3 +5,4 @@ Produites par `scripts/ops/perf_engine.sh` (tests marqués « perf »). Les test
 | Date | Commit | Machine | Charge avant | Conditions | Versions | Résultat | Durées |
 |---|---|---|---|---|---|---|---|
 | 17/11/2026 17:44 | e2a248a+modifs | Apple M4, 10 cœurs, 16 Go | 1.81 | conformes | Python 3.12.10, OR-Tools 9.15.6755 | 1 passed, 136 deselected in 46.28s | test_performance_grand_effectif 46.08 s |
+| 17/11/2026 18:29 | b9fed88 | Apple M4, 10 cœurs, 16 Go | 1.98 | conformes | Python 3.12.10, OR-Tools 9.15.6755 | 1 passed, 136 deselected in 46.50s | test_performance_grand_effectif 46.09 s |
