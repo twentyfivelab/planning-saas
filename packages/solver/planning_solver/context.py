@@ -36,6 +36,8 @@ def ineligibility(e: Employee, s: Slot, starts_by_site: Dict[str, list]) -> Opti
     C'est le préfiltrage du moteur : aucune variable de décision n'est créée pour une affectation impossible."""
     if e.excluded:
         return "EXCLUDED_FROM_PERIOD", "hors de l'effectif du mois"
+    if e.left_on is not None and s.day >= e.left_on:
+        return "EMPLOYEE_REMOVED", f"retiré·e de l'équipe le {e.left_on:%d/%m/%Y}"
     wd = s.day.weekday()
     if wd in e.unavailable_weekdays or s.day in e.unavailable_dates:
         return "UNAVAILABLE", "indisponible ce jour-là"
@@ -77,6 +79,10 @@ class Prepared:
     targets: Dict[str, int]  # cible d'équité (minutes) par collaborateur
     wmax: float
     category: Dict[str, Optional[str]] = field(default_factory=dict)  # slot -> matin | middle | soir | None
+    # mois civils de la période -> jours ; jours et minutes déjà travaillés hors période dans ces mêmes mois (périodes voisines)
+    months: Dict[Tuple[int, int], List[date]] = field(default_factory=dict)
+    outside_month_days: Dict[Tuple[str, Tuple[int, int]], Set[date]] = field(default_factory=dict)
+    outside_month_minutes: Dict[Tuple[str, Tuple[int, int]], int] = field(default_factory=dict)
 
     def has_sunday_option(self, eid: str) -> bool:
         return any(s.day.weekday() == 6 for s in self.by_emp.get(eid, ()))
@@ -113,6 +119,16 @@ def prepare(inp: SolverInput) -> Prepared:
                 eligible.add((e.id, s.id))
                 by_emp[e.id].append(s)
     days = _days(inp)
+    months: Dict[Tuple[int, int], List[date]] = defaultdict(list)
+    for d in days:
+        months[d.year, d.month].append(d)
+    o_days: Dict[tuple, set] = defaultdict(set)
+    o_min: Dict[tuple, int] = defaultdict(int)
+    for o in inp.outside_shifts:
+        key = (o.day.year, o.day.month)
+        if key in months and not (inp.period_start <= o.day <= inp.period_end):
+            o_days[o.employee_id, key].add(o.day)
+            o_min[o.employee_id, key] += o.minutes
     optional_brands = {b for s in inp.slots if not s.mandatory for b in s.brands}
     # Équité relative : cible proportionnelle au poids x disponibilité (ou cible contrat si renseignée)
     supply = sum(s.effective_minutes for s in inp.slots if s.mandatory)
@@ -123,12 +139,22 @@ def prepare(inp: SolverInput) -> Prepared:
         c = e.contract
         raw[e.id] = c.monthly_target_minutes if c and c.monthly_target_minutes else e.weight * avail
         caps[e.id] = sum(s.effective_minutes for s in by_emp[e.id])
+        if inp.config.monthly_cap_minutes is not None:  # cible d'équité jamais au-delà du plafond mensuel de l'entreprise
+            caps[e.id] = min(caps[e.id], sum(max(0, inp.config.monthly_cap_minutes - o_min.get((e.id, k), 0)) for k in months))
     wsum = sum(raw.values()) or 1
     targets = {e.id: min(int(supply * raw[e.id] / wsum), caps[e.id]) for e in inp.employees}
     return Prepared(inp=inp, slots={s.id: s for s in inp.slots}, emps={e.id: e for e in inp.employees}, days=days,
                     starts_by_site=starts_by_site, outside=dict(outside), by_emp=by_emp, eligible=eligible, suns=sundays_in(inp),
                     optional_brands=optional_brands, targets=targets, wmax=max((e.weight for e in inp.employees), default=0),
-                    category={s.id: slot_category(s, starts_by_site) for s in inp.slots})
+                    category={s.id: slot_category(s, starts_by_site) for s in inp.slots}, months=dict(months),
+                    outside_month_days=dict(o_days), outside_month_minutes=dict(o_min))
+
+
+def min_days_need(prep: Prepared, e: Employee, key: Tuple[int, int]) -> int:
+    """Jours encore à travailler dans la période pour atteindre le minimum du mois (jours déjà travaillés hors période déduits)."""
+    if not e.min_days_month:
+        return 0
+    return max(0, e.min_days_month - len(prep.outside_month_days.get((e.id, key), ())))
 
 
 def period_of(s: Slot) -> str:

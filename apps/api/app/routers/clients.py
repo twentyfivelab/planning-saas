@@ -366,7 +366,7 @@ def _eligibility(ctx: Ctx, x: m.Mission) -> dict:
     for p in ctx.db.scalars(select(m.EmployeePreference).where(m.EmployeePreference.kind == "sites", m.EmployeePreference.is_hard.is_(True))):
         allowed.setdefault(p.employee_id, set()).update((p.params or {}).get("sites", []))
     rows = []
-    for e in ctx.db.scalars(select(m.Employee).where(m.Employee.active.is_(True)).order_by(m.Employee.name)):
+    for e in ctx.db.scalars(select(m.Employee).where(m.Employee.active.is_(True), m.Employee.deleted_at.is_(None)).order_by(m.Employee.name)):
         lacking = [k for k in (x.required_skills or []) if k not in owned.get(e.id, set())]
         level = (e.brands or {}).get(x.brand_code)
         free = [d for d in days if d not in unav.get(e.id, set()) and d.weekday() not in wd.get(e.id, set())]

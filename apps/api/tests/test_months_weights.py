@@ -162,7 +162,10 @@ def test_weights_are_saved_validated_and_reach_the_solver(t):
     r = o.put("/settings/weights", json={"criteria": {"family": 0, "fairness": 100}})
     assert r.status_code == 200 and r.json()["customised"]
     assert {c["key"]: c["value"] for c in o.get("/settings/weights").json()["criteria"]}["family"] == 0  # persistant
-    res = run(o, t["jan"], partial=False)
+    # janvier a déjà un planning : il garde les pondérations de sa génération, sauf choix explicite des paramètres actuels
+    kept = run(o, t["jan"], partial=False)
+    assert o.get(f"/runs/{kept['id']}/diagnostic").json()["report"]["weights_used"]["family"] != 0
+    res = run(o, t["jan"], partial=False, params="current")
     rep = o.get(f"/runs/{res['id']}/diagnostic").json()["report"]
     assert rep["weights_used"]["family"] == 0 and rep["weights_used"]["fairness"] > 3 and "criteria_scores" in rep
     last = o.get("/settings/weights").json()["last_run"]
@@ -177,10 +180,10 @@ def test_weights_are_saved_validated_and_reach_the_solver(t):
 def test_changing_a_weight_changes_the_objective_function(t):
     o = t["o"]
     o.post("/settings/weights/reset")
-    base = run(o, t["jan"])
+    base = run(o, t["jan"], params="current")
     b = o.get(f"/runs/{base['id']}/diagnostic").json()["report"]
     o.put("/settings/weights", json={"advanced": {"stability": 0, "site_change": 0}, "criteria": {"alternation": 100}})
-    again = run(o, t["jan"])
+    again = run(o, t["jan"], params="current")  # nouvelles pondérations appliquées au planning existant : choix explicite
     a = o.get(f"/runs/{again['id']}/diagnostic").json()["report"]
     assert b["weights_used"]["alternation"] != a["weights_used"]["alternation"] and a["weights_used"]["site_change"] == 0
     assert a["objective"].get("site_change", 0) == 0
@@ -253,8 +256,8 @@ def test_alert_details_name_rule_limit_reached_and_consequence(t):
         if found:
             break
     e, s2 = found
-    body = {k: e[k] for k in ("code", "name", "brands", "allocation_weight", "active", "time_pref", "time_pref_strict", "sunday_quota", "sunday_mode")}
-    assert o.put(f"/employees/{e['id']}", json={**body, "max_days_count": 1, "max_days_period": "week"}).status_code == 200
+    # exception propre à janvier (le planning de janvier garde les paramètres habituels de sa création ; une exception du mois s'y applique)
+    assert o.put(f"/employees/{e['id']}/month-params/2027-01", json={"max_days_set": True, "max_days_count": 1, "max_days_period": "week"}).status_code == 200
     try:
         r = o.post(f"/periods/{t['jan']}/manual-assign", json={"employee_id": e["id"], "shift_id": s2["shift_id"]})
         issue = next(i for i in r.json()["detail"]["issues"] if i["code"] == "MAX_DAYS_WEEK")
@@ -262,4 +265,4 @@ def test_alert_details_name_rule_limit_reached_and_consequence(t):
         assert e["name"] in issue["message"] and issue["consequence"] and issue["rule"]
         assert next(x for x in sched(o, t["jan"]) if x["shift_id"] == s2["shift_id"])["employee"] == s2["employee"]  # « Annuler » : rien ne bouge
     finally:
-        o.put(f"/employees/{e['id']}", json={**body, "max_days_count": None, "max_days_period": None})
+        o.put(f"/employees/{e['id']}/month-params/2027-01", json={"max_days_set": False})

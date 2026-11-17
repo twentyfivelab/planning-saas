@@ -26,8 +26,10 @@ def t():
     return dict(o=o, auditor=login(f"auditor@{domain}"), emps=emps, nov=nov)
 
 
-def run(o, pid, partial=False):
-    r = o.post(f"/periods/{pid}/{'reoptimize' if partial else 'runs'}", json={"time_limit_s": 20}, headers={"Idempotency-Key": f"k-{uuid.uuid4()}"})
+def run(o, pid, partial=False, params="current"):
+    """Ces scénarios préparent un mois (fiches, marques, sites) puis le régénèrent : ils appliquent explicitement les paramètres actuels.
+    Le comportement par défaut (le planning garde ses paramètres) est vérifié dans test_team_and_frozen.py."""
+    r = o.post(f"/periods/{pid}/{'reoptimize' if partial else 'runs'}", json={"time_limit_s": 20, "params": params}, headers={"Idempotency-Key": f"k-{uuid.uuid4()}"})
     assert r.status_code == 202, r.text
     res = o.get(f"/runs/{r.json()['run_id']}").json()
     assert res["status"] == "termine", res
@@ -252,6 +254,7 @@ def test_permanent_change_impact_is_reported_without_touching_plans(t):
     brands = {k: v for k, v in e["brands"].items() if k != "Cartier"}
     o.put(f"/employees/{e['id']}", json={**body, "brands": brands})
     imp = o.get(f"/employees/{e['id']}/impact").json()
-    assert any(p["name"] == "Novembre 2026" and p["hard"] > 0 for p in imp["periods"])
+    nov = next(p for p in imp["periods"] if p["name"] == "Novembre 2026")
+    assert nov["frozen"] and nov["hard"] == 0 and nov["if_applied"]["hard"] > 0  # novembre garde ses paramètres ; l'effet s'il les adoptait est indiqué
     assert {x["assignment_id"] for x in sched(o, t["nov"])} == {x["assignment_id"] for x in rows}  # rien modifié en silence
     o.put(f"/employees/{e['id']}", json={**body, "brands": e["brands"]})

@@ -29,6 +29,8 @@ const shot = async (page: Page, name: string) => { if (SHOTS) await page.screens
 for (const [orient, vp] of [["portrait", { width: 820, height: 1180 }], ["paysage", { width: 1180, height: 820 }]] as const) {
   test.describe(`tablette ${orient}, thème sombre`, () => {
     test.use({ viewport: vp, hasTouch: true, colorScheme: "dark", deviceScaleFactor: 2 });
+    // le thème sombre (rose profond) n'est plus imposé par le système : il est choisi explicitement
+    test.beforeEach(async ({ page }) => { await page.addInitScript(() => { try { localStorage.setItem("theme-pref", "dark"); } catch { /* */ } }); });
 
     test(`planning général : glisser au doigt, noms fixes, contrastes (${orient})`, async ({ page }) => {
       await page.goto("/planning"); await page.waitForLoadState("networkidle");

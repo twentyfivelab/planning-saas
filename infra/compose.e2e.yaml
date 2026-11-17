@@ -1,0 +1,49 @@
+# Pile ISOLÉE pour les tests navigateur : base, cache et ports distincts de l'environnement de développement (planning).
+# Aucun volume partagé : les tests ne peuvent ni lire ni modifier les données réelles. Lancement : scripts/ops/e2e_stack.sh
+name: planning-e2e
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?}
+      POSTGRES_DB: planning_e2e
+    volumes: [pgdata_e2e:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d planning_e2e"]
+      interval: 3s
+      retries: 20
+  redis:
+    image: redis:7
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      retries: 20
+  api:
+    build: {context: .., dockerfile: infra/api.Dockerfile}
+    env_file: ../.env
+    environment:
+      DATABASE_URL: postgresql+psycopg://${APP_DB_USER}:${APP_DB_PASSWORD}@postgres:5432/planning_e2e
+      MIGRATION_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/planning_e2e
+      REDIS_URL: redis://redis:6379/0
+      CORS_ORIGINS: http://localhost:3100
+    depends_on: {postgres: {condition: service_healthy}, redis: {condition: service_healthy}}
+    command: sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000 --timeout-keep-alive 75"
+    ports: ["8100:8000"]
+  worker:
+    build: {context: .., dockerfile: infra/api.Dockerfile}
+    env_file: ../.env
+    environment:
+      DATABASE_URL: postgresql+psycopg://${APP_DB_USER}:${APP_DB_PASSWORD}@postgres:5432/planning_e2e
+      REDIS_URL: redis://redis:6379/0
+    depends_on: {api: {condition: service_started}}
+    command: rq worker optimization exports --url redis://redis:6379/0
+  web:
+    build:
+      context: ..
+      dockerfile: infra/web.Dockerfile
+      args: {NEXT_PUBLIC_API_URL: "http://localhost:8100"}
+    depends_on: [api]
+    ports: ["3100:3000"]
+volumes:
+  pgdata_e2e:

@@ -119,6 +119,12 @@ def data_subject_erase(employee_id: str, ctx: Ctx = Depends(require("tenant.mana
     e = get_or_404(ctx, m.Employee, employee_id)
     before = e.name
     e.name, e.active = f"Anonymisé {str(e.id)[:8]}", False
+    e.first_name, e.last_name = None, None  # identité et coordonnées de la fiche d'ajout
+    e.birth_date, e.address_street, e.address_postal_code, e.address_city, e.address_country, e.phone, e.email = (None,) * 7
+    for pr in ctx.db.scalars(select(m.PlanningPeriod).where(m.PlanningPeriod.frozen_params.is_not(None))):  # paramètres conservés
+        fp = pr.frozen_params or {}
+        if e.code in (fp.get("employees") or {}):
+            pr.frozen_params = {**fp, "employees": {k: v for k, v in fp["employees"].items() if k != e.code}}
     for model in (m.EmploymentContract, m.Availability, m.Unavailability, m.LeaveRequest, m.EmployeePreference, m.EmployeeSkill):
         for o in ctx.db.scalars(select(model).where(model.employee_id == e.id)):
             ctx.db.delete(o)

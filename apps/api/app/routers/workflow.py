@@ -11,6 +11,8 @@ from planning_solver.timecalc import shift_hours
 
 from .. import models as m
 from ..deps import Ctx, audit, get_or_404, require
+from ..limits import guard_monthly_cap, month_minutes
+from ..optimize import ensure_frozen
 from ..period_state import ensure_editable
 from ..versioning import AUTOMATIC_KINDS, apply_retention, current_map, make_version, retention_candidates, snapshot_map
 from .planning import _conflicts
@@ -196,6 +198,11 @@ def restore(vid: str, ctx: Ctx = Depends(require("planning.edit"))):
     shifts = {s.slot_key: s for s in ctx.db.scalars(select(m.Shift).where(m.Shift.period_id == v.period_id))}
     existing = {a.shift_id: a for a in ctx.db.scalars(select(m.Assignment).where(m.Assignment.period_id == v.period_id))}
     wanted = {x["slot_key"]: x for x in v.snapshot or []}
+    period = ctx.db.get(m.PlanningPeriod, v.period_id)
+    months = {(d.year, d.month) for d in (period.start_date, period.end_date)}
+    involved = {a.employee_id for a in existing.values()}
+    involved |= {e.id for x in wanted.values() for e in [emps_by_id.get(x.get("employee_id") or "") or emps_by_name.get(x["employee"])] if e is not None}
+    before_minutes = month_minutes(ctx.db, involved, months)
     skipped, changed = [], 0
     for key, sh in shifts.items():  # affectations absentes de la version : retirées
         a = existing.get(sh.id)
@@ -233,6 +240,8 @@ def restore(vid: str, ctx: Ctx = Depends(require("planning.edit"))):
             a.employee_id, a.locked = e.id, bool(x.get("locked"))
             changed += 1
     ctx.db.flush()
+    guard_monthly_cap(ctx.db, ctx.tenant_id, before_minutes, involved, months)  # une version qui ferait dépasser le plafond n'est pas restaurée
+    ensure_frozen(ctx.db, period)
     audit(ctx, "version.restore", "version", v.id, {"number": v.number, "changed": changed, "skipped": skipped[:50], "safety_version": safety.number})
     return {"restored": v.number, "changed": changed, "skipped": len(skipped), "safety_version": safety.number, "conflicts": _conflicts(ctx, v.period_id)}
 

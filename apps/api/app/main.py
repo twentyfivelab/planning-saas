@@ -4,7 +4,7 @@ from fastapi.responses import JSONResponse
 
 from .config import settings
 from . import realtime  # noqa: F401  (publication temps réel après chaque transaction)
-from .routers import admin, auth, catalog, clients, crud, decisions, employee_tools, events, exports, legal, periods_setup, manual_shifts, months, planning, reports, time_tracking, weights_settings, workflow
+from .routers import admin, auth, catalog, clients, crud, decisions, employee_tools, employees, events, exports, legal, periods_setup, manual_shifts, months, planning, reports, time_tracking, weights_settings, workflow
 
 app = FastAPI(title="Planning SaaS API", version="0.1.0",
               description="API multi-tenant de planification automatique (Europe/Zurich). "
@@ -51,6 +51,6 @@ def health():
     return {"status": "ok"}
 
 
-for r in [auth.router, admin.router, planning.router, workflow.router, decisions.router, clients.router, time_tracking.router, reports.router, legal.router, employee_tools.router, manual_shifts.router,
+for r in [auth.router, admin.router, employees.router, planning.router, workflow.router, decisions.router, clients.router, time_tracking.router, reports.router, legal.router, employee_tools.router, manual_shifts.router,
           months.router, weights_settings.router, events.router, periods_setup.router, catalog.router, exports.router, *crud.routers()]:
     app.include_router(r)

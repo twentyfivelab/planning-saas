@@ -52,6 +52,8 @@ test("2-5. janvier 2027 : effectif (Zaki décoché), exception de jours, indispo
   await page.getByRole("button", { name: "Tout sélectionner" }).click();
   await expect(page.getByRole("status").filter({ hasText: "Enregistré automatiquement" })).toBeVisible();
   const list = page.getByRole("list", { name: "Effectif du mois" });
+  const active = (r: { state: string; included: boolean }[]) => r.filter((x) => x.state !== "inactive" && x.state !== "contract_ended");
+  await expect.poll(async () => active(await roster(page, jan.id)).every((x) => x.included)).toBe(true); // enregistrement automatique terminé
   const r0 = await roster(page, jan.id);
   const all = r0.length, selectable = r0.filter((x) => x.included).length;
   expect(r0.filter((x) => x.state !== "inactive" && x.state !== "contract_ended").every((x) => x.included)).toBe(true); // tous les actifs cochés
@@ -73,9 +75,8 @@ test("2-5. janvier 2027 : effectif (Zaki décoché), exception de jours, indispo
   const row = page.getByRole("row").filter({ has: page.getByText("Mila", { exact: true }) });
   await row.getByRole("button", { name: "Configurer" }).click();
   const sheet = page.getByRole("dialog", { name: "Fiche — Mila" });
-  await sheet.getByRole("radio", { name: /Exception pour Janvier 2027/ }).check();
-  await sheet.getByLabel("Période (Janvier 2027)").selectOption("week");
-  await sheet.getByLabel("Nombre de jours (Janvier 2027)").selectOption("3");
+  await sheet.getByRole("radiogroup", { name: "Portée du nombre maximum de jours par semaine" }).getByRole("radio", { name: /Exception pour Janvier 2027/ }).check();
+  await sheet.getByLabel("Jours par semaine (Janvier 2027)").selectOption("3");
   await expect(sheet.getByText("Enregistré automatiquement", { exact: true }).first()).toBeVisible();
   await sheet.getByRole("button", { name: /^\S+ 20 janv\. 2027/ }).click();
   await expect.poll(async () => (await j(page, `/employees/${((await j(page, "/employees")) as { id: string; code: string }[]).find((e) => e.code === "mila")!.id}/availability`)).dates).toContain("2027-01-20");
@@ -160,6 +161,13 @@ test("6. génération de janvier, historique latéral et retour à novembre inta
   await page.goto(`/plannings/new?period=${jan.id}`); await page.waitForLoadState("networkidle");
   await page.getByRole("button", { name: /Génération$/ }).click({ timeout: 15_000 });
   await page.getByLabel("Durée maximale du calcul (secondes)").fill("20");
+  // janvier a déjà un planning (exécutions précédentes) : les paramètres de ce mois viennent d'être modifiés, on les applique explicitement
+  // janvier déjà planifié (exécution précédente) : choix explicite des paramètres ; sinon (base neuve) aucun choix n'est proposé
+  if (((await j(page, `/periods/${jan.id}/schedule`)).assignments as unknown[]).length) {
+    const current = page.getByTestId("params-choice").getByRole("radio", { name: /Paramètres actuels/ });
+    await expect(current).toBeVisible({ timeout: 15_000 });
+    await current.check();
+  }
   await page.getByRole("button", { name: "Générer automatiquement le planning" }).click();
   const confirm = page.getByRole("button", { name: "Confirmer et générer" });
   if (await confirm.isVisible({ timeout: 1000 }).catch(() => false)) await confirm.click();
@@ -184,12 +192,14 @@ test("7-8. décembre : modifier une indisponibilité et transférer un shift ; t
   const dec = (await periodOf(page, "2026-12-01"))!;
   const jan = (await periodOf(page, "2027-01-01"))!;
   const token = (await j(page, "/auth/me")).csrf_token;
-  const rows = (await j(page, `/periods/${dec.id}/schedule`)).assignments as { assignment_id: string; shift_id: string; employee: string; employee_id: string; day: string; locked: boolean; allocations: Record<string, number> }[];
+  const rows = (await j(page, `/periods/${dec.id}/schedule`)).assignments as { assignment_id: string; shift_id: string; employee: string; employee_id: string; day: string; locked: boolean; effective_minutes: number; allocations: Record<string, number> }[];
   const emps = (await j(page, "/employees")) as { id: string; name: string; code: string; brands: Record<string, string> }[];
   const inc = new Set((await roster(page, dec.id)).filter((x) => x.included).map((x) => x.code));
   // un shift non verrouillé et un collaborateur du mois, autorisé, libre la veille, le jour même et le lendemain
   const pair = rows.filter((x) => !x.locked && x.day >= "2026-12-07" && x.day <= "2026-12-23").flatMap((x) => emps.filter((e) => inc.has(e.code) && e.code !== "sabrina" && e.name !== x.employee
-    && Object.keys(x.allocations).every((b) => b in e.brands) && !rows.some((y) => y.employee === e.name && Math.abs(Number(y.day.slice(8)) - Number(x.day.slice(8))) <= 1)).map((e) => ({ a: x, to: e })))[0];
+    && Object.keys(x.allocations).every((b) => b in e.brands) && !rows.some((y) => y.employee === e.name && Math.abs(Number(y.day.slice(8)) - Number(x.day.slice(8))) <= 1)
+    && rows.filter((y) => y.employee === e.name).reduce((m, y) => m + y.effective_minutes, 0) + x.effective_minutes <= 176 * 60) // marge sous le plafond mensuel
+    .map((e) => ({ a: x, to: e })))[0];
   expect(pair, "un cas de transfert disponible en décembre").toBeTruthy();
   const { a, to } = pair;
   await page.request.put(`${API}/employees/${a.employee_id}/unavailable-dates`, { headers: { "X-CSRF-Token": token }, data: { dates: [a.day] } });

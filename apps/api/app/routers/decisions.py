@@ -18,7 +18,7 @@ from planning_solver.validator import validate
 
 from .. import models as m
 from ..deps import Ctx, audit, get_or_404, require
-from ..optimize import enqueue, verify_saved_plan
+from ..optimize import enqueue, ensure_frozen, freeze_period, new_violations, verify_saved_plan
 from ..period_state import ensure_editable, has_official_version
 from ..rbac import has_permission
 from ..services_bridge import assignments_for_validation, build_input, persist_result
@@ -29,7 +29,7 @@ router = APIRouter(tags=["décisions du moteur"])
 
 
 def _state(ctx: Ctx, p: m.PlanningPeriod):
-    inp = build_input(ctx.db, p)
+    inp = build_input(ctx.db, p, {"cap": "current"})  # remplaçants proposés : jamais au-delà du plafond mensuel actuel
     return inp, assignments_for_validation(ctx.db, inp, p)
 
 
@@ -319,7 +319,8 @@ def apply_simulation(rid: str, body: Optional[ApplyIn] = None, ctx: Ctx = Depend
         raise HTTPException(409, detail={"code": "official_version", "message": f"{p.name} a une version validée ou publiée : elle reste conservée, mais le planning en cours serait remplacé. Confirmez pour continuer."})
     if rep.get("base_fingerprint") != fingerprint(current_map(ctx.db, p.id)):
         raise HTTPException(409, detail={"code": "stale", "message": "Le planning a été modifié depuis cette simulation : relancez-la pour éviter d'écraser ces modifications."})
-    inp = build_input(ctx.db, p)
+    flags = {"cap": "current", "generation": True, **({"params": run.config["params"]} if (run.config or {}).get("params") else {})}  # mêmes paramètres que la simulation
+    inp = build_input(ctx.db, p, flags)
     slots = {s.id: s for s in inp.slots}
     missing = [x["slot_id"] for x in rep["proposal"] if x["slot_id"] not in slots]
     if missing:
@@ -329,19 +330,24 @@ def apply_simulation(rid: str, body: Optional[ApplyIn] = None, ctx: Ctx = Depend
         s = slots[x["slot_id"]]
         h = s.hours
         plan.append(SAssign(s.id, x["employee_id"], s.day, s.start, s.end, h.presence_minutes, h.break_minutes, h.effective_minutes, dict(s.allocations)))
-    bad = validate(inp, plan)
+    found = validate(inp, plan)  # avant la relecture des horaires modifiés (même ordre qu'auparavant)
+    before = set(validate(inp, assignments_for_validation(ctx.db, inp, p)))
+    bad = new_violations(found, before)  # un dépassement de plafond antérieur, non aggravé, n'empêche pas l'application
     if bad:
         raise HTTPException(409, detail={"code": "hard_violations", "message": f"{len(bad)} contrainte(s) stricte(s) ne seraient pas respectées : application refusée.", "violations": bad[:20]})
-    before = set(validate(inp, assignments_for_validation(ctx.db, inp, p)))
     safety = make_version(ctx.db, ctx.tenant_id, p.id, f"Avant application : {(run.config or {}).get('label', 'simulation')}", "safety", ctx.user.id)
     persist_result(ctx.db, ctx.tenant_id, p, inp, SimpleNamespace(assignments=plan), run.id)
     run.applied_at = datetime.now(timezone.utc)
     ctx.db.flush()
-    saved = verify_saved_plan(ctx.db, p, {}, before)  # vérification du planning réellement enregistré : tout est annulé en cas de violation nouvelle
+    saved = verify_saved_plan(ctx.db, p, flags, before)  # vérification du planning réellement enregistré : tout est annulé en cas de violation nouvelle
     if saved["violations"]:
         raise HTTPException(409, detail={"code": "hard_violations", "message": f"{len(saved['violations'])} contrainte(s) stricte(s) ne seraient pas respectées : application annulée.", "violations": saved["violations"][:20]})
     label = (run.config or {}).get("label", "Simulation")
     v = make_version(ctx.db, ctx.tenant_id, p.id, f"Planning généré — {label}", "generated", ctx.user.id, run_id=run.id)
+    if flags.get("params") == "current":
+        freeze_period(ctx.db, p, "generation", cap_used=inp.config.monthly_cap_minutes)
+    else:
+        ensure_frozen(ctx.db, p, "generation")
     audit(ctx, "simulation.applied", "run", run.id, {"strategy": (run.config or {}).get("strategy"), "label": label, "safety_version": safety.number, "version": v.number,
                                                      "changes": (rep.get("metrics") or {}).get("changes")})
     return {"applied": True, "version": v.number, "safety_version": safety.number, "conflicts": _conflicts(ctx, p.id)}

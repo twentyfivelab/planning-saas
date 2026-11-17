@@ -69,12 +69,13 @@ test("verrouillage depuis la fiche, puis déverrouillage", async ({ page }) => {
 test("thème : le choix est mémorisé et appliqué avant hydratation", async ({ page }) => {
   await login(page);
   const toggle = page.getByRole("button", { name: /Thème/ });
-  await toggle.click(); // automatique -> clair
-  await toggle.click(); // clair -> sombre
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "light"); // rose et blanc par défaut
+  await toggle.click(); // clair -> sombre (choix explicite)
   await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
   await page.reload();
   await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
-  await toggle.click(); // sombre -> automatique
+  await toggle.click(); // sombre -> clair
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
 });
 
 test("mobile : menu, bandeau légal replié, pas de débordement horizontal", async ({ page }) => {

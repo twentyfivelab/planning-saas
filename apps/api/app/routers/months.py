@@ -102,6 +102,9 @@ class MonthParamsIn(BaseModel):
     max_days_set: Optional[bool] = None  # True = exception pour ce mois ; False = valeur habituelle de la fiche
     max_days_count: Optional[int] = Field(None, ge=1, le=31)
     max_days_period: Optional[Literal["week", "month"]] = None
+    days_set: Optional[bool] = None  # True = exception du mois sur les jours minimum / maximum ; False = valeurs habituelles de la fiche
+    min_days: Optional[int] = Field(None, ge=1, le=31)  # None = pas de préférence
+    max_days: Optional[int] = Field(None, ge=1, le=31)
 
 
 @router.get("/month-params")
@@ -110,7 +113,7 @@ def month_params(month: str, ctx: Ctx = Depends(require("employees.read"))):
     default = valeur historique de la fiche (aucune valeur saisie pour ce mois) ; none = aucun quota."""
     first = parse_month(month)
     rows = {r.employee_id: r for r in ctx.db.scalars(select(m.EmployeeMonthParams).where(m.EmployeeMonthParams.month == first))}
-    return [_mp_view(e, rows.get(e.id)) for e in ctx.db.scalars(select(m.Employee).order_by(m.Employee.code))]
+    return [_mp_view(e, rows.get(e.id)) for e in ctx.db.scalars(select(m.Employee).where(m.Employee.deleted_at.is_(None)).order_by(m.Employee.code))]
 
 
 def _effective(ctx: Ctx, e: m.Employee, months) -> dict:
@@ -170,11 +173,17 @@ def set_month_params(eid: str, month: str, body: MonthParamsIn, ctx: Ctx = Depen
             raise HTTPException(422, "Une semaine compte au plus 7 jours.")
         if body.max_days_period == "month" and body.max_days_count > n_days:
             raise HTTPException(422, f"{MONTHS_FR[first.month - 1]} {first.year} compte {n_days} jours.")
+    if body.days_set:
+        from ..limits import days_settings_error
+        err = days_settings_error(ctx.db, ctx.tenant_id, e.brands or {}, body.min_days, body.max_days, n_days, f"{MONTHS_FR[first.month - 1]} {first.year}")
+        if err:
+            raise HTTPException(422, err)
     legacy = (e.sunday_quota, e.sunday_mode or "max") if e.sunday_quota is not None and e.sunday_quota_migrated_at is None else (None, "max")
     migrate_legacy_quota(ctx, e, exclude=first)
     row = ctx.db.scalar(select(m.EmployeeMonthParams).where(m.EmployeeMonthParams.employee_id == e.id, m.EmployeeMonthParams.month == first))
     before = None if row is None else {"sunday_quota": row.sunday_quota, "sunday_mode": row.sunday_mode, "max_days_set": row.max_days_set,
-                                       "max_days_count": row.max_days_count, "max_days_period": row.max_days_period}
+                                       "max_days_count": row.max_days_count, "max_days_period": row.max_days_period,
+                                       "days_set": row.days_set, "min_days": row.min_days, "max_days": row.max_days}
     if row is None:  # nouvelle ligne : le quota de dimanches en vigueur pour ce mois est repris tel quel (rien ne change en silence)
         row = m.EmployeeMonthParams(tenant_id=ctx.tenant_id, employee_id=e.id, month=first, sunday_quota=legacy[0], sunday_mode=legacy[1])
         ctx.db.add(row)
@@ -183,6 +192,9 @@ def set_month_params(eid: str, month: str, body: MonthParamsIn, ctx: Ctx = Depen
     if "max_days_set" in fs:
         row.max_days_set = bool(body.max_days_set)
         row.max_days_count, row.max_days_period = (body.max_days_count, body.max_days_period) if body.max_days_set else (None, None)
+    if "days_set" in fs:
+        row.days_set = bool(body.days_set)
+        row.min_days, row.max_days = (body.min_days, body.max_days) if body.days_set else (None, None)
     ctx.db.flush()
     audit(ctx, "employee.month_params", "employee", e.id, {"month": first.isoformat(), "before": before, "after": body.model_dump(include=fs)})
     published = ctx.db.scalar(select(func.count()).select_from(m.ScheduleVersion).join(m.PlanningPeriod, m.PlanningPeriod.id == m.ScheduleVersion.period_id)
@@ -201,7 +213,10 @@ def _mp_view(e: m.Employee, r: Optional[m.EmployeeMonthParams]) -> dict:
     exc = r is not None and r.max_days_set
     return {"employee_id": str(e.id), **sq, "max_days_set": exc,
             "max_days_count": r.max_days_count if exc else e.max_days_count, "max_days_period": r.max_days_period if exc else e.max_days_period,
-            "usual_max_days_count": e.max_days_count, "usual_max_days_period": e.max_days_period}
+            "usual_max_days_count": e.max_days_count, "usual_max_days_period": e.max_days_period,
+            "days_set": bool(r is not None and r.days_set), "min_days": r.min_days if r is not None and r.days_set else e.min_days_month,
+            "max_days": r.max_days if r is not None and r.days_set else e.max_days_month,
+            "usual_min_days": e.min_days_month, "usual_max_days": e.max_days_month}
 
 
 @router.get("/revision")

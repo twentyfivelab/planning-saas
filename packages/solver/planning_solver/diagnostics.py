@@ -5,7 +5,7 @@ from collections import defaultdict
 from datetime import timedelta
 from typing import Dict, List
 
-from .model import Issue, SolverInput, site_start_times, slot_category
+from .model import Issue, SolverInput, fmt_minutes, month_label, site_start_times, slot_category
 from .sundays import sunday_summary, sundays_in
 
 
@@ -157,3 +157,151 @@ def core_issue(inp: SolverInput, solver, assump: dict) -> Issue:
         slots=names, constraints=["couverture stricte", "contraintes dures"],
         suggestions=["Passer en couverture partielle pour obtenir un planning avec les manques listés.",
                      "Retirer un des shifts du noyau ou ajouter des collaborateurs éligibles."])
+
+
+def _max_days_with_streak(days: List, possible: set, limit: int) -> int:
+    """Nombre maximal de jours travaillables parmi `possible` sans dépasser `limit` jours consécutifs (glouton optimal)."""
+    n, run = 0, 0
+    for d in days:
+        if d in possible and run < limit:
+            n, run = n + 1, run + 1
+        else:  # jour impossible, ou série pleine : repos forcé
+            run = 0
+    return n
+
+
+def min_days_reasons(prep, e, key) -> List[str]:
+    """Raisons EXACTES pour lesquelles le minimum de jours de `e` est impossible sur le mois `key` (liste vide = pas impossible à lui seul)."""
+    from .context import min_days_need
+    cfg = prep.inp.config
+    need = min_days_need(prep, e, key)
+    if not need:
+        return []
+    done_out = e.min_days_month - need
+    mdays = prep.months.get(key, [])
+    mine = [s for s in prep.by_emp.get(e.id, ()) if (s.day.year, s.day.month) == key]
+    possible = sorted({s.day for s in mine})
+    reasons: List[str] = []
+    if len(possible) < need:
+        reasons.append(f"seulement {len(possible) + done_out} jour(s) possible(s) ce mois-ci compte tenu de ses disponibilités, indisponibilités, "
+                       "jours de repos, marques et sites autorisés et des shifts prévus")
+    if e.max_days_month is not None and e.max_days_month < e.min_days_month:
+        reasons.append(f"son maximum de {e.max_days_month} jours par mois est inférieur au minimum")
+    if cfg.monthly_cap_minutes is not None and possible:
+        room = cfg.monthly_cap_minutes - prep.outside_month_minutes.get((e.id, key), 0)
+        shortest = sorted(min(s.effective_minutes for s in mine if s.day == d) for d in possible)
+        k, acc = 0, 0
+        for mins in shortest:
+            if acc + mins > room:
+                break
+            acc, k = acc + mins, k + 1
+        if k < need:
+            reasons.append(f"le plafond mensuel de {fmt_minutes(cfg.monthly_cap_minutes)} ne permet que {k + done_out} jour(s) avec les shifts "
+                           f"possibles (au moins {fmt_minutes(shortest[0])} de travail effectif chacun)")
+    week_cap = e.max_days_per_week
+    if e.max_days_count is not None and e.max_days_period == "week":
+        week_cap = e.max_days_count if week_cap is None else min(week_cap, e.max_days_count)
+    if week_cap is not None and possible:
+        weeks: Dict[tuple, int] = defaultdict(int)
+        for d in possible:
+            weeks[d.isocalendar()[:2]] += 1
+        bound = sum(min(week_cap, n) for n in weeks.values())
+        if bound < need:
+            reasons.append(f"la limite de {week_cap} jour(s) par semaine ne permet que {bound + done_out} jour(s) ce mois-ci")
+    if possible:
+        streak = _max_days_with_streak(mdays, set(possible), cfg.max_consecutive_days)
+        if streak < need and len(possible) >= need:
+            reasons.append(f"le maximum de {cfg.max_consecutive_days} jours consécutifs ne permet que {streak + done_out} jour(s) ce mois-ci")
+    return reasons
+
+
+def min_days_blockers(prep) -> List[Issue]:
+    """Minimums de jours impossibles à respecter, détectés AVANT le calcul : un diagnostic bloquant par collaborateur et par mois."""
+    out: List[Issue] = []
+    for e in prep.inp.employees:
+        if not e.min_days_month or e.excluded or e.left_on is not None:
+            continue
+        for key in prep.months:
+            reasons = min_days_reasons(prep, e, key)
+            if reasons:
+                out.append(Issue(
+                    "MIN_DAYS_IMPOSSIBLE", "blocking",
+                    f"Minimum de jours impossible pour {e.name} en {month_label(*key)} : {e.min_days_month} jours demandés, mais "
+                    + " ; ".join(reasons) + ".",
+                    constraints=["minimum de jours travaillés par mois"], employee=e.id,
+                    suggestions=["Réduire le minimum de jours (ou choisir « Pas de préférence ») pour ce mois.",
+                                 "Élargir ses disponibilités, marques ou sites autorisés, ou ajouter des besoins compatibles."]))
+    return out
+
+
+def min_days_core_issue(prep, core: List[tuple]) -> Issue:
+    """Minimums de jours compatibles un à un mais incompatibles ENSEMBLE avec les autres contraintes obligatoires (noyau du solveur)."""
+    emps = prep.emps
+    who = [(emps[eid], key) for eid, key in core if eid in emps]
+    names = ", ".join(f"{e.name} ({e.min_days_month} jours en {month_label(*k)})" for e, k in who)
+    detail = ""
+    if len(who) > 1:
+        slots = {s.id for e, k in who for s in prep.by_emp.get(e.id, ()) if (s.day.year, s.day.month) == k}
+        total = sum(e.min_days_month for e, _k in who)
+        if total > len(slots):
+            detail = f" : leurs minimums cumulés ({total} jours) dépassent les {len(slots)} shifts qu'ils peuvent occuper"
+    if not detail:
+        cfg = prep.inp.config
+        detail = (f" avec les autres contraintes obligatoires (repos quotidien de {cfg.rest_hours} h, {cfg.max_consecutive_days} jours consécutifs au "
+                  "plus, plafonds d'heures, budgets stricts, relations entre collaborateurs, affectations verrouillées)")
+    return Issue("MIN_DAYS_CONFLICT", "blocking", f"Minimum de jours impossible à respecter pour {names}{detail}.",
+                 constraints=["minimum de jours travaillés par mois"], employee=who[0][0].id if len(who) == 1 else None,
+                 suggestions=["Réduire l'un de ces minimums (ou « Pas de préférence ») pour ce mois.", "Ajouter des besoins ou des collaborateurs compatibles."])
+
+
+def pre_generation_checks(prep) -> List[Issue]:
+    """Incohérences évidentes AVANT génération (bornes exactes ou majorantes, jamais une estimation optimiste) :
+    créneaux obligatoires sans aucun collaborateur admissible, capacité maximale de l'effectif inférieure aux besoins, budget strict
+    inférieur aux besoins obligatoires de la marque."""
+    inp = prep.inp
+    cfg = inp.config
+    out: List[Issue] = []
+    mandatory = [s for s in inp.slots if s.mandatory]
+    eligible_slots = {sid for _eid, sid in prep.eligible}
+    orphans = [s for s in mandatory if s.id not in eligible_slots]
+    if orphans:
+        ex = ", ".join(f"{s.day:%d/%m} {s.start:%H:%M}–{s.end:%H:%M} {s.site} ({'/'.join(s.brands)})" for s in orphans[:5])
+        out.append(Issue("NO_ELIGIBLE_EMPLOYEE", "warning",
+                         f"{len(orphans)} shift(s) obligatoire(s) sans aucun collaborateur admissible (marque, site, qualification, disponibilité, "
+                         f"effectif du mois) : {ex}{' …' if len(orphans) > 5 else ''}. Ils resteront non couverts.",
+                         slots=[s.id for s in orphans], suggestions=["Autoriser un collaborateur sur cette marque ou ce site, ou revoir le besoin."]))
+    demand = sum(s.effective_minutes for s in mandatory)
+    capacity = 0
+    for e in inp.employees:
+        mine = prep.by_emp.get(e.id, [])
+        if not mine:
+            continue
+        best: Dict[object, int] = {}
+        for s in mine:  # un shift par jour au plus pour le majorant (repos quotidien)
+            best[s.day] = max(best.get(s.day, 0), s.effective_minutes)
+        days = sorted(best.values(), reverse=True)
+        if e.max_days_month is not None:
+            days = days[:e.max_days_month * max(1, len(prep.months))]
+        cap = sum(days)
+        if cfg.monthly_cap_minutes is not None:
+            cap = min(cap, cfg.monthly_cap_minutes * max(1, len(prep.months)))
+        if e.contract and e.contract.monthly_max_minutes is not None and not e.contract.overtime_allowed:
+            cap = min(cap, e.contract.monthly_max_minutes)
+        capacity += cap
+    if demand and capacity < demand:
+        out.append(Issue("CAPACITY_BELOW_DEMAND", "warning",
+                         f"Capacité maximale de l'effectif : {fmt_minutes(capacity)} pour {fmt_minutes(demand)} de besoins obligatoires. "
+                         f"Au moins {fmt_minutes(demand - capacity)} resteront non couvertes, quelle que soit l'optimisation.",
+                         suggestions=["Ajouter des collaborateurs ou des autorisations de marque.", "Réduire les besoins du mois."]))
+    need_by_brand: Dict[str, int] = defaultdict(int)
+    for s in mandatory:
+        for b, mi in s.allocations.items():
+            need_by_brand[b] += mi
+    for b in inp.budgets:
+        if b.strict and need_by_brand.get(b.brand, 0) > b.target_minutes:
+            gap = need_by_brand[b.brand] - b.target_minutes
+            out.append(Issue("BUDGET_BELOW_DEMAND", "warning",
+                             f"{b.brand} : budget strict de {fmt_minutes(b.target_minutes)} pour {fmt_minutes(need_by_brand[b.brand])} de besoins obligatoires. "
+                             f"{fmt_minutes(gap)} ne pourront pas être couvertes sans dépasser le budget.",
+                             suggestions=["Augmenter le budget du mois, le rendre non strict, ou réduire les besoins."]))
+    return out

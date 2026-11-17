@@ -1,21 +1,43 @@
-"""Vérificateur indépendant des contraintes dures (ne dépend pas de CP-SAT)."""
+"""Vérificateur indépendant des contraintes dures (ne dépend pas de CP-SAT).
+
+`violations()` renvoie des incompatibilités STRUCTURÉES (règle, collaborateur, shifts concernés, limite, valeur atteinte) ;
+`validate()` en renvoie le texte « CODE: détail », inchangé, utilisé partout pour comparer deux états d'un planning."""
 from __future__ import annotations
 
 from collections import defaultdict
-from datetime import timedelta
-from typing import Dict, List
+from dataclasses import dataclass, field
+from datetime import date, timedelta
+from typing import Dict, List, Optional
 
 from .context import required_break
-from .model import Assignment, SolverInput, slot_category, site_start_times
+from .model import Assignment, SolverInput, fmt_minutes, month_label, slot_category, site_start_times
 from .sundays import sundays_in
 from .timecalc import shift_bounds, shift_hours
 
 
+@dataclass
+class Violation:
+    code: str
+    text: str  # « CODE: détail » (format historique, stable)
+    employee: Optional[str] = None  # identifiant du moteur
+    slots: List[str] = field(default_factory=list)  # shifts concernés
+    limit: Optional[str] = None  # valeur autorisée, lisible
+    reached: Optional[str] = None  # valeur atteinte, lisible
+    days: List[date] = field(default_factory=list)  # jours concernés quand aucun shift précis ne l'est (ex. jours hors période)
+
+
 def validate(inp: SolverInput, assignments: List[Assignment]) -> List[str]:
+    return [v.text for v in violations(inp, assignments)]
+
+
+def violations(inp: SolverInput, assignments: List[Assignment]) -> List[Violation]:
     slots = {s.id: s for s in inp.slots}
     emps = {e.id: e for e in inp.employees}
     cfg = inp.config
-    out: List[str] = []
+    out: List[Violation] = []
+
+    def add(code: str, text: str, emp: Optional[str] = None, sl=(), limit=None, reached=None, days=()) -> None:
+        out.append(Violation(code, text, emp, list(sl), limit, reached, list(days)))
 
     per_slot: Dict[str, List[str]] = defaultdict(list)
     per_emp: Dict[str, List[Assignment]] = defaultdict(list)
@@ -24,55 +46,68 @@ def validate(inp: SolverInput, assignments: List[Assignment]) -> List[str]:
         per_emp[a.employee_id].append(a)
     for sid, es in per_slot.items():
         if len(es) > 1:
-            out.append(f"DOUBLE_ASSIGNMENT: {sid} pourvu par {es}")
+            add("DOUBLE_ASSIGNMENT", f"DOUBLE_ASSIGNMENT: {sid} pourvu par {es}", sl=[sid], limit="1 titulaire", reached=f"{len(es)} titulaires")
 
     for sid, eid in inp.locked.items():
         if not any(a.slot_id == sid and a.employee_id == eid for a in assignments):
-            out.append(f"LOCK_VIOLATED: {sid} devait rester à {eid}")
+            add("LOCK_VIOLATED", f"LOCK_VIOLATED: {sid} devait rester à {eid}", emp=eid, sl=[sid])
 
-    out += [f"FROZEN_SLOT: {sid} hors du périmètre de la réoptimisation" for sid in per_slot if sid in inp.frozen_empty]
+    for sid in per_slot:
+        if sid in inp.frozen_empty:
+            add("FROZEN_SLOT", f"FROZEN_SLOT: {sid} hors du périmètre de la réoptimisation", sl=[sid])
 
-    group_count: Dict[str, int] = defaultdict(int)
+    group_count: Dict[str, List[str]] = defaultdict(list)
     for a in assignments:
         s = slots[a.slot_id]
         if s.day_group:
-            group_count[s.day_group] += 1
-    out += [f"DAY_GROUP: {g} rempli {n} fois" for g, n in group_count.items() if n > 1]
+            group_count[s.day_group].append(a.slot_id)
+    for g, ids in group_count.items():
+        if len(ids) > 1:
+            add("DAY_GROUP", f"DAY_GROUP: {g} rempli {len(ids)} fois", sl=ids, limit="1 shift", reached=f"{len(ids)} shifts")
 
     for eid, lst in per_emp.items():
         e = emps[eid]
         lst.sort(key=lambda a: slots[a.slot_id].bounds[0])
         for a in lst:
             s = slots[a.slot_id]
+            one = [a.slot_id]
             if e.excluded:
-                out.append(f"EXCLUDED_FROM_PERIOD: {e.name} sur {a.slot_id} (hors de l'effectif du mois)")
+                add("EXCLUDED_FROM_PERIOD", f"EXCLUDED_FROM_PERIOD: {e.name} sur {a.slot_id} (hors de l'effectif du mois)", eid, one)
+            elif e.left_on is not None and s.day >= e.left_on:
+                add("EMPLOYEE_REMOVED", f"EMPLOYEE_REMOVED: {e.name} sur {a.slot_id} (retiré·e de l'équipe le {e.left_on:%d/%m/%Y})", eid, one,
+                    limit=f"plus de shift à partir du {e.left_on:%d/%m/%Y}", reached=f"shift le {s.day:%d/%m/%Y}")
             elif e.blocked(s.day):
-                out.append(f"UNAVAILABLE: {e.name} le {s.day} sur {a.slot_id}")
+                add("UNAVAILABLE", f"UNAVAILABLE: {e.name} le {s.day} sur {a.slot_id}", eid, one, limit="disponible", reached="indisponible ce jour")
             if s.tag in e.forbidden_tags:
-                out.append(f"FORBIDDEN_TAG: {e.name} sur {s.id} ({s.tag})")
+                add("FORBIDDEN_TAG", f"FORBIDDEN_TAG: {e.name} sur {s.id} ({s.tag})", eid, one, reached=s.tag)
             if any(b not in e.brands for b in s.brands):
-                out.append(f"BRAND_NOT_ELIGIBLE: {e.name} sur {s.id}")
+                miss = [b for b in s.brands if b not in e.brands]
+                add("BRAND_NOT_ELIGIBLE", f"BRAND_NOT_ELIGIBLE: {e.name} sur {s.id}", eid, one, limit=", ".join(sorted(e.brands)) or "aucune", reached=", ".join(miss))
             if any(k not in e.skills for k in s.required_skills):
-                out.append(f"SKILL_MISSING: {e.name} sur {s.id}")
+                add("SKILL_MISSING", f"SKILL_MISSING: {e.name} sur {s.id}", eid, one, reached=", ".join(k for k in s.required_skills if k not in e.skills))
             if s.day.weekday() in e.rest_weekdays_hard:
-                out.append(f"REST_WEEKDAY: {e.name} sur {s.id} (jour de repos obligatoire)")
+                add("REST_WEEKDAY", f"REST_WEEKDAY: {e.name} sur {s.id} (jour de repos obligatoire)", eid, one)
             if e.allowed_sites is not None and s.site not in e.allowed_sites:
-                out.append(f"SITE_NOT_ALLOWED: {e.name} sur {s.id} ({s.site} hors de ses sites autorisés)")
+                add("SITE_NOT_ALLOWED", f"SITE_NOT_ALLOWED: {e.name} sur {s.id} ({s.site} hors de ses sites autorisés)", eid, one,
+                    limit=", ".join(sorted(e.allowed_sites)) or "aucun", reached=s.site)
             h = shift_hours(s.day, s.start, s.end, s.break_minutes)  # heures recalculées indépendamment du moteur
             if (a.presence_minutes, a.break_minutes, a.effective_minutes) != (h.presence_minutes, h.break_minutes, h.effective_minutes):
-                out.append(f"HOURS_MISMATCH: {a.slot_id} {a.effective_minutes} min enregistrées, {h.effective_minutes} recalculées")
+                add("HOURS_MISMATCH", f"HOURS_MISMATCH: {a.slot_id} {a.effective_minutes} min enregistrées, {h.effective_minutes} recalculées", eid, one)
             if a.allocations and sum(a.allocations.values()) != a.effective_minutes:
-                out.append(f"ALLOCATION_MISMATCH: {a.slot_id} imputations {sum(a.allocations.values())} min pour {a.effective_minutes} min effectives")
+                add("ALLOCATION_MISMATCH", f"ALLOCATION_MISMATCH: {a.slot_id} imputations {sum(a.allocations.values())} min pour {a.effective_minutes} min effectives", eid, one)
             need = required_break(cfg.break_rules, s)
             if s.break_minutes < need:
-                out.append(f"BREAK_TOO_SHORT: {a.slot_id} pause de {s.break_minutes} min pour {need} min exigées")
+                add("BREAK_TOO_SHORT", f"BREAK_TOO_SHORT: {a.slot_id} pause de {s.break_minutes} min pour {need} min exigées", eid, one,
+                    limit=f"{need} min", reached=f"{s.break_minutes} min")
         for p, q in zip(lst, lst[1:]):
             ep = slots[p.slot_id].bounds[1]
             sq = slots[q.slot_id].bounds[0]
             if sq < ep:
-                out.append(f"OVERLAP: {e.name} {p.slot_id} / {q.slot_id}")
+                add("OVERLAP", f"OVERLAP: {e.name} {p.slot_id} / {q.slot_id}", eid, [p.slot_id, q.slot_id])
             elif sq - ep < timedelta(hours=cfg.rest_hours):
-                out.append(f"REST<{cfg.rest_hours}h: {e.name} {p.slot_id} -> {q.slot_id}")
+                gap = (sq - ep).total_seconds() / 3600
+                add("REST", f"REST<{cfg.rest_hours}h: {e.name} {p.slot_id} -> {q.slot_id}", eid, [p.slot_id, q.slot_id],
+                    limit=f"{cfg.rest_hours} h", reached=f"{gap:.1f} h".replace(".0 h", " h"))
         days = sorted({a.day for a in lst})
         # jours travaillés hors période (périodes voisines) : semaines à cheval, jours consécutifs, repos à la frontière
         out_days = {o.day for o in inp.outside_shifts if o.employee_id == eid and not (inp.period_start <= o.day <= inp.period_end)}
@@ -82,14 +117,17 @@ def validate(inp: SolverInput, assignments: List[Assignment]) -> List[str]:
         for d in all_days:
             run = run + 1 if prev is not None and d - prev == timedelta(days=1) else 1
             if run > cfg.max_consecutive_days and d in days:
-                out.append(f"CONSECUTIVE>{cfg.max_consecutive_days}: {e.name} jusqu'au {d}")
+                streak = [x.slot_id for x in lst if d - timedelta(days=run - 1) <= x.day <= d]
+                add("CONSECUTIVE", f"CONSECUTIVE>{cfg.max_consecutive_days}: {e.name} jusqu'au {d}", eid, streak,
+                    limit=f"{cfg.max_consecutive_days} jours", reached=f"{run} jours")
             prev = d
         for o in (o for o in inp.outside_shifts if o.employee_id == eid):
             o0, o1 = shift_bounds(o.day, o.start, o.end)
             for a in lst:
                 s0, s1 = slots[a.slot_id].bounds
                 if o0 < s1 + timedelta(hours=cfg.rest_hours) and s0 < o1 + timedelta(hours=cfg.rest_hours):
-                    out.append(f"REST<{cfg.rest_hours}h: {e.name} {a.slot_id} avec un shift du {o.day} (période voisine)")
+                    add("REST", f"REST<{cfg.rest_hours}h: {e.name} {a.slot_id} avec un shift du {o.day} (période voisine)", eid, [a.slot_id],
+                        limit=f"{cfg.rest_hours} h", days=[o.day])
         weeks: Dict[tuple, int] = defaultdict(int)
         for d in set(days) | out_days:
             weeks[d.isocalendar()[:2]] += 1
@@ -100,68 +138,119 @@ def validate(inp: SolverInput, assignments: List[Assignment]) -> List[str]:
         for o in inp.outside_shifts:
             if o.employee_id == eid:
                 wmin[o.day.isocalendar()[:2]] += o.minutes  # heures d'une période voisine dans la même semaine
+
+        def in_week(w) -> List[str]:
+            return [a.slot_id for a in lst if a.day.isocalendar()[:2] == w]
+
         week_cap = e.max_days_per_week
         if e.max_days_count is not None and e.max_days_period == "week":
             week_cap = e.max_days_count if week_cap is None else min(week_cap, e.max_days_count)
         if week_cap is not None:
             for w, n in weeks.items():
                 if n > week_cap and any(d.isocalendar()[:2] == w for d in days):
-                    out.append(f"MAX_DAYS_WEEK: {e.name} {n}>{week_cap} semaine {w}")
+                    add("MAX_DAYS_WEEK", f"MAX_DAYS_WEEK: {e.name} {n}>{week_cap} semaine {w}", eid, in_week(w),
+                        limit=f"{week_cap} jours dans la semaine", reached=f"{n} jours")
         if e.max_days_count is not None and e.max_days_period == "month" and len(days) > e.max_days_count:
-            out.append(f"MAX_DAYS_MONTH: {e.name} {len(days)}>{e.max_days_count} jours sur la période")
+            add("MAX_DAYS_MONTH", f"MAX_DAYS_MONTH: {e.name} {len(days)}>{e.max_days_count} jours sur la période", eid, [a.slot_id for a in lst],
+                limit=f"{e.max_days_count} jours", reached=f"{len(days)} jours")
+        # par mois civil : jours maximum et plafond d'heures de l'entreprise (tous sites, toutes marques ; périodes voisines du même mois comprises)
+        months: Dict[tuple, List[Assignment]] = defaultdict(list)
+        for a in lst:
+            months[a.day.year, a.day.month].append(a)
+        for key, mine in sorted(months.items()):
+            o_same = [o for o in inp.outside_shifts if o.employee_id == eid and (o.day.year, o.day.month) == key
+                      and not (inp.period_start <= o.day <= inp.period_end)]
+            n_days = len({a.day for a in mine} | {o.day for o in o_same})
+            if e.max_days_month is not None and n_days > e.max_days_month:
+                add("MAX_DAYS_MONTH", f"MAX_DAYS_MONTH: {e.name} {n_days}>{e.max_days_month} jours en {month_label(*key)}", eid, [a.slot_id for a in mine],
+                    limit=f"{e.max_days_month} jours", reached=f"{n_days} jours")
+            if cfg.monthly_cap_minutes is not None:
+                tot = sum(a.effective_minutes for a in mine) + sum(o.minutes for o in o_same)
+                # heures fixées avant le calcul (verrous, périodes voisines) : un dépassement existant est toléré, jamais aggravé
+                fixed = sum(a.effective_minutes for a in mine if inp.locked.get(a.slot_id) == eid) + sum(o.minutes for o in o_same)
+                if tot > max(cfg.monthly_cap_minutes, fixed):
+                    add("MONTHLY_CAP", f"MONTHLY_CAP: {e.name} {tot}>{cfg.monthly_cap_minutes} minutes en {month_label(*key)}", eid, [a.slot_id for a in mine],
+                        limit=fmt_minutes(cfg.monthly_cap_minutes), reached=fmt_minutes(tot))
         if e.sunday_quota is not None:
             n_sun = sum(1 for d in days if d.weekday() == 6)
             if n_sun > min(e.sunday_quota, len(sundays_in(inp))):
-                out.append(f"SUNDAY_QUOTA: {e.name} {n_sun}>{e.sunday_quota} dimanche(s)")
+                add("SUNDAY_QUOTA", f"SUNDAY_QUOTA: {e.name} {n_sun}>{e.sunday_quota} dimanche(s)", eid, [a.slot_id for a in lst if a.day.weekday() == 6],
+                    limit=f"{e.sunday_quota} dimanche(s)", reached=f"{n_sun} dimanche(s)")
         if e.time_pref and e.time_pref_strict:
             starts = site_start_times(inp)
             for a in lst:
                 cat = slot_category(slots[a.slot_id], starts)
                 if cat is not None and cat != e.time_pref:
-                    out.append(f"TIME_PREF_STRICT: {e.name} sur {a.slot_id} ({cat}, préférence {e.time_pref} obligatoire)")
+                    add("TIME_PREF_STRICT", f"TIME_PREF_STRICT: {e.name} sur {a.slot_id} ({cat}, préférence {e.time_pref} obligatoire)", eid, [a.slot_id],
+                        limit=e.time_pref, reached=cat)
         c = e.contract
         if c and c.weekly_max_minutes is not None:
-            for w, m in wmin.items():
-                if w in wplanned and m > c.weekly_max_minutes:
-                    out.append(f"CONTRACT_WEEKLY_MAX: {e.name} semaine {w}")
+            for w, mi in wmin.items():
+                if w in wplanned and mi > c.weekly_max_minutes:
+                    add("CONTRACT_WEEKLY_MAX", f"CONTRACT_WEEKLY_MAX: {e.name} semaine {w}", eid, in_week(w),
+                        limit=fmt_minutes(c.weekly_max_minutes), reached=fmt_minutes(mi))
         if e.legal_weekly_max_minutes is not None:
-            for w, m in wmin.items():
-                if w in wplanned and m > e.legal_weekly_max_minutes:
-                    out.append(f"LEGAL_WEEKLY_MAX: {e.name} {m}>{e.legal_weekly_max_minutes} minutes semaine {w}")
+            for w, mi in wmin.items():
+                if w in wplanned and mi > e.legal_weekly_max_minutes:
+                    add("LEGAL_WEEKLY_MAX", f"LEGAL_WEEKLY_MAX: {e.name} {mi}>{e.legal_weekly_max_minutes} minutes semaine {w}", eid, in_week(w),
+                        limit=fmt_minutes(e.legal_weekly_max_minutes), reached=fmt_minutes(mi))
         if c and c.monthly_max_minutes is not None and not c.overtime_allowed:
-            if sum(a.effective_minutes for a in lst) > c.monthly_max_minutes:
-                out.append(f"CONTRACT_MONTHLY_MAX: {e.name}")
+            tot = sum(a.effective_minutes for a in lst)
+            if tot > c.monthly_max_minutes:
+                add("CONTRACT_MONTHLY_MAX", f"CONTRACT_MONTHLY_MAX: {e.name}", eid, [a.slot_id for a in lst],
+                    limit=fmt_minutes(c.monthly_max_minutes), reached=fmt_minutes(tot))
         if e.weekly_rest_days_hard and e.weekly_rest_days_pref is not None:
             for w, n in weeks.items():
                 if n > 7 - e.weekly_rest_days_pref and _full_week(inp, w):
-                    out.append(f"REST_DAYS_HARD: {e.name} semaine {w}")
+                    add("REST_DAYS_HARD", f"REST_DAYS_HARD: {e.name} semaine {w}", eid, in_week(w),
+                        limit=f"{7 - e.weekly_rest_days_pref} jours travaillés", reached=f"{n} jours")
+
+    # minimum de jours par mois civil : contrainte dure (une journée compte une fois ; jours d'une période voisine du même mois compris)
+    months = sorted({(d.year, d.month) for d in (inp.period_start + timedelta(days=k) for k in range((inp.period_end - inp.period_start).days + 1))})
+    for e in inp.employees:
+        if not e.min_days_month or e.excluded or e.left_on is not None:
+            continue
+        for key in months:
+            mine = [a for a in per_emp.get(e.id, ()) if (a.day.year, a.day.month) == key]
+            out_d = {o.day for o in inp.outside_shifts if o.employee_id == e.id and (o.day.year, o.day.month) == key
+                     and not (inp.period_start <= o.day <= inp.period_end)}
+            n_days = len({a.day for a in mine} | out_d)
+            if n_days < e.min_days_month:
+                add("MIN_DAYS_NOT_MET", f"MIN_DAYS_NOT_MET: {e.name} {n_days}<{e.min_days_month} jours en {month_label(*key)}", e.id,
+                    [a.slot_id for a in mine], limit=f"{e.min_days_month} jours", reached=f"{n_days} jours")
 
     # relations strictes entre collaborateurs (même jour, même site)
     where = {eid: {(slots[a.slot_id].day, slots[a.slot_id].site) for a in lst} for eid, lst in per_emp.items()}
+
+    def at(eid, d, site) -> List[str]:
+        return [a.slot_id for a in per_emp.get(eid, ()) if slots[a.slot_id].day == d and slots[a.slot_id].site == site]
+
     for eid, lst in per_emp.items():
         e = emps[eid]
         tutors = [r for r in e.relations if r.kind == "mentor" and r.strict and r.other in emps]
-        for at in sorted(where[eid]):
-            if tutors and not any(at in where.get(r.other, ()) for r in tutors):
-                out.append(f"MENTOR_MISSING: {e.name} le {at[0]} à {at[1]} sans tuteur présent")
+        for d, site in sorted(where[eid]):
+            if tutors and not any((d, site) in where.get(r.other, ()) for r in tutors):
+                add("MENTOR_MISSING", f"MENTOR_MISSING: {e.name} le {d} à {site} sans tuteur présent", eid, at(eid, d, site))
             for r in e.relations:
-                if r.kind == "avoid_together" and r.strict and at in where.get(r.other, ()) and (eid < r.other or not any(
+                if r.kind == "avoid_together" and r.strict and (d, site) in where.get(r.other, ()) and (eid < r.other or not any(
                         x.kind == r.kind and x.other == eid and x.strict for x in emps[r.other].relations)):
-                    out.append(f"RELATION_AVOID: {e.name} et {emps[r.other].name} le {at[0]} à {at[1]}")
+                    add("RELATION_AVOID", f"RELATION_AVOID: {e.name} et {emps[r.other].name} le {d} à {site}", eid, at(eid, d, site) + at(r.other, d, site))
 
     if inp.allowed_times:
         for a in assignments:
             sl = slots[a.slot_id]
             scopes = [k for k in [sl.site, *sl.brands, *(f"{b}@{sl.site}" for b in sl.brands)] if k in inp.allowed_times]
             if scopes and not any((sl.start, sl.end) in inp.allowed_times[k] for k in scopes):
-                out.append(f"SCHEDULE_NOT_ALLOWED: {a.slot_id} {sl.start:%H:%M}-{sl.end:%H:%M} hors horaires autorisés ({sl.site})")
+                add("SCHEDULE_NOT_ALLOWED", f"SCHEDULE_NOT_ALLOWED: {a.slot_id} {sl.start:%H:%M}-{sl.end:%H:%M} hors horaires autorisés ({sl.site})",
+                    a.employee_id, [a.slot_id], reached=f"{sl.start:%H:%M}-{sl.end:%H:%M}")
     planned: Dict[str, int] = defaultdict(int)
     for a in assignments:
-        for b, m in a.allocations.items():
-            planned[b] += m
+        for b, mi in a.allocations.items():
+            planned[b] += mi
     for b in inp.budgets:
         if b.strict and planned[b.brand] > b.target_minutes:
-            out.append(f"BUDGET_EXCEEDED: {b.brand} {planned[b.brand]}>{b.target_minutes}")
+            add("BUDGET_EXCEEDED", f"BUDGET_EXCEEDED: {b.brand} {planned[b.brand]}>{b.target_minutes}",
+                limit=fmt_minutes(b.target_minutes), reached=fmt_minutes(planned[b.brand]))
     return out
 
 

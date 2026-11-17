@@ -69,6 +69,15 @@ test("Kristina → Sahra : transfert depuis le calendrier de Sahra, deux plannin
   const K = emps.find((e) => e.code === "kristina")!, S = emps.find((e) => e.code === "sahra")!;
   await page.request.put(`${API}/employees/${S.id}/unavailable-dates`, { headers: { "X-CSRF-Token": token }, data: { dates: [] } });
   let rows = await sched(page);
+  // plafond mensuel de 176 h : Kristina puis Sahra recevront ce shift ; on libère un de leurs shifts si elles sont au plafond (jamais dépassé)
+  for (const name of ["Kristina", "Sahra"]) {
+    const used = rows.filter((x) => x.employee === name).reduce((s, x) => s + x.effective_minutes, 0);
+    if (used + 9 * 60 > 176 * 60) {
+      const drop = (rows.find((x) => x.employee === name && !x.locked && x.day > "2026-11-27") ?? rows.find((x) => x.employee === name && !x.locked && x.day < "2026-11-03"))!;
+      expect((await page.request.delete(`${API}/assignments/${drop.assignment_id}`, { headers: { "X-CSRF-Token": token } })).status()).toBe(204);
+      rows = await sched(page);
+    }
+  }
   // 1) un shift Ploom attribué INITIALEMENT à Kristina, un jour (hors dimanche) où Sahra et Kristina sont libres
   const cand = rows.find((a) => !a.locked && a.day >= "2026-11-03" && a.day <= "2026-11-27" && new Date(a.day + "T12:00:00Z").getUTCDay() !== 0
     && Object.keys(a.allocations).every((k) => k.startsWith("Ploom") && k !== "Ploom Pilar") && a.employee !== "Kristina" && a.employee !== "Sahra"

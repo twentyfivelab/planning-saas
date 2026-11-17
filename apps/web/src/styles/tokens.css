@@ -16,23 +16,30 @@
   /* Verre */
   --blur: 18px; --blur-strong: 28px;
 
-  /* Surfaces (mode clair) */
-  --bg-base: #f6eff3;
-  --bg-halo-1: #f8cfe0; --bg-halo-2: #e6d7fb; --bg-halo-3: #fbe3d1;
-  --glass-1: rgba(255, 255, 255, 0.58);      /* panneaux */
-  --glass-2: rgba(255, 255, 255, 0.78);      /* éléments surélevés */
-  --solid-1: #ffffff; --solid-2: #f5f7fe; --solid-3: #e8ecf9;   /* repli opaque et cellules denses */
-  --edge-hi: rgba(255, 255, 255, 0.95); --edge-lo: rgba(120, 130, 190, 0.28);
-  --line: rgba(30, 41, 90, 0.14);
-  --shadow-1: 0 1px 2px rgba(30, 41, 90, 0.08), 0 8px 24px rgba(30, 41, 90, 0.08);
-  --shadow-2: 0 2px 4px rgba(30, 41, 90, 0.1), 0 18px 44px rgba(30, 41, 90, 0.16);
+  /* Identité : rose de l'image fournie. Pixels 187/39/87 dans le profil « Display » (= Display P3) de l'image, soit
+     color(display-p3 0.7333 0.1529 0.3412) ; équivalent sRGB exact #CC0256 (repli pour les écrans sans P3). Voir docs/identite-visuelle.md */
+  --pink: #CC0256; --pink-strong: #A30245; --pink-light: #E5528C;
 
-  /* Texte */
-  --fg: #0f172a; --fg-muted: #475467; --fg-faint: #667085;
+  /* Surfaces (mode clair, par défaut) : fond blanc légèrement rosé, halos roses subtils, verre blanc translucide */
+  --bg-base: #fdf6f9;
+  --bg-halo-1: #f7c7d8; --bg-halo-2: #fbdbe6; --bg-halo-3: #fde7ee;
+  --glass-1: rgba(255, 255, 255, 0.62);      /* panneaux */
+  --glass-2: rgba(255, 255, 255, 0.82);      /* éléments surélevés */
+  --glass-pink: rgba(204, 2, 86, 0.08);     /* verre rose : sélections et encarts */
+  --glass-pink-strong: rgba(204, 2, 86, 0.14);
+  --solid-1: #ffffff; --solid-2: #fdf7f9; --solid-3: #f7e8ee;   /* repli opaque et cellules denses (planning lisible) */
+  --edge-hi: rgba(255, 255, 255, 0.98); --edge-lo: rgba(204, 2, 86, 0.18);
+  --line: rgba(110, 32, 64, 0.13);
+  --shadow-1: 0 1px 2px rgba(110, 22, 56, 0.06), 0 8px 24px rgba(204, 2, 86, 0.08);
+  --shadow-2: 0 2px 6px rgba(110, 22, 56, 0.08), 0 18px 44px rgba(204, 2, 86, 0.14);
+  --backdrop: rgba(70, 18, 40, 0.26);        /* fond des fenêtres modales : voile rosé, jamais noir */
+
+  /* Texte : foncé, chaud, contrasté */
+  --fg: #23141b; --fg-muted: #5a4450; --fg-faint: #6b5560;
 
   /* Accent */
-  --accent: #C61160; --accent-hover: #A50E50; --accent-ink: #ffffff; --accent-soft: rgba(198, 17, 96, 0.12);
-  --focus: #C61160;
+  --accent: #CC0256; --accent-hover: #A30245; --accent-ink: #ffffff; --accent-soft: rgba(204, 2, 86, 0.12);
+  --focus: #CC0256;
 
   /* États */
   --ok: #047857; --ok-soft: rgba(4, 120, 87, 0.12);
@@ -55,22 +62,26 @@
   --brand-12: #78716c; --brand-12-soft: rgba(120, 113, 108, 0.16); --brand-12-ink: #44403c;
 }
 
+/* Mode sombre : uniquement sur choix explicite (le thème clair rose et blanc est l'identité par défaut, quel que soit le réglage du système).
+   Teintes rose profond : aucun fond bleu nuit, violet ou noir. */
 :root[data-theme="dark"] {
   color-scheme: dark;
-  --bg-base: #0b0711;
-  --bg-halo-1: #5c0f34; --bg-halo-2: #34195f; --bg-halo-3: #0b3a47;
-  --glass-1: rgba(28, 34, 66, 0.55);
-  --glass-2: rgba(40, 48, 88, 0.68);
-  --solid-1: #141a33; --solid-2: #1a2142; --solid-3: #232b55;
-  --edge-hi: rgba(255, 255, 255, 0.2); --edge-lo: rgba(255, 255, 255, 0.05);
-  --line: rgba(190, 200, 255, 0.18);
-  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.4), 0 10px 28px rgba(0, 0, 0, 0.35);
-  --shadow-2: 0 2px 6px rgba(0, 0, 0, 0.5), 0 24px 56px rgba(0, 0, 0, 0.5);
+  --bg-base: #2a1220;
+  --bg-halo-1: #6b1d3c; --bg-halo-2: #4f1530; --bg-halo-3: #5c2140;
+  --glass-1: rgba(74, 30, 52, 0.6);
+  --glass-2: rgba(92, 38, 64, 0.72);
+  --glass-pink: rgba(240, 112, 154, 0.12); --glass-pink-strong: rgba(240, 112, 154, 0.2);
+  --solid-1: #331725; --solid-2: #3d1c2c; --solid-3: #4a2236;
+  --edge-hi: rgba(255, 220, 232, 0.28); --edge-lo: rgba(255, 220, 232, 0.06);
+  --line: rgba(255, 205, 222, 0.18);
+  --shadow-1: 0 1px 2px rgba(20, 4, 12, 0.35), 0 10px 28px rgba(20, 4, 12, 0.3);
+  --shadow-2: 0 2px 6px rgba(20, 4, 12, 0.45), 0 24px 56px rgba(20, 4, 12, 0.42);
+  --backdrop: rgba(30, 8, 18, 0.5);
 
-  --fg: #f4f6ff; --fg-muted: #c3cae6; --fg-faint: #a6aed0;
+  --fg: #fff4f7; --fg-muted: #ecd2dc; --fg-faint: #dcb9c6;
 
-  --accent: #F472A8; --accent-hover: #F9A8C9; --accent-ink: #2a0516; --accent-soft: rgba(244, 114, 168, 0.18);
-  --focus: #F9A8C9;
+  --accent: #F587AA; --accent-hover: #F9AEC6; --accent-ink: #3a0a1c; --accent-soft: rgba(245, 135, 170, 0.2);
+  --focus: #F9AEC6;
 
   --ok: #6ee7b7; --ok-soft: rgba(110, 231, 183, 0.14);
   --warn: #fcd34d; --warn-soft: rgba(252, 211, 77, 0.14);
@@ -89,4 +100,14 @@
   --brand-10: #60a5fa; --brand-10-soft: rgba(96, 165, 250, 0.19); --brand-10-ink: #bfdbfe;
   --brand-11: #94a3b8; --brand-11-soft: rgba(148, 163, 184, 0.2); --brand-11-ink: #e2e8f0;
   --brand-12: #a8a29e; --brand-12-soft: rgba(168, 162, 158, 0.2); --brand-12-ink: #e7e5e4;
+}
+
+/* Écrans à large gamut (P3, dont les écrans Mac) : le rose EXACT de l'image, sans la perte du passage en sRGB (thème clair). */
+@supports (color: color(display-p3 1 1 1)) {
+  :root:not([data-theme="dark"]) {
+    --pink: color(display-p3 0.7333 0.1529 0.3412);
+    --accent: color(display-p3 0.7333 0.1529 0.3412);
+    --focus: color(display-p3 0.7333 0.1529 0.3412);
+    --accent-hover: color(display-p3 0.5960 0.1294 0.2784);
+  }
 }

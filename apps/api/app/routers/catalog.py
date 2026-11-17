@@ -54,7 +54,7 @@ def catalog(month: Optional[str] = None, ctx: Ctx = Depends(require("referential
             "valid_from": r.valid_from.isoformat() if r.valid_from else None, "valid_to": r.valid_to.isoformat() if r.valid_to else None,
             "shared_schedule": uses.get(r.template_id, 0) > 1, "hypothesis": t.is_hypothesis})
     n_auth: dict = {}
-    for e in ctx.db.scalars(select(m.Employee).where(m.Employee.active.is_(True))):
+    for e in ctx.db.scalars(select(m.Employee).where(m.Employee.active.is_(True), m.Employee.deleted_at.is_(None))):
         for b in (e.brands or {}):
             n_auth[b] = n_auth.get(b, 0) + 1
     sites = [{"code": s.code, "name": s.name, "archived_from": s.archived_from.isoformat() if s.archived_from else None,

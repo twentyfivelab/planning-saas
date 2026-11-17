@@ -14,6 +14,7 @@ from planning_solver.timecalc import shift_hours, split_allocation
 from planning_solver.weights import engine_weights
 
 from . import models as m
+from .frozen import apply_config, apply_fiche, config_of, fiche_of
 
 
 def _t(s: str) -> time:
@@ -32,9 +33,27 @@ def _regime_value(rules: Dict[Optional[str], int], regime: Optional[str]) -> Opt
     return rules.get(regime, rules.get(None)) if regime else rules.get(None)
 
 
-def build_input(db: Session, period: m.PlanningPeriod, cfg_overrides: Optional[dict] = None, toggles: bool = True) -> SolverInput:
-    """`toggles=False` : ignore les marques/sites désactivés pour le mois (sert à afficher les besoins « si activé »)."""
+def params_mode(period: m.PlanningPeriod, cfg_overrides: Optional[dict] = None) -> str:
+    """« frozen » : paramètres conservés par le planning ; « current » : paramètres actuels (planning sans paramètres conservés, ou choix explicite)."""
+    want = (cfg_overrides or {}).get("params")
+    if want == "current" or not getattr(period, "frozen_params", None):
+        return "current"
+    return "frozen"
+
+
+def tenant_cap(db: Session, tenant_id) -> Optional[int]:
+    t = db.get(m.Tenant, tenant_id) if tenant_id else None
+    return t.monthly_hours_cap_minutes if t is not None else None
+
+
+def build_input(db: Session, period: m.PlanningPeriod, cfg_overrides: Optional[dict] = None, toggles: bool = True,
+                capture: Optional[dict] = None) -> SolverInput:
+    """`toggles=False` : ignore les marques/sites désactivés pour le mois (sert à afficher les besoins « si activé »).
+    `cfg_overrides["params"]` : « current » = paramètres actuels même si le planning en conserve ; sinon ceux du planning s'il en a.
+    `cfg_overrides["cap"]` : « current » = plafond mensuel actuel de l'entreprise (toute génération et toute modification manuelle).
+    `capture` : reçoit les paramètres habituels ACTUELS {"employees": {code: fiche}, "config": {...}, "names": {code: nom}}."""
     cfg_overrides = cfg_overrides or {}
+    frozen = period.frozen_params if params_mode(period, cfg_overrides) == "frozen" else None
     start, end = period.start_date, period.end_date
     brands = {b.code: b for b in db.scalars(select(m.Brand))}
     templates = {t.id: t for t in db.scalars(select(m.ShiftTemplate))}
@@ -105,10 +124,14 @@ def build_input(db: Session, period: m.PlanningPeriod, cfg_overrides: Optional[d
     for a_, b_ in list(rel.items()):  # une relation saisie dans un seul sens vaut pour les deux collaborateurs
         rel.setdefault(b_, a_)
     codes = {e.id: e.code for e in db.scalars(select(m.Employee))}
+    # collaborateurs supprimés : seulement s'ils ont des affectations dans ce planning (historique), et plus aucun shift après leur retrait
+    in_plan = set(db.scalars(select(m.Assignment.employee_id).where(m.Assignment.period_id == pid))) if pid else set()
 
     month_params = {p.employee_id: p for p in db.scalars(select(m.EmployeeMonthParams).where(
         m.EmployeeMonthParams.month == start.replace(day=1)))}
-    roster_out = {x.employee_id for x in db.scalars(select(m.PeriodEmployee).where(m.PeriodEmployee.period_id == pid, m.PeriodEmployee.included.is_(False)))} if pid else set()
+    roster_rows = list(db.scalars(select(m.PeriodEmployee).where(m.PeriodEmployee.period_id == pid))) if pid else []
+    roster_out = {x.employee_id for x in roster_rows if not x.included}
+    roster_in = {x.employee_id for x in roster_rows if x.included}  # inclusion explicite dans l'effectif de ce mois
     all_contracts: Dict[uuid.UUID, list] = defaultdict(list)
     for c in db.scalars(select(m.EmploymentContract)):
         all_contracts[c.employee_id].append(c)
@@ -117,7 +140,12 @@ def build_input(db: Session, period: m.PlanningPeriod, cfg_overrides: Optional[d
     for r in sorted((r for r in rules if r.code == "weekly_max_minutes" and r.scope == "tenant"), key=lambda r: r.version):
         weekly_rules[r.jurisdiction or None] = int(r.params["value"])
     emps: List[SEmployee] = []
-    for e in db.scalars(select(m.Employee).where(m.Employee.active.is_(True)).order_by(m.Employee.code)):
+    fiches: Dict[str, dict] = {}
+    names: Dict[str, str] = {}
+    rows = db.scalars(select(m.Employee).where(m.Employee.active.is_(True)).order_by(m.Employee.code))
+    for e in rows:
+        if e.deleted_at is not None and e.id not in in_plan:
+            continue  # supprimé : retiré des prochaines planifications
         mp = month_params.get(e.id)  # le quota de dimanches est propre au mois ; à défaut, valeur historique de la fiche
         if mp is not None:
             quota, qmode = mp.sunday_quota, mp.sunday_mode
@@ -125,15 +153,15 @@ def build_input(db: Session, period: m.PlanningPeriod, cfg_overrides: Optional[d
             quota, qmode = e.sunday_quota, e.sunday_mode or "max"
         else:
             quota, qmode = None, "max"
-        md_count, md_period = (mp.max_days_count, mp.max_days_period) if mp is not None and mp.max_days_set else (e.max_days_count, e.max_days_period)
         ended = bool(all_contracts.get(e.id)) and all(c.end_date is not None and c.end_date < start for c in all_contracts[e.id])
+        # 1) paramètres habituels (fiche, disponibilités récurrentes, contrat, préférences, relations)
         se = SEmployee(e.code, e.name, dict(e.brands or {}), skills={s for s in emp_skills[e.id] if s},
-                       weight=e.allocation_weight, excluded=e.id in roster_out or ended,
-                       max_days_count=md_count, max_days_period=md_period,
+                       weight=e.allocation_weight,
+                       max_days_count=e.max_days_count, max_days_period=e.max_days_period,
+                       min_days_month=e.min_days_month, max_days_month=e.max_days_month,
                        time_pref=e.time_pref, time_pref_strict=e.time_pref_strict,
-                       sunday_quota=quota, sunday_mode=qmode,
                        available_weekdays=set(avail[e.id]) if avail.get(e.id) else None,
-                       unavailable_weekdays=set(unav_wd[e.id]), unavailable_dates=set(unav_dt[e.id]),
+                       unavailable_weekdays=set(unav_wd[e.id]),
                        opposite_of=codes.get(rel.get(e.id)) if e.id in rel else None,
                        relations=[Relation(r.kind, codes[r.other_employee_id], r.strict) for r in relationships
                                   if r.employee_id == e.id and r.kind != "opposite_shifts" and r.other_employee_id in codes])
@@ -168,6 +196,25 @@ def build_input(db: Session, period: m.PlanningPeriod, cfg_overrides: Optional[d
                     se.allowed_sites = set(P["sites"])
                 else:
                     se.preferred_sites |= set(P["sites"])
+        fiches[e.code], names[e.code] = {**fiche_of(se), "contract_ended": ended}, e.name
+        kept = frozen.get("employees", {}).get(e.code) if frozen else None
+        if kept is not None:  # 2) paramètres conservés par le planning (fiche, disponibilités récurrentes, effectif)
+            apply_fiche(se, kept)
+            ended = kept.get("contract_ended", ended)
+        # 3) données propres au mois, toujours lues en direct. Un collaborateur ajouté APRÈS la création du planning n'en fait pas partie,
+        # sauf inclusion explicite dans l'effectif de ce mois (ou application des paramètres actuels) : jamais d'effet rétroactif
+        added_later = bool(frozen) and kept is None and e.id not in roster_in
+        se.excluded = e.id in roster_out or ended or added_later
+        se.unavailable_dates = set(unav_dt[e.id])
+        se.sunday_quota, se.sunday_mode = quota, qmode
+        if mp is not None and mp.max_days_set:
+            se.max_days_count, se.max_days_period = mp.max_days_count, mp.max_days_period
+        if mp is not None and mp.days_set:
+            se.min_days_month, se.max_days_month = mp.min_days, mp.max_days
+        # suppression : retiré des NOUVELLES générations et des plannings créés après ; un planning existant garde son effectif
+        # (ses affectations ne deviennent pas des incompatibilités rétroactives)
+        if e.removed_on is not None and (kept is None or cfg_overrides.get("generation")):
+            se.left_on = e.removed_on
         emps.append(se)
 
     cfg = SolverConfig(weights=dict(DEFAULT_WEIGHTS))
@@ -185,6 +232,14 @@ def build_input(db: Session, period: m.PlanningPeriod, cfg_overrides: Optional[d
             cfg.hierarchical = bool(r.params.get("hierarchical", True))
         elif r.code == "break_rules":
             cfg.break_rules = [(int(x["over_minutes"]), int(x["break_minutes"])) for x in r.params.get("rules", [])]
+    current_cap = tenant_cap(db, getattr(period, "tenant_id", None))
+    cfg.monthly_cap_minutes = current_cap
+    if capture is not None:
+        capture.update({"employees": fiches, "config": config_of(cfg), "names": names})
+    if frozen:
+        apply_config(cfg, frozen.get("config", {}))
+    if cfg_overrides.get("cap") == "current":  # le plafond mensuel actuel s'applique à toute nouvelle génération et modification manuelle
+        cfg.monthly_cap_minutes = current_cap
     for k, v in cfg_overrides.items():
         if k == "weights":
             cfg.weights.update({a: int(b) for a, b in v.items() if a in DEFAULT_WEIGHTS})

@@ -169,8 +169,8 @@ def test_a_plan_violating_a_hard_rule_is_never_saved(t, monkeypatch):
     before = p.get(f"/periods/{t['pid']}/schedule").json()["assignments"]
     real = opt.solve
 
-    def rigged(inp, cancel=None):
-        res = real(inp, cancel)
+    def rigged(inp, cancel=None, progress=None):
+        res = real(inp, cancel, progress)
         res.hard_violations = ["OVERLAP: test simulé"]
         return res
     monkeypatch.setattr(opt, "solve", rigged)

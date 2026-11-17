@@ -48,8 +48,8 @@ describe("composants du design system", () => {
     expect(renderToStaticMarkup(<Callout kind="bad">x</Callout>)).toContain('role="alert"');
     expect(renderToStaticMarkup(<Badge tone="warn">À renseigner</Badge>)).toContain("badge-warn");
   });
-  it("thème : « automatique » suit le système, sinon le choix explicite", () => {
-    expect(resolveTheme("system", true)).toBe("dark"); expect(resolveTheme("system", false)).toBe("light");
-    expect(resolveTheme("light", true)).toBe("light"); expect(resolveTheme("dark", false)).toBe("dark");
+  it("thème : clair rose et blanc par défaut (ancien « automatique » compris), sombre seulement sur choix explicite", () => {
+    expect(resolveTheme(null)).toBe("light"); expect(resolveTheme("system")).toBe("light");
+    expect(resolveTheme("light")).toBe("light"); expect(resolveTheme("dark")).toBe("dark");
   });
 });

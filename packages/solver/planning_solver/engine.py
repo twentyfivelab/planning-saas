@@ -10,13 +10,13 @@ import threading
 import time as _time
 from collections import defaultdict
 from datetime import timedelta
-from typing import Dict, List, Optional
+from typing import Callable, Dict, List, Optional
 
 from ortools.sat.python import cp_model
 
-from .context import (cost_units, coverage_cost, hours_units, individual_penalty, ineligibility, period_of, prepare, preference_checks,
-                      relation_pairs)
-from .diagnostics import diagnose_uncovered, missing_data, core_issue
+from .context import (cost_units, coverage_cost, hours_units, individual_penalty, ineligibility, min_days_need, period_of, prepare,
+                      preference_checks, relation_pairs)
+from .diagnostics import diagnose_uncovered, min_days_blockers, min_days_core_issue, missing_data, core_issue
 from .metrics import plan_metrics
 from .model import (Assignment, DEFAULT_WEIGHTS, Issue, LEVELS, REINFORCE, SECONDARY, Slot, SolverInput, SolverResult)
 from .objective import evaluate
@@ -28,9 +28,18 @@ _UNIT_TERMS = ("fairness", "overtime", "budget")  # termes comptés en unités, 
 
 
 class _StopAtZero(cp_model.CpSolverSolutionCallback):
-    """Un coût nul ne peut plus s'améliorer : inutile de consommer le temps de calcul à le prouver."""
+    """Un coût nul ne peut plus s'améliorer : inutile de consommer le temps de calcul à le prouver. Compte aussi les solutions
+    trouvées (suivi de la génération)."""
+
+    def __init__(self, on_solution: Optional[Callable[[int, float], None]] = None):
+        super().__init__()
+        self.count = 0
+        self._on = on_solution
 
     def on_solution_callback(self) -> None:
+        self.count += 1
+        if self._on is not None:
+            self._on(self.count, self.ObjectiveValue())
         if self.ObjectiveValue() == 0:
             self.StopSearch()
 
@@ -53,14 +62,36 @@ def _level_groups(cfg, exprs: dict, has_previous: bool) -> List[tuple]:
     return [g for g in out if g[1]]
 
 
-def solve(inp: SolverInput, cancel: Optional[threading.Event] = None) -> SolverResult:
+Progress = Callable[[dict], None]
+
+
+def solve(inp: SolverInput, cancel: Optional[threading.Event] = None, progress: Optional[Progress] = None) -> SolverResult:
+    """`progress` (facultatif) reçoit l'état du calcul : préparation, niveau en cours, solutions trouvées, temps écoulé."""
     t0 = _time.time()
+
+    def report(**kw) -> None:
+        if progress is not None:
+            try:
+                progress({"elapsed_s": round(_time.time() - t0, 1), "time_limit_s": inp.config.time_limit_s, **kw})
+            except Exception:  # noqa: BLE001 — le suivi ne doit jamais interrompre le calcul
+                pass
+
+    report(phase="model")
     cfg = inp.config
     W = {**DEFAULT_WEIGHTS, **cfg.weights}
     m = cp_model.CpModel()
     prep = prepare(inp)
     slots, emps, days = prep.slots, prep.emps, prep.days
     by_emp = prep.by_emp
+
+    # minimum de jours impossible à lui seul (jours possibles, maximum, plafond, limite hebdomadaire, jours consécutifs) : blocage expliqué
+    blockers = min_days_blockers(prep)
+    if blockers:
+        report(phase="checking")
+        return SolverResult(status="infaisable", mode="simulation_exploratoire" if any(i.code == "CONTRACT_MISSING" for i in missing_data(inp)) else "validable",
+                            validable=False, duration_s=round(_time.time() - t0, 3), assignments=[], uncovered_slots=[], budgets=[], objective={},
+                            weights=dict(W), preferences={}, avoided_violations={}, missing_data=missing_data(inp), diagnostics=blockers,
+                            hard_violations=[], employee_hours={}, sunday=sunday_summary(inp))
 
     x: Dict[tuple, cp_model.IntVar] = {}
     for e in inp.employees:
@@ -138,6 +169,7 @@ def solve(inp: SolverInput, cancel: Optional[threading.Event] = None) -> SolverR
         return 1 if d in out_days[e_id] else 0
 
     terms: Dict[str, list] = defaultdict(list)
+    min_lits: Dict[tuple, cp_model.IntVar] = {}
     outside_minutes: Dict[tuple, int] = defaultdict(int)
     for o in inp.outside_shifts:
         outside_minutes[o.employee_id, o.day.isocalendar()[:2]] += o.minutes
@@ -210,6 +242,27 @@ def solve(inp: SolverInput, cancel: Optional[threading.Event] = None) -> SolverR
         tot = sum(x[e.id, s.id] * s.effective_minutes for s in by_emp[e.id])
         if c and c.monthly_max_minutes is not None and not c.overtime_allowed:
             m.Add(tot <= c.monthly_max_minutes)
+        # par mois civil : plafond d'heures de l'entreprise (tous sites, toutes marques), jours maximum (dur) et minimum (engagement) ;
+        # une journée compte une seule fois, même avec plusieurs affectations ; les jours et heures d'une période voisine du même mois comptent
+        for mkey, mdays in prep.months.items():
+            mine_m = [s for s in by_emp[e.id] if (s.day.year, s.day.month) == mkey]
+            if cfg.monthly_cap_minutes is not None and mine_m:
+                # heures déjà fixées (verrous, hors périmètre d'une réoptimisation locale) au-delà du plafond : conservées, jamais aggravées
+                fixed = sum(s.effective_minutes for s in mine_m if inp.locked.get(s.id) == e.id)
+                room = max(0, cfg.monthly_cap_minutes - prep.outside_month_minutes.get((e.id, mkey), 0), fixed)
+                if sum(s.effective_minutes for s in mine_m) > room:
+                    m.Add(sum(x[e.id, s.id] * s.effective_minutes for s in mine_m) <= room)
+            dv = [wk(e.id, d) for d in mdays if wk(e.id, d) is not None]
+            done = len(prep.outside_month_days.get((e.id, mkey), ()))
+            if e.max_days_month is not None and dv and len(dv) + done > e.max_days_month:
+                m.Add(sum(dv) <= max(0, e.max_days_month - done))
+            need = min_days_need(prep, e, mkey) if not (e.excluded or e.left_on is not None) else 0
+            if need and dv:  # minimum de jours : contrainte dure, comme le maximum
+                ct = m.Add(sum(dv) >= need)
+                if cfg.min_days_core:
+                    lit = m.NewBoolVar(f"mind_{e.id}_{mkey[0]}_{mkey[1]}")
+                    ct.OnlyEnforceIf(lit)
+                    min_lits[e.id, mkey] = lit
         if c and c.monthly_target_minutes is not None:
             ot = m.NewIntVar(0, 1000, f"ot_{e.id}")  # heures
             m.Add(60 * ot >= tot - c.monthly_target_minutes)
@@ -233,8 +286,8 @@ def solve(inp: SolverInput, cancel: Optional[threading.Event] = None) -> SolverR
                 assump[s.id] = lit
             else:
                 terms["coverage"].append(coverage_cost(W["coverage"], s) * (1 - y[s.id]))
-    if assump:
-        m.AddAssumptions(list(assump.values()))
+    if assump or min_lits:
+        m.AddAssumptions(list(assump.values()) + list(min_lits.values()))
 
     # Budgets : plafond dur, écart pénalisé pour les marques à shifts optionnels
     optional_brands = prep.optional_brands
@@ -480,7 +533,15 @@ def solve(inp: SolverInput, cancel: Optional[threading.Event] = None) -> SolverR
         sv.parameters.random_seed = cfg.seed
         current["solver"] = sv
         m.Minimize(expr)
-        st = sv.Solve(m, _StopAtZero() if keys else None)
+        report(phase="level", level=name, index=i + 1, count=len(groups_lv), solutions=0)
+        last_push = {"t": 0.0}
+
+        def _seen(n: int, value: float, _name=name, _i=i) -> None:
+            now = _time.time()
+            if now - last_push["t"] >= 0.5:  # au plus deux mises à jour par seconde
+                last_push["t"] = now
+                report(phase="level", level=_name, index=_i + 1, count=len(groups_lv), solutions=n, best=int(value))
+        st = sv.Solve(m, _StopAtZero(_seen) if keys else None)
         if st in (cp_model.OPTIMAL, cp_model.FEASIBLE):
             value = int(sv.Value(expr)) if keys else 0
             # tous les coûts sont positifs ou nuls : atteindre 0 prouve l'optimum de ce niveau, sans attendre la preuve du solveur
@@ -510,6 +571,7 @@ def solve(inp: SolverInput, cancel: Optional[threading.Event] = None) -> SolverR
                 break
     stopped["v"] = True
     dur = _time.time() - t0
+    report(phase="checking")
 
     names = {cp_model.OPTIMAL: "optimal", cp_model.FEASIBLE: "faisable"}
     missing = missing_data(inp)
@@ -524,6 +586,12 @@ def solve(inp: SolverInput, cancel: Optional[threading.Event] = None) -> SolverR
         if status == cp_model.INFEASIBLE:
             diag = [_lock_issue(prep, sid, eid) for sid, eid in impossible_locks]
             diag += [core_issue(inp, solver, assump)] if assump else []
+            if min_lits:  # minimums de jours qui, ensemble, rendent le problème impossible
+                idx = set(solver.SufficientAssumptionsForInfeasibility())
+                core = [k for k, lit in min_lits.items() if lit.Index() in idx]
+                diag += [min_days_core_issue(prep, core)] if core else []
+            elif not cfg.min_days_core and any(e.min_days_month for e in inp.employees):
+                diag = _min_days_conflict(inp) + diag
             diag += diagnose_uncovered(inp, [s.id for s in inp.slots if s.mandatory], inp.locked)
             st_name = "infaisable"
         else:
@@ -635,3 +703,11 @@ def _derived_metrics(inp: SolverInput, assigns: List[Assignment], prefs: dict) -
                     gap = abs((a.bounds[0] - b.bounds[0]).total_seconds()) / 60
                     prefs["decalage_cosmetique"]["satisfaites" if gap >= inp.config.stagger_minutes
                                                   else "non_satisfaites"] += 1
+
+
+def _min_days_conflict(inp: SolverInput) -> List[Issue]:
+    """Problème impossible alors que des minimums de jours sont posés : second calcul court, minimums en hypothèses, pour nommer ceux en cause."""
+    import dataclasses
+    cfg = dataclasses.replace(inp.config, min_days_core=True, hierarchical=False, time_limit_s=min(20.0, max(5.0, inp.config.time_limit_s / 2)))
+    res = solve(dataclasses.replace(inp, config=cfg))
+    return [i for i in res.diagnostics if i.code == "MIN_DAYS_CONFLICT"]

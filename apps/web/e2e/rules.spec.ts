@@ -16,7 +16,7 @@ async function emps(page: Page): Promise<Record<string, Emp>> {
 async function putEmp(page: Page, e: Emp, over: Record<string, unknown>) {
   const token = await csrf(page);
   await page.request.put(`${API}/employees/${e.id}`, { headers: { "X-CSRF-Token": token }, data: { code: e.code, name: e.name, brands: e.brands, allocation_weight: e.allocation_weight, active: e.active,
-    max_days_count: null, max_days_period: null, time_pref: null, time_pref_strict: false, sunday_quota: null, sunday_mode: "max", ...over } });
+    max_days_count: null, max_days_period: null, time_pref: null, time_pref_strict: false, sunday_quota: null, sunday_mode: "max", min_days_month: null, max_days_month: null, ...over } });
 }
 async function resetAll(page: Page) {
   // les shifts affectés à la main sont verrouillés : on les déverrouille pour ne pas fausser les autres tests
@@ -42,7 +42,8 @@ const counter = (page: Page) => page.getByRole("group", { name: "Compteur des di
 const sched = async (page: Page) => (await (await page.request.get(`${API}/periods/${periodId}/schedule`)).json()).assignments as { assignment_id: string; employee: string; day: string; site: string; start: string; end: string; locked: boolean; allocations: Record<string, number> }[];
 async function plan(page: Page) {
   const token = await csrf(page);
-  await page.request.post(`${API}/periods/${periodId}/runs`, { headers: { "X-CSRF-Token": token, "Idempotency-Key": `e2e-${Date.now()}-${Math.random()}` }, data: { time_limit_s: 30 } });
+  // « paramètres actuels » : choix explicite d'appliquer les fiches modifiées par le test (sinon le planning garde ses paramètres)
+  await page.request.post(`${API}/periods/${periodId}/runs`, { headers: { "X-CSRF-Token": token, "Idempotency-Key": `e2e-${Date.now()}-${Math.random()}` }, data: { time_limit_s: 30, params: "current" } });
   await expect.poll(async () => (await (await page.request.get(`${API}/runs`)).json())[0].status, { timeout: 60_000 }).toBe("termine");
 }
 
@@ -61,40 +62,48 @@ test.afterAll(async ({ browser }) => {
   await ctx.close();
 });
 
-test("accent #C61160 : navigation active", async ({ page }) => {
-  await page.emulateMedia({ colorScheme: "light" });
+test("identité : rose exact de l'image (Display P3 0.7333 0.1529 0.3412, repli sRGB #CC0256) et blanc, même si le système est en mode sombre", async ({ page }) => {
+  await page.emulateMedia({ colorScheme: "dark" });
   await page.goto("/employees");
-  await expect(page.getByRole("navigation", { name: "Navigation principale" }).locator('[aria-current="page"]')).toHaveCSS("background-color", "rgb(198, 17, 96)");
+  await expect(page.getByRole("navigation", { name: "Navigation principale" }).locator('[aria-current="page"]'))
+    .toHaveCSS("background-color", /^(color\(display-p3 0\.7333 0\.1529 0\.3412\)|rgb\(204, 2, 86\))$/);
+  expect(await page.evaluate(() => document.documentElement.dataset.theme)).toBe("light");
+  await expect(page.locator("body")).toHaveCSS("background-color", "rgb(253, 246, 249)");
 });
 
-test("fiche : deux listes côte à côte, options 1–7 (semaine) et 1–30 (mois), préférences horaires", async ({ page }) => {
+test("fiche : minimum et maximum de jours par mois côte à côte (1–30), jours par semaine 1–7, préférences horaires", async ({ page }) => {
   const dlg = await openSheet(page, "Zaki");
-  const count = dlg.getByLabel("Nombre de jours"), period = dlg.getByLabel("Période");
-  await expect(count).toHaveValue(""); await expect(period).toHaveValue("");
-  const [a, b] = [await count.boundingBox(), await period.boundingBox()];
+  const min = dlg.getByLabel("Minimum de jours par mois"), max = dlg.getByLabel("Maximum de jours par mois");
+  await expect(min).toHaveValue(""); await expect(max).toHaveValue("");
+  await dlg.evaluate((el) => Promise.all(el.getAnimations({ subtree: true }).map((x) => x.finished))); // mesure après l'animation d'ouverture
+  const [a, b] = [await min.boundingBox(), await max.boundingBox()];
   expect(Math.abs(a!.y - b!.y)).toBeLessThan(4); expect(b!.x).toBeGreaterThan(a!.x + a!.width - 2);
-  await period.selectOption("week");
-  expect(await count.locator("option").allTextContents()).toEqual(["Pas de préférence", "1", "2", "3", "4", "5", "6", "7"]);
-  await period.selectOption("month");
-  const month = await count.locator("option").allTextContents();
-  expect(month).toHaveLength(31); expect(month.at(-1)).toBe("30");
-  await period.selectOption("");
+  for (const sel of [min, max]) { const opts = await sel.locator("option").allTextContents(); expect(opts[0]).toBe("Pas de préférence"); expect(opts).toHaveLength(31); expect(opts.at(-1)).toBe("30"); }
+  expect(await dlg.getByLabel("Jours par semaine", { exact: true }).locator("option").allTextContents()).toEqual(["Pas de préférence", "1", "2", "3", "4", "5", "6", "7"]);
+  await expect(dlg.getByTestId("days-month")).toContainText("le plafond de 176 h de travail effectif par mois (tous sites et marques cumulés) reste toujours appliqué");
   expect(await dlg.getByLabel("Préférence horaire", { exact: true }).locator("option").allTextContents()).toEqual(["Pas de préférence", "Matin", "Middle shift", "Soir"]);
   expect(await dlg.getByLabel("Nombre de dimanches").locator("option").allTextContents()).toEqual(["Pas de préférence", "0 dimanche", "1 dimanche", "2 dimanches", "3 dimanches", "4 dimanches", "5 dimanches"]);
 });
 
 test("fiche : enregistrement AUTOMATIQUE, incohérence bloquée, persistance sans rechargement", async ({ page }) => {
   const dlg = await openSheet(page, "Zaki");
-  await dlg.getByLabel("Nombre de jours").selectOption("4");
-  await expect(dlg.getByText("Choisissez à la fois le nombre de jours et la période")).toBeVisible();
-  expect((await emps(page)).zaki.max_days_count).toBeNull(); // rien d'enregistré tant que c'est incohérent
-  await page.evaluate(() => { (window as unknown as { __m: number }).__m = 1; });
-  await dlg.getByLabel("Période").selectOption("week");
+  await dlg.getByLabel("Maximum de jours par mois").selectOption("10");
   await expect(saved(page)).toBeVisible();
+  await dlg.getByLabel("Minimum de jours par mois").selectOption("12");
+  await expect(dlg.getByText("Le minimum (12 jours) dépasse le maximum (10 jours) : corrigez l'un des deux.").first()).toBeVisible();
+  expect((await emps(page)).zaki.min_days_month).toBeNull(); // rien d'enregistré tant que c'est incohérent
+  await page.evaluate(() => { (window as unknown as { __m: number }).__m = 1; });
+  await dlg.getByLabel("Maximum de jours par mois").selectOption("20");
+  await expect.poll(async () => (await emps(page)).zaki.min_days_month).toBe(12);
+  expect((await emps(page)).zaki).toMatchObject({ min_days_month: 12, max_days_month: 20 });
+  await dlg.getByLabel("Jours par semaine", { exact: true }).selectOption("4");
+  await expect.poll(async () => (await emps(page)).zaki.max_days_count).toBe(4);
   expect((await emps(page)).zaki).toMatchObject({ max_days_count: 4, max_days_period: "week" });
   await dlg.getByRole("button", { name: "Fermer" }).click();
-  await expect(page.getByRole("row", { name: /^Zaki / }).getByText("Max 4 j / semaine")).toBeVisible();
+  const row = page.getByRole("row", { name: /^Zaki / });
+  for (const txt of ["Min 12 j / mois", "Max 20 j / mois", "Max 4 j / semaine"]) await expect(row.getByText(txt)).toBeVisible();
   expect(await page.evaluate(() => (window as unknown as { __m?: number }).__m)).toBe(1); // aucune navigation
+  await putEmp(page, (await emps(page)).zaki, { brands: (await emps(page)).zaki.brands, min_days_month: null, max_days_month: null });
 });
 
 test("fiche : préférence horaire souple/stricte enregistrée automatiquement, « Pas de préférence » efface", async ({ page }) => {
@@ -172,9 +181,18 @@ test("paramètres modifiés après génération : incompatibilités signalées p
   const sab = (await emps(page)).sabrina;
   await page.request.put(`${API}/employees/${sab.id}/unavailable-dates`, { headers: { "X-CSRF-Token": token }, data: { dates: [mine.day] } });
   await page.goto("/planning");
-  const banner = page.getByText(/incompatibilité\(s\) avec les paramètres actuels/);
+  const banner = page.getByText(/incompatibilités? avec les paramètres de ce planning/);
   await expect(banner).toBeVisible();
-  await expect(page.getByText("Le planning n'a pas été modifié")).toBeVisible();
+  await expect(page.getByText("Rien n'a été modifié automatiquement.")).toBeVisible();
+  // détail : collaborateur, date, horaires, site, règle et raison ; obligatoire distingué des préférences
+  await page.getByRole("button", { name: "Voir le détail" }).click();
+  const detail = page.getByTestId("incompat-detail");
+  await expect(detail.getByRole("heading", { name: "Contraintes obligatoires non respectées" })).toBeVisible();
+  const line = detail.getByRole("row").filter({ hasText: "Sabrina" }).filter({ hasText: "Disponibilité du collaborateur" });
+  await expect(line).toContainText(`${mine.day.slice(8, 10)}/${mine.day.slice(5, 7)}/${mine.day.slice(0, 4)}`);
+  await expect(line).toContainText(`${mine.start.slice(0, 5)}–${mine.end.slice(0, 5)}`);
+  await expect(line).toContainText("Sabrina est indisponible ce jour-là");
+  await page.getByRole("dialog").getByRole("button", { name: "Fermer" }).last().click();
   expect((await sched(page)).some((a) => a.employee === "Sabrina" && a.day === mine.day)).toBe(true); // pas de modification silencieuse
   await page.getByRole("button", { name: "Réoptimiser…" }).click();
   const dlg = page.getByRole("dialog", { name: "Réoptimiser le planning ?" });
@@ -213,7 +231,8 @@ test("ajout d'un shift : seules les marques autorisées puis les horaires de la 
   const used = new Set((await sched(page)).filter((a) => a.employee === "Zaki").map((a) => a.day));
   const NAMES = ["Lun", "Mar", "Mer", "Jeu", "Ven", "Sam", "Dim"];
   const days = [2, 3, 4, 5, 6, 7, 8].map((n) => ({ iso: `2026-11-${String(n).padStart(2, "0")}`, label: `${NAMES[n - 2]} ${n} nov.` }));
-  const day = days.find((d) => !used.has(d.iso))!;
+  const blocked = new Set(((await (await page.request.get(`${API}/employees/${z.id}/availability`)).json()) as { dates: string[] }).dates); // jamais un jour d'indisponibilité
+  const day = days.find((d) => !used.has(d.iso) && !blocked.has(d.iso))!;
   const free = day.iso;
   await page.goto("/planning");
   await page.getByRole("tab", { name: "Planning général" }).click();

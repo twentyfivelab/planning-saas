@@ -59,9 +59,14 @@ class EmployeeIn(S):
     time_pref_strict: bool = False
     sunday_quota: Optional[int] = Field(None, ge=0, le=5)
     sunday_mode: Literal["max", "exact"] = "max"
+    # jours travaillés par mois : null = « pas de préférence » (le plafond mensuel d'heures reste appliqué)
+    min_days_month: Optional[int] = Field(None, ge=1, le=31)
+    max_days_month: Optional[int] = Field(None, ge=1, le=31)
 
     @model_validator(mode="after")
     def _rules(self):
+        if self.min_days_month is not None and self.max_days_month is not None and self.min_days_month > self.max_days_month:
+            raise ValueError(f"le minimum ({self.min_days_month} jours) dépasse le maximum ({self.max_days_month} jours)")
         if (self.max_days_count is None) != (self.max_days_period is None):
             raise ValueError("nombre de jours et période vont ensemble (ou « pas de préférence » dans les deux)")
         if self.max_days_period == "week" and self.max_days_count > 7:
@@ -337,7 +342,6 @@ def routers() -> List[APIRouter]:
         crud("sites", m.Site, SiteIn, "referential.read", "referential.write", "référentiels"),
         crud("brands", m.Brand, BrandIn, "referential.read", "referential.write", "référentiels"),
         crud("skills", m.Skill, SkillIn, "referential.read", "referential.write", "référentiels"),
-        crud("employees", m.Employee, EmployeeIn, "employees.read", "employees.write", "collaborateurs"),
         crud("employee-skills", m.EmployeeSkill, EmployeeSkillIn, "employees.read", "employees.write",
              "collaborateurs"),
         crud("contracts", m.EmploymentContract, ContractIn, "employees.read", "contracts.write", "contrats"),

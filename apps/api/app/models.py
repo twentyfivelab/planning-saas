@@ -66,6 +66,9 @@ class Tenant(Base):
     # conservation des versions AUTOMATIQUES d'un planning (jamais les versions manuelles, validées ou publiées) ; NULL = sans limite
     version_keep_per_month: Mapped[Optional[int]] = mapped_column(Integer, default=20, server_default="20")
     version_max_age_days: Mapped[Optional[int]] = mapped_column(Integer)
+    # règle interne de l'entreprise (pas une valeur légale) : travail effectif maximal par collaborateur et par mois, tous sites et
+    # toutes marques cumulés ; NULL = aucun plafond
+    monthly_hours_cap_minutes: Mapped[Optional[int]] = mapped_column(Integer, default=10560, server_default="10560")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -160,7 +163,27 @@ class Employee(TenantOwned, Base):
     sunday_mode: Mapped[str] = mapped_column(String(8), default="max", server_default="max")  # max | exact
     # quota historique (valeur unique d'avant les paramètres mensuels) : conservé tel quel ; une fois reporté sur les mois, il ne sert plus de défaut
     sunday_quota_migrated_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
-    __table_args__ = (UniqueConstraint("tenant_id", "code"),)
+    # identité (fiche d'ajout) : NULL = non renseigné, jamais deviné ; `name` reste le nom affiché (« Prénom Nom »)
+    first_name: Mapped[Optional[str]] = mapped_column(String(100))
+    last_name: Mapped[Optional[str]] = mapped_column(String(100))
+    birth_date: Mapped[Optional[date]] = mapped_column(Date)
+    address_street: Mapped[Optional[str]] = mapped_column(String(200))
+    address_postal_code: Mapped[Optional[str]] = mapped_column(String(16))
+    address_city: Mapped[Optional[str]] = mapped_column(String(100))
+    address_country: Mapped[Optional[str]] = mapped_column(String(100))
+    phone: Mapped[Optional[str]] = mapped_column(String(32))
+    email: Mapped[Optional[str]] = mapped_column(String(200))
+    # jours travaillés par mois civil : NULL = pas de préférence (le plafond mensuel d'heures reste appliqué)
+    min_days_month: Mapped[Optional[int]] = mapped_column(Integer)
+    max_days_month: Mapped[Optional[int]] = mapped_column(Integer)
+    # suppression : retiré des prochaines planifications, affectations et historique conservés
+    deleted_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    removed_on: Mapped[Optional[date]] = mapped_column(Date)  # plus aucun shift à partir de cette date
+    deleted_by: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True))
+    __table_args__ = (UniqueConstraint("tenant_id", "code"),
+                      CheckConstraint("min_days_month IS NULL OR (min_days_month BETWEEN 1 AND 31)", name="ck_emp_min_days_month"),
+                      CheckConstraint("max_days_month IS NULL OR (max_days_month BETWEEN 1 AND 31)", name="ck_emp_max_days_month"),
+                      CheckConstraint("min_days_month IS NULL OR max_days_month IS NULL OR min_days_month <= max_days_month", name="ck_emp_days_order"))
 
 
 class EmployeeSkill(TenantOwned, Base):
@@ -301,6 +324,11 @@ class PlanningPeriod(TenantOwned, Base):
     end_date: Mapped[date] = mapped_column(Date)
     archived_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))  # archivé = consultable, non modifiable
     wizard_step: Mapped[Optional[int]] = mapped_column(Integer)  # étape de l'assistant à reprendre (brouillon)
+    # paramètres conservés par CE planning (fiches, disponibilités récurrentes, règles) : un changement fait pour un autre mois ne le
+    # modifie pas ; ils ne sont remplacés que par une action explicite (« Appliquer les paramètres actuels » ou génération choisie ainsi)
+    frozen_params: Mapped[Any] = mapped_column(JSONB, nullable=True)
+    frozen_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    frozen_source: Mapped[Optional[str]] = mapped_column(String(16))  # generation | manual | apply | mise_en_place
 
 
 class PeriodEmployee(TenantOwned, Base):
@@ -367,6 +395,10 @@ class EmployeeMonthParams(TenantOwned, Base):
     max_days_set: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     max_days_count: Mapped[Optional[int]] = mapped_column(Integer)
     max_days_period: Mapped[Optional[str]] = mapped_column(String(8))
+    # exception du mois sur les jours minimum / maximum par mois (sinon : valeurs habituelles de la fiche) ; NULL = pas de préférence
+    days_set: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    min_days: Mapped[Optional[int]] = mapped_column(Integer)
+    max_days: Mapped[Optional[int]] = mapped_column(Integer)
     __table_args__ = (UniqueConstraint("tenant_id", "employee_id", "month"),
                       CheckConstraint("sunday_quota IS NULL OR (sunday_quota >= 0 AND sunday_quota <= 5)", name="ck_month_sunday_quota"),
                       CheckConstraint("sunday_mode IN ('max','exact')", name="ck_month_sunday_mode"))
@@ -439,6 +471,7 @@ class OptimizationRun(TenantOwned, Base):
     cancel_requested: Mapped[bool] = mapped_column(Boolean, default=False)
     simulation: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")  # n'écrit JAMAIS dans le planning tant qu'elle n'est pas appliquée
     applied_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    progress: Mapped[Any] = mapped_column(JSONB, nullable=True)  # état du calcul en cours : étape, niveau, solutions trouvées, temps écoulé
     __table_args__ = (UniqueConstraint("tenant_id", "idempotency_key"),)
 
 

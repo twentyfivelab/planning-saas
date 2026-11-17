@@ -10,9 +10,10 @@ import { api } from "@/lib/api";
 import { brandColor } from "@/lib/brand";
 import { LEVELS, LEVEL_LABEL, groupBrands, setBrand, setGroup, type BrandRow, type Level } from "@/lib/brandGroups";
 import { invalidate } from "@/lib/invalidate";
+import { IncompatModal } from "./IncompatModal";
 import { computeCounter, type SundayEmployee, type SundaySummary } from "@/lib/sundays";
 import {
-  NO_PREF, PERIOD_LABEL, TIME_PREF_HELP, TIME_PREF_LABEL, dayCountOptions, parseNum, sundayOptions, validateDraft,
+  NO_PREF, TIME_PREF_HELP, TIME_PREF_LABEL, dayCountOptions, parseNum, sundayOptions, validateDays, validateDraft,
   type MaxDaysPeriod, type RulesDraft, type TimePref,
 } from "@/lib/employeeRules";
 
@@ -28,17 +29,29 @@ const hr = (s: string) => `${s.slice(0, 2)}h${s.slice(3, 5) === "00" ? "" : s.sl
  * d'indisponibilités. TOUT est enregistré automatiquement (dès que les valeurs sont cohérentes) et recalcule les compteurs.
  */
 export type MonthException = { set: boolean; count: number | null; period: MaxDaysPeriod | null };
-type Impact = { periods: { period_id: string; name: string; status: string; hard: number; soft: number }[] };
+/** exception du mois sur les jours minimum / maximum par mois (sinon : valeurs habituelles de la fiche) */
+export type DaysException = { set: boolean; min: number | null; max: number | null };
+type ImpactRow = { period_id: string; name: string; status: string; frozen: boolean; frozen_at: string | null; hard: number; soft: number; if_applied: { hard: number; soft: number } };
+type Impact = { employee_code: string; periods: ImpactRow[] };
+/** true = enregistré ; texte = refus du serveur, affiché tel quel (raison précise) */
+export type SaveResult = boolean | string;
 
-export function EmployeeSheet({ emp, all, summary, periodDays, period, monthLabel, monthExc, onMonthExc, onOpenPeriod, onClose, onSave }: {
+export function EmployeeSheet({ emp, all, summary, periodDays, period, monthLabel, monthExc, onMonthExc, daysExc, onDaysExc, capLabel, onOpenPeriod, onClose, onSave }: {
   emp: SheetEmployee | null; all: SheetEmployee[]; summary: SundaySummary | null; periodDays: number; period: { start_date: string; end_date: string } | null; monthLabel?: string;
   /** exception du mois sur le nombre maximum de jours (sinon : valeur habituelle) */
   monthExc?: MonthException; onMonthExc?: (v: MonthException) => Promise<boolean>; onOpenPeriod?: (periodId: string) => void;
-  onClose: () => void; onSave: (e: SheetEmployee, d: FicheDraft) => Promise<boolean>;
+  daysExc?: DaysException; onDaysExc?: (v: DaysException) => Promise<SaveResult>; capLabel?: string | null;
+  onClose: () => void; onSave: (e: SheetEmployee, d: FicheDraft) => Promise<SaveResult>;
 }) {
+  const [dexc, setDexc] = useState<DaysException | null>(null);
+  const [dexcStatus, setDexcStatus] = useState<Status>("idle");
+  const [saveErr, setSaveErr] = useState("");
+  const [detail, setDetail] = useState<{ period: ImpactRow; params: "plan" | "current" } | null>(null);
+  const dexcTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const [exc, setExc] = useState<MonthException | null>(null);
   const [excStatus, setExcStatus] = useState<Status>("idle");
-  const [impact, setImpact] = useState<Impact["periods"]>([]);
+  const [impact, setImpact] = useState<ImpactRow[]>([]);
+  const [impactCode, setImpactCode] = useState("");
   const excTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const [d, setD] = useState<FicheDraft | null>(null);
   const [status, setStatus] = useState<Status>("idle");
@@ -52,9 +65,10 @@ export function EmployeeSheet({ emp, all, summary, periodDays, period, monthLabe
 
   useEffect(() => {
     if (!emp) return;
-    const init: FicheDraft = { max_days_count: emp.max_days_count, max_days_period: emp.max_days_period, time_pref: emp.time_pref, time_pref_strict: emp.time_pref_strict, sunday_quota: emp.sunday_quota, sunday_mode: emp.sunday_mode, brands: emp.brands ?? {} };
-    saved.current = JSON.stringify(init); setD(init); setStatus("idle"); setDatesStatus("idle"); setAvail(null); setImpact([]); setExcStatus("idle");
-    setExc(monthExc ?? null);
+    const init: FicheDraft = { max_days_count: emp.max_days_count, max_days_period: emp.max_days_period, time_pref: emp.time_pref, time_pref_strict: emp.time_pref_strict, sunday_quota: emp.sunday_quota, sunday_mode: emp.sunday_mode, brands: emp.brands ?? {},
+      min_days_month: emp.min_days_month ?? null, max_days_month: emp.max_days_month ?? null };
+    saved.current = JSON.stringify(init); setD(init); setStatus("idle"); setDatesStatus("idle"); setAvail(null); setImpact([]); setExcStatus("idle"); setSaveErr(""); setDexcStatus("idle");
+    setExc(monthExc ?? null); setDexc(daysExc ?? null);
     api<Availability>(`/employees/${emp.id}/availability`).then(setAvail).catch(() => setAvail({ dates: [], weekdays: [], leaves: [] }));
   }, [emp]); // eslint-disable-line react-hooks/exhaustive-deps -- réinitialisé à l'ouverture d'une fiche uniquement
 
@@ -67,11 +81,14 @@ export function EmployeeSheet({ emp, all, summary, periodDays, period, monthLabe
     clearTimeout(timer.current);
     timer.current = setTimeout(async () => {
       setStatus("saving");
-      const permanentChanged = (() => { try { const b = JSON.parse(saved.current); return JSON.stringify([b.brands, b.time_pref, b.time_pref_strict, b.max_days_count, b.max_days_period]) !== JSON.stringify([d.brands, d.time_pref, d.time_pref_strict, d.max_days_count, d.max_days_period]); } catch { return false; } })();
-      const ok = await onSave(emp, d);
+      const perm = (x: FicheDraft) => JSON.stringify([x.brands, x.time_pref, x.time_pref_strict, x.max_days_count, x.max_days_period, x.min_days_month ?? null, x.max_days_month ?? null]);
+      const permanentChanged = (() => { try { return perm(JSON.parse(saved.current)) !== perm(d); } catch { return false; } })();
+      const r = await onSave(emp, d);
+      const ok = r === true;
+      setSaveErr(typeof r === "string" ? r : "");
       if (ok) { saved.current = key; setStatus("saved"); } else setStatus("error");
-      // paramètre PERMANENT modifié : signaler les plannings déjà créés devenus incompatibles (aucune modification automatique)
-      if (ok && permanentChanged) api<Impact>(`/employees/${emp.id}/impact`).then((r) => setImpact(r.periods)).catch(() => {});
+      // paramètre PERMANENT modifié : effet sur les plannings déjà créés (ils conservent leurs paramètres ; aucune modification automatique)
+      if (ok && permanentChanged) api<Impact>(`/employees/${emp.id}/impact`).then((x) => { setImpact(x.periods); setImpactCode(x.employee_code); }).catch(() => {});
     }, 500);
     return () => clearTimeout(timer.current);
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -93,6 +110,13 @@ export function EmployeeSheet({ emp, all, summary, periodDays, period, monthLabe
     excTimer.current = setTimeout(async () => { const ok = onMonthExc ? await onMonthExc(v) : false; setExcStatus(ok ? "saved" : "error"); }, 400);
   }
   const set = (p: Partial<FicheDraft>) => { setD({ ...d, ...p }); setStatus("idle"); };
+  const dexcErrors = dexc?.set ? validateDays(dexc.min, dexc.max, periodDays) : [];
+  function changeDexc(v: DaysException) {
+    setDexc(v); setDexcStatus("saving"); setSaveErr("");
+    clearTimeout(dexcTimer.current);
+    if (v.set && validateDays(v.min, v.max, periodDays).length) { setDexcStatus("idle"); return; }
+    dexcTimer.current = setTimeout(async () => { const r = onDaysExc ? await onDaysExc(v) : false; setDexcStatus(r === true ? "saved" : "error"); if (typeof r === "string") setSaveErr(r); }, 400);
+  }
 
   function saveDates(next: string[]) {
     setAvail((a) => (a ? { ...a, dates: next } : a)); setDatesStatus("saving");
@@ -103,7 +127,8 @@ export function EmployeeSheet({ emp, all, summary, periodDays, period, monthLabe
     }, 300);
   }
   const chosen = Object.keys(d.brands);
-  const overall = status === "saving" || datesStatus === "saving" || excStatus === "saving" ? "Enregistrement…" : status === "error" || datesStatus === "error" || excStatus === "error" ? "Échec de l'enregistrement" : errors.length || excErrors.length ? "Corrigez les paramètres pour enregistrer" : status === "saved" || datesStatus === "saved" || excStatus === "saved" ? "Enregistré automatiquement" : "Les modifications sont enregistrées automatiquement";
+  const sts = [status, datesStatus, excStatus, dexcStatus];
+  const overall = sts.includes("saving") ? "Enregistrement…" : sts.includes("error") ? "Échec de l'enregistrement" : errors.length || excErrors.length || dexcErrors.length ? "Corrigez les paramètres pour enregistrer" : sts.includes("saved") ? "Enregistré automatiquement" : "Les modifications sont enregistrées automatiquement";
 
   return (
     <Modal open onClose={onClose} hideClose title={`Fiche — ${emp.name}`} description="« Pas de préférence » = aucune limite : rien n'est supposé. Tout est enregistré automatiquement.">
@@ -153,44 +178,48 @@ export function EmployeeSheet({ emp, all, summary, periodDays, period, monthLabe
           {avail && period ? <UnavailabilityCalendar dates={avail.dates} anchor={period.start_date} weekdays={avail.weekdays} leaves={avail.leaves} status={datesStatus} onChange={saveDates} /> : <div className="skeleton" style={{ height: "14rem" }} aria-hidden="true" />}
         </fieldset>
 
+        <fieldset className="sheet-section" data-testid="days-month">
+          <legend className="h2">Jours travaillés par mois</legend>
+          {dexc && monthLabel && (
+            <div role="radiogroup" aria-label="Portée des jours par mois" className="radio-col" style={{ marginBottom: "var(--sp-2)" }}>
+              <label className="row"><input type="radio" name="dscope" checked={!dexc.set} onChange={() => changeDexc({ set: false, min: null, max: null })} /> Valeurs habituelles <span className="faint">— prochains plannings</span></label>
+              <label className="row"><input type="radio" name="dscope" checked={dexc.set} onChange={() => changeDexc({ set: true, min: d.min_days_month ?? null, max: d.max_days_month ?? null })} /> Exception pour {monthLabel} <span className="faint">— les autres mois ne changent pas</span></label>
+            </div>
+          )}
+          <div className="sheet-pair sheet-pair-end">
+            <Field label={dexc?.set ? `Minimum de jours (${monthLabel})` : "Minimum de jours par mois"}>{(p) => (
+              <Select {...p} value={(dexc?.set ? dexc.min : d.min_days_month) == null ? NO_PREF : String(dexc?.set ? dexc.min : d.min_days_month)}
+                onChange={(e) => (dexc?.set ? changeDexc({ ...dexc, min: parseNum(e.target.value) }) : set({ min_days_month: parseNum(e.target.value) }))}>
+                <option value={NO_PREF}>Pas de préférence</option>
+                {dayCountOptions("month", periodDays).map((n) => <option key={n} value={n}>{n}</option>)}
+              </Select>)}</Field>
+            <Field label={dexc?.set ? `Maximum de jours (${monthLabel})` : "Maximum de jours par mois"}>{(p) => (
+              <Select {...p} value={(dexc?.set ? dexc.max : d.max_days_month) == null ? NO_PREF : String(dexc?.set ? dexc.max : d.max_days_month)}
+                onChange={(e) => (dexc?.set ? changeDexc({ ...dexc, max: parseNum(e.target.value) }) : set({ max_days_month: parseNum(e.target.value) }))}>
+                <option value={NO_PREF}>Pas de préférence</option>
+                {dayCountOptions("month", periodDays).map((n) => <option key={n} value={n}>{n}</option>)}
+              </Select>)}</Field>
+          </div>
+          {dexc?.set && <p className="help">Valeurs habituelles : minimum {d.min_days_month ?? "pas de préférence"}, maximum {d.max_days_month ?? "pas de préférence"}.</p>}
+          <p className="help">Minimum et maximum sont deux limites obligatoires et indépendantes ; une journée compte une seule fois, même avec plusieurs affectations. Si une limite ne peut pas être respectée, la génération est bloquée et la raison est affichée.</p>
+          <p className="help">« Pas de préférence » désactive seulement la limite de jours correspondante{capLabel ? ` : le plafond de ${capLabel} de travail effectif par mois (tous sites et marques cumulés) reste toujours appliqué` : ""}.</p>
+        </fieldset>
+
         <fieldset className="sheet-section">
-          <legend className="h2">Nombre maximum de jours travaillés</legend>
+          <legend className="h2">Nombre maximum de jours par semaine</legend>
           {exc && monthLabel && (
-            <div role="radiogroup" aria-label="Portée du nombre maximum de jours" className="radio-col" style={{ marginBottom: "var(--sp-2)" }}>
+            <div role="radiogroup" aria-label="Portée du nombre maximum de jours par semaine" className="radio-col" style={{ marginBottom: "var(--sp-2)" }}>
               <label className="row"><input type="radio" name="mdscope" checked={!exc.set} onChange={() => changeExc({ set: false, count: null, period: null })} /> Valeur habituelle <span className="faint">— tous les mois</span></label>
-              <label className="row"><input type="radio" name="mdscope" checked={exc.set} onChange={() => changeExc({ set: true, count: d.max_days_count, period: d.max_days_period })} /> Exception pour {monthLabel} <span className="faint">— les autres mois ne changent pas</span></label>
+              <label className="row"><input type="radio" name="mdscope" checked={exc.set} onChange={() => changeExc({ set: true, count: d.max_days_period === "week" ? d.max_days_count : null, period: d.max_days_period === "week" ? "week" : null })} /> Exception pour {monthLabel} <span className="faint">— les autres mois ne changent pas</span></label>
             </div>
           )}
-          {exc?.set ? (
-            <>
-              <div className="sheet-pair">
-                <Field label={`Nombre de jours (${monthLabel})`}>{(p) => (
-                  <Select {...p} value={exc.count === null ? NO_PREF : String(exc.count)} onChange={(e) => changeExc({ ...exc, count: parseNum(e.target.value) })}>
-                    <option value={NO_PREF}>Pas de préférence</option>
-                    {dayCountOptions(exc.period, periodDays).map((n) => <option key={n} value={n}>{n}</option>)}
-                  </Select>)}</Field>
-                <Field label={`Période (${monthLabel})`}>{(p) => (
-                  <Select {...p} value={exc.period ?? NO_PREF} onChange={(e) => changeExc({ ...exc, period: (e.target.value || null) as MaxDaysPeriod | null })}>
-                    <option value={NO_PREF}>Pas de préférence</option>
-                    {(Object.keys(PERIOD_LABEL) as MaxDaysPeriod[]).map((k) => <option key={k} value={k}>{PERIOD_LABEL[k]}</option>)}
-                  </Select>)}</Field>
-              </div>
-              <p className="help">Valeur habituelle : {d.max_days_count ? `${d.max_days_count} j / ${d.max_days_period === "week" ? "semaine" : "mois"}` : "pas de préférence"}.</p>
-            </>
-          ) : (
-            <div className="sheet-pair">
-              <Field label="Nombre de jours">{(p) => (
-                <Select {...p} value={d.max_days_count === null ? NO_PREF : String(d.max_days_count)} onChange={(e) => set({ max_days_count: parseNum(e.target.value) })}>
-                  <option value={NO_PREF}>Pas de préférence</option>
-                  {dayCountOptions(d.max_days_period, periodDays).map((n) => <option key={n} value={n}>{n}</option>)}
-                </Select>)}</Field>
-              <Field label="Période">{(p) => (
-                <Select {...p} value={d.max_days_period ?? NO_PREF} onChange={(e) => set({ max_days_period: (e.target.value || null) as MaxDaysPeriod | null })}>
-                  <option value={NO_PREF}>Pas de préférence</option>
-                  {(Object.keys(PERIOD_LABEL) as MaxDaysPeriod[]).map((k) => <option key={k} value={k}>{PERIOD_LABEL[k]}</option>)}
-                </Select>)}</Field>
-            </div>
-          )}
+          <Field label={exc?.set ? `Jours par semaine (${monthLabel})` : "Jours par semaine"}>{(p) => (
+            <Select {...p} value={exc?.set ? (exc.count === null ? NO_PREF : String(exc.count)) : (d.max_days_count === null || d.max_days_period !== "week" ? NO_PREF : String(d.max_days_count))}
+              onChange={(e) => { const n = parseNum(e.target.value); if (exc?.set) changeExc({ set: true, count: n, period: n === null ? null : "week" }); else set({ max_days_count: n, max_days_period: n === null ? null : "week" }); }} style={{ maxWidth: "14rem" }}>
+              <option value={NO_PREF}>Pas de préférence</option>
+              {dayCountOptions("week", periodDays).map((n) => <option key={n} value={n}>{n}</option>)}
+            </Select>)}</Field>
+          {d.max_days_period === "month" && d.max_days_count !== null && !exc?.set && <p className="help"><Badge tone="info" icon="info">Ancien réglage</Badge> « {d.max_days_count} jours sur la période » : utilisez désormais le maximum de jours par mois ci-dessus.</p>}
           <p className="help">Limite dure : le moteur ne dépasse jamais ce nombre de jours, y compris sur les semaines à cheval sur deux mois.</p>
         </fieldset>
 
@@ -237,12 +266,25 @@ export function EmployeeSheet({ emp, all, summary, periodDays, period, monthLabe
           {projected.alerts.filter((a) => a.level === "warning").map((a) => <p key={a.text} className="error-text">{a.text}</p>)}
         </div>}
         {impact.length > 0 && (
-          <Callout kind="warn" title="Plannings existants concernés par ce changement">
-            <p style={{ margin: 0 }}>Ce réglage permanent rend certaines affectations incompatibles. Rien n&apos;a été modifié : ouvrez le planning pour corriger à la main ou réoptimiser.</p>
-            <ul className="row" style={{ listStyle: "none", padding: 0, margin: "var(--sp-2) 0 0" }}>{impact.map((p) => (
-              <li key={p.period_id}><Button size="sm" onClick={() => onOpenPeriod?.(p.period_id)}>{p.name} · {p.hard + p.soft} incompatibilité{p.hard + p.soft > 1 ? "s" : ""}</Button></li>))}</ul>
+          <Callout kind="info" title="Plannings existants et ce changement" >
+            <p style={{ margin: 0 }}>Les plannings déjà créés conservent leurs paramètres : ce changement s&apos;applique aux prochains plannings. Rien n&apos;a été modifié.</p>
+            <ul style={{ listStyle: "none", padding: 0, margin: "var(--sp-2) 0 0" }} className="stack" data-testid="impact-list">{impact.map((p) => {
+              const own = p.hard + p.soft; const next = p.if_applied.hard + p.if_applied.soft;
+              return (
+                <li key={p.period_id} className="row">
+                  <strong>{p.name}</strong>
+                  {p.frozen ? <span className="muted">{own ? `${own} incompatibilité${own > 1 ? "s" : ""} avec ses paramètres` : "aucune incompatibilité avec ses paramètres"} · {next} incompatibilité{next > 1 ? "s" : ""} si vous lui appliquez les paramètres actuels</span>
+                    : <span className="muted">{own} incompatibilité{own > 1 ? "s" : ""}</span>}
+                  {own > 0 && <Button size="sm" onClick={() => setDetail({ period: p, params: "plan" })}>Voir le détail</Button>}
+                  {p.frozen && next > 0 && <Button size="sm" onClick={() => setDetail({ period: p, params: "current" })}>Détail si appliqués</Button>}
+                  <Button size="sm" variant="ghost" onClick={() => onOpenPeriod?.(p.period_id)}>Ouvrir le planning</Button>
+                </li>);
+            })}</ul>
           </Callout>
         )}
+        {detail && <IncompatModal open onClose={() => setDetail(null)} periodId={detail.period.period_id} periodName={detail.period.name} params={detail.params} employeeCode={impactCode} employeeName={emp.name} />}
+        {saveErr && <Callout kind="bad" title="Paramètres refusés (non enregistrés)">{saveErr}</Callout>}
+        {dexcErrors.length > 0 && <Callout kind="bad" title={`Exception de ${monthLabel ?? "ce mois"} incohérente (non enregistrée)`}><ul style={{ margin: 0, paddingLeft: "1.1rem" }}>{dexcErrors.map((m) => <li key={m}>{m}</li>)}</ul></Callout>}
         {excErrors.length > 0 && <Callout kind="bad" title="Exception du mois incomplète (non enregistrée)">{excErrors[0]}</Callout>}
         {errors.length > 0 && <Callout kind="bad" title="Paramètres incohérents (non enregistrés)"><ul style={{ margin: 0, paddingLeft: "1.1rem" }}>{errors.map((m) => <li key={m}>{m}</li>)}</ul></Callout>}
         <div className="row modal-actions"><Button variant="primary" onClick={onClose}>Fermer</Button></div>

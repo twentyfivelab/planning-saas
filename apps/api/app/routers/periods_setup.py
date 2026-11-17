@@ -96,6 +96,7 @@ def reset_period(pid: str, body: ResetIn, ctx: Ctx = Depends(require("planning.a
             ("paramètres mensuels", delete(m.EmployeeMonthParams).where(m.EmployeeMonthParams.month == first))):
         counts[name] = ctx.db.execute(stmt).rowcount
     p.wizard_step = None
+    p.frozen_params, p.frozen_at, p.frozen_source = None, None, None  # brouillon : les paramètres actuels s'appliqueront à la prochaine génération
     ctx.db.flush()
     ctx.db.expire_all()  # suppressions faites en SQL : aucune donnée retirée ne reste en mémoire
     audit(ctx, "period.reset", "period", p.id, {"period": p.name, "removed": counts})
@@ -118,17 +119,24 @@ def delete_draft(pid: str, ctx: Ctx = Depends(require("planning.edit"))):
 def _roster(ctx: Ctx, p: m.PlanningPeriod) -> list:
     rows = {r.employee_id: r for r in ctx.db.scalars(select(m.PeriodEmployee).where(m.PeriodEmployee.period_id == p.id))}
     ended = _contract_ended(ctx, p.start_date)
+    in_plan = set(ctx.db.scalars(select(m.Assignment.employee_id).where(m.Assignment.period_id == p.id)))
     out = []
     for e in ctx.db.scalars(select(m.Employee).order_by(m.Employee.name)):
-        if not e.active:
+        if e.deleted_at is not None and e.id not in in_plan:
+            continue  # supprimé : n'apparaît plus dans l'effectif des prochains plannings
+        if e.deleted_at is not None:
+            state = "deleted"
+        elif not e.active:
             state = "inactive"
         elif e.id in ended:
             state = "contract_ended"
         else:
             r = rows.get(e.id)
-            state = "excluded" if r is not None and not r.included else "included"
+            later = bool(p.frozen_params) and e.code not in (p.frozen_params.get("employees") or {}) and r is None  # ajouté après ce planning
+            state = "excluded" if (r is not None and not r.included) or later else "included"
         out.append({"employee_id": str(e.id), "code": e.code, "name": e.name, "state": state, "included": state == "included",
-                    "selectable": state in ("included", "excluded"), "reason": rows[e.id].reason if e.id in rows else None,
+                    "selectable": state in ("included", "excluded"),
+                    "reason": rows[e.id].reason if e.id in rows else ("Ajouté après la création de ce planning" if state == "excluded" else None),
                     "contract_end": ended[e.id].isoformat() if e.id in ended else None})
     return out
 
@@ -166,6 +174,8 @@ def set_roster(pid: str, body: RosterIn, ctx: Ctx = Depends(require("planning.ed
         e = ctx.db.get(m.Employee, it.employee_id)
         if e is None:
             raise HTTPException(422, "Collaborateur inconnu")
+        if it.included and e.deleted_at is not None:
+            raise HTTPException(422, f"{e.name} a été supprimé·e de l'équipe : réintégrez-le d'abord.")
         if it.included and (not e.active or e.id in ended):
             raise HTTPException(422, f"{e.name} n'est pas sélectionnable ({'inactif' if not e.active else 'contrat terminé'}).")
         r = rows.get(e.id)
@@ -337,7 +347,7 @@ def readiness(pid: str, ctx: Ctx = Depends(require("planning.read"))):
     """Récapitulatif et incohérences AVANT génération (lecture seule)."""
     p = _period(ctx, pid)
     first, last = month_bounds(p.start_date.year, p.start_date.month)
-    inp = build_input(ctx.db, p)
+    inp = build_input(ctx.db, p, {"cap": "current", "generation": True})  # conditions de la prochaine génération
     ros = _roster(ctx, p)
     brands = period_brands(pid, ctx)
     sites = period_sites(pid, ctx)
@@ -360,6 +370,11 @@ def readiness(pid: str, ctx: Ctx = Depends(require("planning.read"))):
     sun_total = sum(1 for s in inp.slots if s.day.weekday() == 6)
     if reserved > sun_total and sun_total:
         issues.append({"level": "warning", "text": f"{reserved} dimanches réservés pour {sun_total} shifts du dimanche : certains quotas ne pourront pas être atteints."})
+    from planning_solver.context import prepare
+    from planning_solver.diagnostics import min_days_blockers, pre_generation_checks
+    prep = prepare(inp)
+    issues += [{"level": "blocking", "text": i.message} for i in min_days_blockers(prep)]  # minimum de jours impossible : blocage expliqué
+    issues += [{"level": "warning", "text": i.message, "code": i.code} for i in pre_generation_checks(prep)]  # capacité, créneaux orphelins, budgets
     excl_codes = {e.id for e in inp.employees if e.excluded}
     if excl_codes:
         locked = [a for a in assignments_for_validation(ctx.db, inp, p) if a.locked and a.employee_id in excl_codes]
@@ -388,9 +403,10 @@ def readiness(pid: str, ctx: Ctx = Depends(require("planning.read"))):
 
 @router.get("/employees/{eid}/impact")
 def employee_impact(eid: str, ctx: Ctx = Depends(require("planning.read"))):
-    """Après la modification d'un paramètre PERMANENT : plannings déjà créés devenus incompatibles pour ce collaborateur.
-    Rien n'est modifié : l'utilisateur choisit d'ouvrir le planning, de corriger à la main ou de réoptimiser."""
-    from planning_solver.compat import compatibility
+    """Après la modification d'un paramètre PERMANENT : effet sur les plannings déjà créés, pour ce collaborateur.
+    Un planning qui conserve ses paramètres n'est pas modifié par le changement : on indique ce que donnerait l'application des
+    paramètres actuels (action explicite). Rien n'est modifié ici."""
+    from .employee_tools import compat_report
     e = get_or_404(ctx, m.Employee, eid)
     rows = list(ctx.db.scalars(select(m.PlanningPeriod).where(m.PlanningPeriod.archived_at.is_(None)).order_by(m.PlanningPeriod.start_date)))
     st = statuses(ctx.db, rows)
@@ -398,10 +414,13 @@ def employee_impact(eid: str, ctx: Ctx = Depends(require("planning.read"))):
     for p in rows:
         if not st[p.id]["assignments"]:
             continue
-        inp = build_input(ctx.db, p)
-        res = compatibility(inp, assignments_for_validation(ctx.db, inp, p))
-        hard = [h for h in res["hard"] if e.name in h]
-        soft = [s for s in res["soft"] if s.get("employee") == e.name]
-        if hard or soft:
-            out.append({"period_id": str(p.id), "name": p.name, "status": st[p.id]["status"], "hard": len(hard), "soft": len(soft)})
-    return {"employee": e.name, "periods": out}
+        mine = lambda rep: [i for i in rep["items"] if i.get("employee_id") == e.code]  # noqa: E731
+        own = mine(compat_report(ctx, p, "plan"))
+        frozen = bool(p.frozen_params)
+        cur = mine(compat_report(ctx, p, "current")) if frozen else own
+        if own or cur:
+            out.append({"period_id": str(p.id), "name": p.name, "status": st[p.id]["status"], "frozen": frozen,
+                        "frozen_at": p.frozen_at.isoformat() if p.frozen_at else None,
+                        "hard": sum(1 for i in own if i["kind"] == "obligatoire"), "soft": sum(1 for i in own if i["kind"] != "obligatoire"),
+                        "if_applied": {"hard": sum(1 for i in cur if i["kind"] == "obligatoire"), "soft": sum(1 for i in cur if i["kind"] != "obligatoire")}})
+    return {"employee": e.name, "employee_code": e.code, "periods": out}

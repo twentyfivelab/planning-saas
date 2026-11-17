@@ -1,6 +1,6 @@
 import uuid
 from datetime import date, time
-from typing import Optional
+from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -8,6 +8,7 @@ from sqlalchemy import select
 
 from .. import models as m
 from ..deps import Ctx, audit, get_or_404, require
+from ..limits import guard_monthly_cap, month_minutes
 from ..optimize import enqueue
 from ..period_state import ensure_editable, has_official_version, statuses
 from ..services_bridge import assignments_for_validation, build_input
@@ -39,6 +40,8 @@ class RunIn(BaseModel):
     strict_coverage: bool = False
     weights: dict = {}
     confirm_replace: bool = False  # un planning validé ou publié n'est jamais remplacé sans confirmation explicite
+    # paramètres d'un planning qui en conserve déjà : « frozen » (par défaut) = ceux du planning ; « current » = paramètres actuels (choix explicite)
+    params: Optional[Literal["frozen", "current"]] = None
 
 
 def scope_brands(ctx: Ctx) -> Optional[set]:
@@ -106,6 +109,8 @@ def start_run(pid: str, body: RunIn, ctx: Ctx = Depends(require("planning.optimi
     if has_official_version(ctx.db, p.id) and not body.confirm_replace:
         raise HTTPException(409, detail={"code": "official_version", "message": f"{p.name} a une version validée ou publiée : elle reste conservée, mais le planning en cours serait remplacé. Confirmez pour continuer, ou utilisez une simulation."})
     cfg = {"time_limit_s": body.time_limit_s, "strict_coverage": body.strict_coverage, "weights": body.weights}
+    if body.params:
+        cfg["params"] = body.params
     run = m.OptimizationRun(tenant_id=ctx.tenant_id, period_id=p.id, kind=body.kind, config=cfg,
                             idempotency_key=idempotency_key, requested_by=ctx.user.id)
     ctx.db.add(run)
@@ -134,7 +139,7 @@ def _run_view(ctx: Ctx, run: m.OptimizationRun) -> dict:
             "config": run.config, "started_at": run.started_at, "finished_at": run.finished_at,
             "cancel_requested": run.cancel_requested, "simulation": run.simulation, "applied_at": run.applied_at,
             "result_status": res.status if res else None, "mode": res.mode if res else None,
-            "duration_s": res.duration_s if res else None}
+            "duration_s": res.duration_s if res else None, "progress": run.progress}
 
 
 @router.get("/runs")
@@ -206,6 +211,11 @@ def reassign(aid: str, body: MoveIn, ctx: Ctx = Depends(require("planning.edit")
     if ctx.db.get(m.Employee, body.employee_id) is None:
         raise HTTPException(422, "Collaborateur inconnu")
     new = ctx.db.get(m.Employee, body.employee_id)
+    sh0 = ctx.db.get(m.Shift, a.shift_id)
+    if new.deleted_at is not None:
+        raise HTTPException(422, f"{new.name} a été supprimé·e de l'équipe : plus aucun shift ne peut lui être attribué (réintégrez-le d'abord).")
+    month = [(sh0.day.year, sh0.day.month)]
+    before_minutes = month_minutes(ctx.db, [new.id, a.employee_id], month)
     brands = {r.brand_code for r in ctx.db.scalars(select(m.BrandAllocation).where(m.BrandAllocation.assignment_id == a.id))}
     missing = sorted(b for b in brands if b not in (new.brands or {}))
     if missing:  # une marque non sélectionnée dans la fiche n'est jamais attribuée
@@ -213,6 +223,7 @@ def reassign(aid: str, body: MoveIn, ctx: Ctx = Depends(require("planning.edit")
     old = ctx.db.get(m.Employee, a.employee_id)
     a.employee_id, a.source = body.employee_id, "manual"
     ctx.db.flush()
+    guard_monthly_cap(ctx.db, ctx.tenant_id, before_minutes, [new.id], month)
     from ..history import assignment_detail
     audit(ctx, "assignment.reassign", "assignment", a.id, assignment_detail(ctx.db, ctx.db.get(m.Shift, a.shift_id), old, new))
     return {"id": str(a.id), "conflicts": _conflicts(ctx, a.period_id)}
@@ -282,6 +293,8 @@ def edit_shift(sid: str, body: ShiftPatch, ctx: Ctx = Depends(require("planning.
     except ValueError as e:
         raise HTTPException(422, str(e))
     old = sh.effective_minutes or 1
+    month = [(sh.day.year, sh.day.month)]
+    before_minutes = month_minutes(ctx.db, [a.employee_id for a in ass], month)
     sh.start_time, sh.end_time, sh.break_minutes = body.start_time, body.end_time, body.break_minutes
     sh.presence_minutes, sh.effective_minutes = h.presence_minutes, h.effective_minutes
     for a in ass:
@@ -293,6 +306,7 @@ def edit_shift(sid: str, body: ShiftPatch, ctx: Ctx = Depends(require("planning.
         for b in ctx.db.scalars(select(m.Break).where(m.Break.assignment_id == a.id)):
             b.minutes = body.break_minutes
     ctx.db.flush()
+    guard_monthly_cap(ctx.db, ctx.tenant_id, before_minutes, [a.employee_id for a in ass], month)
     audit(ctx, "shift.edit", "shift", sh.id, {"start": str(body.start_time), "end": str(body.end_time)})
     return {"id": str(sh.id), "presence_minutes": h.presence_minutes, "effective_minutes": h.effective_minutes,
             "conflicts": _conflicts(ctx, sh.period_id)}

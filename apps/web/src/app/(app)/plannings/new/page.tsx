@@ -10,9 +10,10 @@ import { SundayCounter } from "@/components/planning/SundayCounter";
 import { useMonthSheet } from "@/components/planning/useMonthSheet";
 import { Icon } from "@/components/ui/Icon";
 import { Modal } from "@/components/ui/Modal";
-import { Badge, Button, Callout, Card, EmptyState, Field, Input, PageHead, SearchInput, Select } from "@/components/ui/primitives";
+import { Badge, Button, Callout, Card, EmptyState, Input, PageHead, SearchInput, Select } from "@/components/ui/primitives";
 import { useToast } from "@/components/ui/Toast";
 import { api } from "@/lib/api";
+import { ParamsChoice, RunFailure, RunProgress, TimeLimitField, type ParamsMode, type RunView } from "@/components/planning/RunStatus";
 import { brandColor } from "@/lib/brand";
 import { summarize } from "@/lib/employeeRules";
 import { invalidate } from "@/lib/invalidate";
@@ -306,18 +307,20 @@ function StepReview({ pid, goTo }: { pid: string; goTo: (n: number) => void }) {
 function StepGenerate({ pid, period, onDone, onOpen }: { pid: string; period?: Period & PeriodRow; onDone: () => void; onOpen: () => void }) {
   const toast = useToast();
   const ready = useApi<Readiness>(`/periods/${pid}/readiness`);
-  const [run, setRun] = useState<{ id: string; status: string; result_status?: string | null } | null>(null);
+  const [run, setRun] = useState<RunView | null>(null);
   const [confirm, setConfirm] = useState(false); const [limit, setLimit] = useState(30);
+  const [paramsMode, setParamsMode] = useState<ParamsMode>(null);
+  const saved = (r: RunView | null) => r?.status === "termine" && r.result_status !== "infaisable" && r.result_status !== "interrompu";
   const key = useRef(crypto.randomUUID());
   useEffect(() => {
     if (!run || ["termine", "annule", "erreur"].includes(run.status)) return;
     const id = setInterval(async () => setRun(await api(`/runs/${run.id}`)), 1000); return () => clearInterval(id);
   }, [run]);
-  useEffect(() => { if (run?.status === "termine") { void api(`/periods/${pid}/wizard`, { method: "PATCH", json: { step: null } }); onDone(); toast.push("Planning généré et ajouté à l'historique.", "ok"); } }, [run?.status]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { if (saved(run)) { void api(`/periods/${pid}/wizard`, { method: "PATCH", json: { step: null } }); onDone(); toast.push("Planning généré et ajouté à l'historique.", "ok"); } }, [run?.status]); // eslint-disable-line react-hooks/exhaustive-deps
   const hasPlan = (period?.assignments ?? 0) > 0;
   async function go() {
     setConfirm(false);
-    try { const r = await api<{ run_id: string }>(`/periods/${pid}/runs`, { method: "POST", json: { time_limit_s: limit, confirm_replace: true }, headers: { "Idempotency-Key": key.current } }); key.current = crypto.randomUUID(); setRun(await api(`/runs/${r.run_id}`)); }
+    try { const r = await api<{ run_id: string }>(`/periods/${pid}/runs`, { method: "POST", json: { time_limit_s: limit, confirm_replace: true, params: paramsMode ?? "frozen" }, headers: { "Idempotency-Key": key.current } }); key.current = crypto.randomUUID(); setRun(await api(`/runs/${r.run_id}`)); }
     catch (e) { toast.push(err(e), "bad"); }
   }
   const running = run && !["termine", "annule", "erreur"].includes(run.status);
@@ -327,15 +330,17 @@ function StepGenerate({ pid, period, onDone, onOpen }: { pid: string; period?: P
       <div className="stack">
         <p>Le moteur utilise uniquement l&apos;effectif, les marques, les sites, les budgets et les paramètres de ce mois, avec les pondérations enregistrées (<a href="/settings" style={{ textDecoration: "underline" }}>Paramètres</a>) et les affectations verrouillées.</p>
         {blocking.length > 0 && <Callout kind="bad" title="Génération impossible pour l'instant">{blocking.map((b) => <p key={b.text} style={{ margin: 0 }}>{b.text}</p>)}</Callout>}
-        <Field label="Durée maximale du calcul (secondes)">{(p) => <Input {...p} type="number" min={5} max={600} value={limit} onChange={(e) => setLimit(Math.max(5, Math.min(600, Number(e.target.value) || 30)))} style={{ width: "8rem" }} />}</Field>
-        {!run && <div><Button variant="primary" icon="sparkles" disabled={blocking.length > 0} onClick={() => (hasPlan ? setConfirm(true) : go())}>Générer automatiquement le planning</Button></div>}
-        {running && <p role="status" aria-live="polite"><Badge tone="info">{run!.status}</Badge> Calcul en cours…</p>}
-        {run?.status === "termine" && <Callout kind="ok" title={`Planning de ${period?.name ?? "ce mois"} généré (${String(run.result_status ?? "").replace(/_/g, " ")})`}>
+        {hasPlan && !running && <ParamsChoice periodId={pid} value={paramsMode} onChange={setParamsMode} />}
+        <TimeLimitField value={limit} onChange={setLimit} />
+        {!run && <div><Button variant="primary" icon="sparkles" disabled={blocking.length > 0 || (hasPlan && paramsMode === null)} onClick={() => (hasPlan ? setConfirm(true) : go())}>Générer automatiquement le planning</Button></div>}
+        {running && <RunProgress run={run!} limit={limit} />}
+        {run && (run.status === "erreur" || run.status === "annule" || (run.status === "termine" && !saved(run))) && <RunFailure runId={run.id} status={run.status} />}
+        {saved(run) && <Callout kind="ok" title={`Planning de ${period?.name ?? "ce mois"} généré (${String(run?.result_status ?? "").replace(/_/g, " ")})`}>
           <div className="row"><Button variant="primary" icon="calendar" onClick={onOpen}>Ouvrir le planning</Button><a className="btn" href="/generate">Voir le diagnostic détaillé</a></div></Callout>}
-        {(run?.status === "erreur" || run?.status === "annule") && <Callout kind="bad" title="La génération n'a pas abouti">Le planning existant (s&apos;il y en a un) n&apos;a pas été modifié. Corrigez les points signalés puis relancez.</Callout>}
+        {run && !running && !saved(run) && <div><Button icon="sparkles" disabled={blocking.length > 0} onClick={() => { setRun(null); }}>Modifier et relancer</Button></div>}
       </div>
       <Modal open={confirm} onClose={() => setConfirm(false)} title="Un planning existe déjà pour ce mois" description="Confirmez avant de le recalculer." variant="confirm">
-        <div className="stack"><p>Les affectations <strong>verrouillées</strong> (dont les ajouts et transferts manuels) sont conservées ; les autres seront recalculées avec les paramètres actuels.</p>
+        <div className="stack"><p>Les affectations <strong>verrouillées</strong> (dont les ajouts et transferts manuels) sont conservées ; les autres seront recalculées avec {paramsMode === "current" ? "les paramètres actuels" : "les paramètres de ce planning"}.</p>
           <div className="row modal-actions"><Button onClick={() => setConfirm(false)}>Annuler</Button><Button variant="primary" onClick={go}>Confirmer et générer</Button></div></div>
       </Modal>
     </Card>

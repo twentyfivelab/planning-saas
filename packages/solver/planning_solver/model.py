@@ -113,6 +113,10 @@ class Employee:
     preferred_sites: Set[str] = field(default_factory=set)  # sites préférés (souple)
     relations: List[Relation] = field(default_factory=list)
     legal_weekly_max_minutes: Optional[int] = None  # plafond hebdomadaire du régime applicable (référentiel juridique) ; None = règle non activée
+    # jours travaillés par mois civil (une journée compte une fois, même avec plusieurs affectations) ; None = pas de préférence
+    min_days_month: Optional[int] = None  # limite dure, comme le maximum ; impossible -> calcul bloqué avec la raison
+    max_days_month: Optional[int] = None  # limite dure
+    left_on: Optional[date] = None  # retiré de l'équipe (suppression) à partir de cette date : plus aucun shift, l'historique antérieur reste
 
     def blocked(self, d: date) -> bool:
         wd = d.weekday()
@@ -185,6 +189,10 @@ class SolverConfig:
     seed: int = 1
     hierarchical: bool = True  # optimisation lexicographique (couverture, puis engagements, puis le reste)
     break_rules: List[Tuple[int, int]] = field(default_factory=list)  # référentiel juridique : (travail effectif au-delà de N min, pause minimale en min)
+    # règle interne de l'entreprise (pas une valeur légale) : travail effectif maximal par collaborateur et par mois civil, tous sites et
+    # toutes marques cumulés ; None = aucun plafond
+    monthly_cap_minutes: Optional[int] = None
+    min_days_core: bool = False  # interne : minimums de jours posés en hypothèses pour nommer ceux qui rendent le problème impossible
 
 
 @dataclass
@@ -228,6 +236,7 @@ class Issue:
     slots: List[str] = field(default_factory=list)
     constraints: List[str] = field(default_factory=list)
     suggestions: List[str] = field(default_factory=list)
+    employee: Optional[str] = None  # collaborateur concerné (identifiant du moteur), si le diagnostic en vise un seul
 
 
 @dataclass
@@ -260,6 +269,17 @@ class SolverResult:
 # ---- préférence horaire : catégories selon l'heure de début ----
 CATEGORIES = ("matin", "middle", "soir")
 CATEGORY_LABEL = {"matin": "Matin", "middle": "Middle shift", "soir": "Soir"}
+MONTHS_FR = ("janvier", "février", "mars", "avril", "mai", "juin", "juillet", "août", "septembre", "octobre", "novembre", "décembre")
+
+
+def month_label(year: int, month: int) -> str:
+    return f"{MONTHS_FR[month - 1]} {year}"
+
+
+def fmt_minutes(m: int) -> str:
+    """1 050 -> « 17 h 30 » ; 10 560 -> « 176 h »."""
+    h, r = divmod(int(m), 60)
+    return f"{h} h {r:02d}" if r else f"{h} h"
 
 
 def time_category(start: time) -> str:

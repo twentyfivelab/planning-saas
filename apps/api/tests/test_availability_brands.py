@@ -30,9 +30,11 @@ def sched(t):
     return t["p"].get(f"/periods/{t['pid']}/schedule").json()["assignments"]
 
 
-def run(t, partial=False):
+def run(t, partial=False, params=None):
+    """`params="current"` : choix explicite d'appliquer les fiches modifiées au planning existant (sinon il garde ses paramètres)."""
     path = "reoptimize" if partial else "runs"
-    r = t["p"].post(f"/periods/{t['pid']}/{path}", json={"time_limit_s": 30}, headers={"Idempotency-Key": f"k-{uuid.uuid4()}"})
+    body = {"time_limit_s": 30, **({"params": params} if params else {})}
+    r = t["p"].post(f"/periods/{t['pid']}/{path}", json=body, headers={"Idempotency-Key": f"k-{uuid.uuid4()}"})
     assert r.status_code == 202, r.text
     return t["p"].get(f"/runs/{r.json()['run_id']}").json()
 
@@ -125,11 +127,13 @@ def test_time_preference_change_is_flagged_and_reoptimization_follows_it(t):
     body = {k: e[k] for k in ("code", "name", "brands", "allocation_weight", "active", "max_days_count", "max_days_period", "sunday_quota", "sunday_mode")}
     assert run(t)["status"] == "termine"
     assert p.put(f"/employees/{e['id']}", json={**body, "time_pref": "soir", "time_pref_strict": False}).status_code == 200
-    soft = p.get(f"/periods/{t['pid']}/compatibility").json()["soft"]
+    assert not [s for s in p.get(f"/periods/{t['pid']}/compatibility").json()["soft"] if s["employee"] == "Abdu"]  # le planning garde ses paramètres
+    soft = p.get(f"/periods/{t['pid']}/compatibility?params=current").json()["soft"]  # ce que donneraient les paramètres actuels
     n0 = len([s for s in soft if s["employee"] == "Abdu"])
-    # réoptimisation complète : les affectations verrouillées sont conservées, les autres suivent les nouveaux paramètres
-    # (une réoptimisation « partielle » privilégie la stabilité et ne déplace pas tout)
-    assert run(t)["status"] == "termine"
+    assert n0 > 0
+    # réoptimisation complète AVEC les paramètres actuels (choix explicite) : les affectations verrouillées sont conservées,
+    # les autres suivent les nouveaux paramètres (une réoptimisation « partielle » privilégie la stabilité et ne déplace pas tout)
+    assert run(t, params="current")["status"] == "termine"
     n1 = len([s for s in p.get(f"/periods/{t['pid']}/compatibility").json()["soft"] if s["employee"] == "Abdu"])
     assert n1 <= n0
     mine = [a for a in sched(t) if a["employee"] == "Abdu" and a["site"] in ("GVA3", "GVA9", "Pilar")]
@@ -141,12 +145,12 @@ def test_time_preference_change_is_flagged_and_reoptimization_follows_it(t):
 def test_brand_selection_levels_validation_and_never_assigned_when_unselected(t):
     assert set_brands(t, "zaki", {"Cartier": "priority", "Valmont": "secondary", "Ploom GVA3": "reinforce"}).status_code == 200
     assert set_brands(t, "zaki", {"Cartier": "prioritaire"}).status_code == 422
-    assert run(t)["status"] == "termine"
+    assert run(t, params="current")["status"] == "termine"
     brands = {b for a in sched(t) if a["employee"] == "Zaki" for b in a["allocations"]}
     assert brands <= {"Cartier", "Valmont", "Ploom GVA3"} and brands  # Cellcosmet, Nuxe, GVA9, Pilar : jamais
     # une seule marque autorisée
     assert set_brands(t, "zaki", {"Cartier": "priority"}).status_code == 200
-    assert run(t)["status"] == "termine"
+    assert run(t, params="current")["status"] == "termine"
     assert {b for a in sched(t) if a["employee"] == "Zaki" for b in a["allocations"]} <= {"Cartier"}
     assert t["p"].get(f"/periods/{t['pid']}/compatibility").json()["hard"] == []
 

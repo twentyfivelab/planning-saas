@@ -17,6 +17,8 @@ from ..approval import OVERRIDE_ROLES, override_refusal
 from ..deps import Ctx, audit, get_or_404, require
 from ..history import assignment_detail
 from ..period_state import ensure_editable
+from ..limits import guard_monthly_cap, month_minutes
+from ..optimize import ensure_frozen
 from ..services_bridge import assignments_for_validation, build_input
 from .planning import _conflicts
 
@@ -47,6 +49,9 @@ LABELS = {
     "MENTOR_MISSING": "Un tuteur doit être présent le même jour sur ce site",
     "LEGAL_WEEKLY_MAX": "Durée maximale hebdomadaire du régime applicable dépassée",
     "BREAK_TOO_SHORT": "Pause inférieure au référentiel juridique",
+    "MONTHLY_CAP": "Plafond mensuel d'heures dépassé",
+    "MIN_DAYS_NOT_MET": "Nombre minimum de jours par mois non atteint",
+    "EMPLOYEE_REMOVED": "Collaborateur supprimé de l'équipe",
 }
 LEGAL = {"REST", "CONSECUTIVE", "CONTRACT_WEEKLY_MAX", "CONTRACT_MONTHLY_MAX", "REST_DAYS_HARD", "LEGAL_WEEKLY_MAX", "BREAK_TOO_SHORT"}
 # Une règle paramétrée « derogable: false » dans les règles de l'entreprise reste bloquante (aucune valeur légale n'est inventée ici).
@@ -73,13 +78,16 @@ class Pre:
     """Contexte du moteur calculé UNE fois (liste du jour : une vérification par shift sans reconstruire le problème)."""
 
     def __init__(self, ctx: Ctx, p: m.PlanningPeriod):
-        self.inp = build_input(ctx.db, p)
+        self.inp = build_input(ctx.db, p, {"cap": "current"})  # le plafond mensuel actuel s'applique à toute modification manuelle
         self.base = assignments_for_validation(ctx.db, self.inp, p)  # recale aussi les horaires modifiés à la main
         self.before = set(validate(self.inp, self.base))
         self.slots = {s.id: s for s in self.inp.slots}
         self.texts = {sid: _fmt_slot(s.day, s.start, s.end) for sid, s in self.slots.items()}
         self.ids = sorted(self.texts, key=len, reverse=True)
         self.nd = _non_derogable(ctx)
+        self.minutes_before: dict = {}
+        for a in self.base:
+            self.minutes_before[a.employee_id] = self.minutes_before.get(a.employee_id, 0) + a.effective_minutes
 
 
 def _worked_days(pre: Pre, code: str, slot_id: str, extra_day: Optional[date] = None) -> set:
@@ -109,6 +117,9 @@ def _issues(ctx: Ctx, p: m.PlanningPeriod, e: m.Employee, sh: m.Shift, current: 
     out: list = []
     if not e.active:
         return [_issue("INACTIVE", "blocking", f"{e.name} est inactif·ve.", rule="Collaborateur actif")]
+    if e.deleted_at is not None:
+        return [_issue("EMPLOYEE_REMOVED", "blocking", f"{e.name} a été supprimé·e de l'équipe : plus aucun shift ne peut lui être attribué (réintégrez-le d'abord).",
+                       rule="Collaborateur supprimé")]
     if current is not None and current.employee_id == e.id:
         return [_issue("ALREADY_MINE", "blocking", f"Ce shift est déjà attribué à {e.name}.", rule="Un seul titulaire par shift")]
     other = ctx.db.execute(select(m.Shift).join(m.Assignment, m.Assignment.shift_id == m.Shift.id)
@@ -135,6 +146,13 @@ def _issues(ctx: Ctx, p: m.PlanningPeriod, e: m.Employee, sh: m.Shift, current: 
         if v in pre.before:
             continue
         code = re.match(r"[A-Z_]+", v).group(0)
+        holder = ctx.db.get(m.Employee, current.employee_id) if current is not None else None
+        if code == "MIN_DAYS_NOT_MET" and holder is not None and holder.name in v:  # le titulaire actuel passerait sous son minimum
+            got, need = re.search(r"(\d+)<(\d+)", v).groups()
+            out.append(_issue(code, "override", f"{holder.name} passerait sous son minimum de {need} jours dans le mois ({got} jours).",
+                              rule="Nombre minimum de jours par mois", limit=f"{need} jours", reached=f"{got} jours",
+                              consequence=f"{holder.name} ne travaillerait plus assez de jours ce mois-ci."))
+            continue
         if code in ("LOCK_VIOLATED", "BRAND_NOT_ELIGIBLE", "OVERLAP", "DOUBLE_ASSIGNMENT", "HOURS_MISMATCH", "ALLOCATION_MISMATCH") or (code not in ("BUDGET_EXCEEDED", "BREAK_TOO_SHORT") and e.name not in v):
             continue
         detail = v.split(": ", 1)[1] if ": " in v else ""
@@ -158,8 +176,19 @@ def _issues(ctx: Ctx, p: m.PlanningPeriod, e: m.Employee, sh: m.Shift, current: 
                 best, prev = max(best, run), d
             extra = {"rule": "Jours consécutifs maximum", "limit": f"{inp.config.max_consecutive_days} jours", "reached": f"{best} jours",
                      "consequence": f"{e.name} travaillerait {best} jours d'affilée."}
+        elif code == "MONTHLY_CAP" and nums:
+            from planning_solver.model import fmt_minutes
+            got, cap = int(nums.group(1)), int(nums.group(2))
+            if pre.minutes_before.get(e.code, 0) >= got:
+                continue  # heures inchangées ou en baisse : jamais un nouveau dépassement
+            label = f"Plafond mensuel de {fmt_minutes(cap)} dépassé"
+            extra = {"rule": "Plafond mensuel d'heures (règle de l'entreprise, tous sites et marques cumulés)", "limit": fmt_minutes(cap), "reached": fmt_minutes(got),
+                     "consequence": f"{e.name} travaillerait {fmt_minutes(got)} dans le mois : affectation impossible."}
+            detail = ""
+        elif code == "MIN_DAYS_NOT_MET":
+            continue  # minimum d'un autre collaborateur : sans lien avec cette affectation
         elif code in ("MAX_DAYS_WEEK", "MAX_DAYS_MONTH", "SUNDAY_QUOTA") and nums:
-            unit = {"MAX_DAYS_WEEK": "jours dans la semaine", "MAX_DAYS_MONTH": "jours sur la période", "SUNDAY_QUOTA": "dimanche(s)"}[code]
+            unit = {"MAX_DAYS_WEEK": "jours dans la semaine", "MAX_DAYS_MONTH": "jours dans le mois", "SUNDAY_QUOTA": "dimanche(s)"}[code]
             extra = {"rule": label, "limit": f"{nums.group(2)} {unit}", "reached": f"{nums.group(1)} {unit}",
                      "consequence": f"{e.name} dépasserait son maximum de {int(nums.group(1)) - int(nums.group(2))} en plus."}
         elif code == "BUDGET_EXCEEDED" and nums:
@@ -168,7 +197,8 @@ def _issues(ctx: Ctx, p: m.PlanningPeriod, e: m.Employee, sh: m.Shift, current: 
         if (code, v) in seen:
             continue
         seen.add((code, v))
-        level = "blocking" if code in pre.nd or code == "EXCLUDED_FROM_PERIOD" else "override"  # exclu du mois : le réintégrer d'abord
+        # exclu du mois : le réintégrer d'abord ; plafond mensuel et collaborateur supprimé : jamais dérogeables
+        level = "blocking" if code in pre.nd or code in ("EXCLUDED_FROM_PERIOD", "MONTHLY_CAP", "EMPLOYEE_REMOVED") else "override"
         if code == "UNAVAILABLE":
             out.append(_issue(code, level, f"{e.name} est indisponible le {DAYS_FR[slot.day.weekday()]} {slot.day:%d/%m}.", rule="Disponibilité du collaborateur",
                               limit="disponible", reached="indisponible ce jour", consequence=f"{e.name} serait planifié·e un jour d'indisponibilité."))
@@ -260,6 +290,7 @@ def manual_assign(pid: str, body: ManualIn, ctx: Ctx = Depends(require("planning
     if issues and not can_override:
         raise HTTPException(403, detail={"code": "forbidden", "issues": issues, "can_override": False, "message": refusal})
     from_emp = ctx.db.get(m.Employee, current.employee_id) if current else None
+    before_minutes = month_minutes(ctx.db, [e.id], [(sh.day.year, sh.day.month)])
     extra = {"forced": bool(issues), "approved_by_role": ctx.user.role if issues else None, "reason": body.reason, "issues": [i["message"] for i in issues],
              "rules": [{k: i.get(k) for k in ("code", "rule", "limit", "reached")} for i in issues]}
     if current is not None:
@@ -280,6 +311,8 @@ def manual_assign(pid: str, body: ManualIn, ctx: Ctx = Depends(require("planning
         action = "assignment.manual_assign"
     ctx.db.add(m.LockedAssignment(tenant_id=ctx.tenant_id, assignment_id=a.id, locked_by=ctx.user.id, reason="affectation manuelle"))
     ctx.db.flush()
+    guard_monthly_cap(ctx.db, ctx.tenant_id, before_minutes, [e.id], [(sh.day.year, sh.day.month)])  # filet de sécurité : tout ou rien
+    ensure_frozen(ctx.db, p)
     audit(ctx, action, "assignment", a.id, assignment_detail(ctx.db, sh, from_emp, e, **extra))
     return {"assignment_id": str(a.id), "kind": "transfer" if from_emp else "assign", "forced": bool(issues), "conflicts": _conflicts(ctx, p.id)}
 

@@ -2,30 +2,24 @@
 import { useEffect, useState } from "react";
 import { Button } from "./primitives";
 
-type Pref = "system" | "light" | "dark";
-const ORDER: Pref[] = ["system", "light", "dark"];
-const LABEL: Record<Pref, string> = { system: "Thème : automatique", light: "Thème : clair", dark: "Thème : sombre" };
+/** Thème clair rose et blanc : identité par défaut, quel que soit le réglage du système. Le mode sombre (rose profond) n'est appliqué
+ *  que sur choix explicite de l'utilisateur. Un ancien réglage « automatique » est ramené au thème clair. */
+type Pref = "light" | "dark";
+const LABEL: Record<Pref, string> = { light: "Thème : clair", dark: "Thème : sombre" };
 
-export function resolveTheme(pref: Pref, systemDark: boolean): "light" | "dark" { return pref === "system" ? (systemDark ? "dark" : "light") : pref; }
+export function resolveTheme(pref: string | null | undefined): Pref { return pref === "dark" ? "dark" : "light"; }
 
 export function applyTheme(pref: Pref) {
-  const dark = window.matchMedia("(prefers-color-scheme: dark)").matches;
-  document.documentElement.dataset.theme = resolveTheme(pref, dark);
+  document.documentElement.dataset.theme = resolveTheme(pref);
 }
 
 export function ThemeToggle() {
-  const [pref, setPref] = useState<Pref>("system");
-  useEffect(() => {
-    const read = (): Pref => { try { const s = localStorage.getItem("theme-pref"); if (s === "light" || s === "dark" || s === "system") return s; } catch {} return "system"; };
-    setPref(read());
-    const mq = window.matchMedia("(prefers-color-scheme: dark)");
-    const on = () => { if (read() === "system") applyTheme("system"); };
-    mq.addEventListener("change", on); return () => mq.removeEventListener("change", on);
-  }, []);
+  const [pref, setPref] = useState<Pref>("light");
+  useEffect(() => { try { setPref(resolveTheme(localStorage.getItem("theme-pref"))); } catch { /* stockage indisponible : thème clair */ } }, []);
   const next = () => {
-    const n = ORDER[(ORDER.indexOf(pref) + 1) % ORDER.length];
-    setPref(n); try { localStorage.setItem("theme-pref", n); } catch {}
+    const n: Pref = pref === "light" ? "dark" : "light";
+    setPref(n); try { localStorage.setItem("theme-pref", n); } catch { /* préférence non mémorisée */ }
     applyTheme(n);
   };
-  return <Button onClick={next} icon={pref === "dark" ? "moon" : pref === "light" ? "sun" : "monitor"} aria-label={`${LABEL[pref]} (cliquer pour changer)`}>{LABEL[pref]}</Button>;
+  return <Button onClick={next} icon={pref === "dark" ? "moon" : "sun"} aria-label={`${LABEL[pref]} (cliquer pour changer)`}>{LABEL[pref]}</Button>;
 }

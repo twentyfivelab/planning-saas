@@ -13,7 +13,11 @@ import { api } from "@/lib/api";
 import { brandColor } from "@/lib/brand";
 import { t } from "@/lib/i18n";
 import { errText, parseRate, rateInput } from "@/lib/wfm";
+import { EmployeeAddModal, EmployeeIdentityModal } from "@/components/planning/EmployeeForm";
+import { invalidate } from "@/lib/invalidate";
 
+type Deleted = { id: string; name: string; removed_on: string | null; deleted_at: string };
+type Preview = { name: string; removed_on: string; upcoming: { period: string; assignments: number }[] };
 type Contract = { id: string; employee_id: string; start_date: string | null; end_date: string | null; activity_rate: number | null; weekly_minutes: number | null; monthly_min_minutes: number | null; monthly_target_minutes: number | null; monthly_max_minutes: number | null; weekly_max_minutes: number | null; overtime_allowed: boolean; contract_type: string | null; hourly_cost_cents: number | null; legal_regime: string | null };
 
 export default function Employees() {
@@ -28,6 +32,23 @@ export default function Employees() {
   const has = (id: string) => contracts.data?.some((c) => c.employee_id === id);
   const num = (f: FormData, k: string) => { const v = f.get(k); return v === null || v === "" ? null : Number(v); };
   const rows = empsM.filter((e) => !q || e.name.toLowerCase().includes(q.toLowerCase()));
+  const canWrite = me.permissions.includes("employees.write");
+  const all = useApi<Deleted[]>(canWrite ? "/employees?include_deleted=true" : null);
+  const deleted = (all.data ?? []).filter((e) => e.deleted_at);
+  const [adding, setAdding] = useState(false);
+  const [identity, setIdentity] = useState<string | null>(null);
+  const [del, setDel] = useState<Emp | null>(null); const [preview, setPreview] = useState<Preview | null>(null); const [busy, setBusy] = useState(false);
+  const refreshAll = () => { sheetCtl.reload(); all.reload(); contracts.reload(); invalidate(); };
+  async function askDelete(e: Emp) { setDel(e); setPreview(null); try { setPreview(await api<Preview>(`/employees/${e.id}/deletion-preview`)); } catch { /* la question reste posée sans le détail */ } }
+  async function confirmDelete() {
+    if (!del) return; setBusy(true);
+    try { const r = await api<{ message: string }>(`/employees/${del.id}`, { method: "DELETE" }); setDel(null); toast.push(r.message, "ok"); refreshAll(); }
+    catch (err: unknown) { toast.push(errText(err), "bad"); } finally { setBusy(false); }
+  }
+  async function restore(d: Deleted) {
+    try { const r = await api<{ message: string }>(`/employees/${d.id}/restore`, { method: "POST" }); toast.push(r.message, "ok"); refreshAll(); }
+    catch (err: unknown) { toast.push(errText(err), "bad"); }
+  }
 
   async function save(e: FormEvent<HTMLFormElement>) {
     e.preventDefault(); const f = new FormData(e.currentTarget);
@@ -52,23 +73,37 @@ export default function Employees() {
       <PageHead eyebrow={`${emps.data?.length ?? 0} collaborateurs`} title={t("nav.employees")}><MonthSwitcher month={month} onChange={setMonth} /></PageHead>
       {counter && summary && summary.total > 0 && <SundayCounter counter={counter} summary={summary} />}
       {emps.error ? <ErrorState message={emps.error} onRetry={emps.reload} /> : emps.loading && !emps.data ? <SkeletonCard lines={6} /> : (
-        <Card title="Collaborateurs et contrats" actions={<div className="row">{missing > 0 && <Badge tone="warn" icon="alert">{missing} contrat(s) à renseigner</Badge>}<div style={{ width: "14rem" }}><SearchInput aria-label="Rechercher un collaborateur" placeholder="Rechercher…" value={q} onChange={(e) => setQ(e.target.value)} /></div></div>}>
-          {!rows.length ? <EmptyState icon="users" title="Aucun collaborateur">Ajoutez des collaborateurs via l&apos;import (onglet Import / Export) ou l&apos;API.</EmptyState> : (
+        <Card title="Collaborateurs et contrats" actions={<div className="row">{canWrite && <Button variant="primary" icon="plus" onClick={() => setAdding(true)}>Ajouter un collaborateur</Button>}{missing > 0 && <Badge tone="warn" icon="alert">{missing} contrat(s) à renseigner</Badge>}<div style={{ width: "14rem" }}><SearchInput aria-label="Rechercher un collaborateur" placeholder="Rechercher…" value={q} onChange={(e) => setQ(e.target.value)} /></div></div>}>
+          {!rows.length ? <EmptyState icon="users" title="Aucun collaborateur">Ajoutez un collaborateur avec le bouton « Ajouter un collaborateur », ou via l&apos;import (onglet Import / Export).</EmptyState> : (
             <div className="table-wrap"><table className="table table-cards">
               <thead><tr><th>Nom</th><th>Marques</th><th>Limites et préférences</th><th>Poids</th><th>Contrat</th><th><span className="sr-only">Actions</span></th></tr></thead>
               <tbody>{rows.map((e) => (
-                <tr key={e.id}><td className="cell-main nowrap"><strong>{e.name}</strong></td>
+                <tr key={e.id}><td className="cell-main nowrap"><strong>{e.name}</strong>{canWrite && !e.first_name && !e.last_name && <> <Badge tone="info">Prénom et nom à compléter</Badge></>}</td>
                   <td data-label="Marques"><div className="row">{Object.entries(e.brands).map(([b, l]) => <Badge key={b} tone={l === "priority" ? "accent" : "neutral"}><i className="dot" style={{ ["--c" as string]: brandColor(b) }} />{b}{l === "priority" ? "" : " · renfort"}</Badge>)}</div></td>
                   <td data-label="Limites"><div className="row">{summarize(sheetCtl.effective(e)).length ? summarize(sheetCtl.effective(e)).map((t) => <Badge key={t} tone="accent">{t}</Badge>) : <span className="faint">Pas de préférence</span>}</div></td>
                   <td className="num" data-label="Poids">{e.allocation_weight}</td>
                   <td data-label="Contrat">{has(e.id) ? <Badge tone="ok" icon="check">Saisi</Badge> : <Badge tone="warn" icon="alert">{t("to_fill")}</Badge>}</td>
-                  <td><div className="row" style={{ flexWrap: "nowrap" }}><Button size="sm" className="nowrap" disabled={!sheetCtl.ready} onClick={() => sheetCtl.open(e)}>Fiche</Button><Button size="sm" className="nowrap" onClick={() => setSel(e)}>Contrat</Button></div></td></tr>
+                  <td><div className="row" style={{ flexWrap: "nowrap" }}><Button size="sm" className="nowrap" disabled={!sheetCtl.ready} onClick={() => sheetCtl.open(e)}>Fiche</Button><Button size="sm" className="nowrap" onClick={() => setSel(e)}>Contrat</Button>{canWrite && <Button size="sm" className="nowrap" onClick={() => setIdentity(e.id)}>Identité</Button>}{canWrite && <Button size="sm" variant="danger" className="nowrap" onClick={() => askDelete(e)}>Supprimer</Button>}</div></td></tr>
               ))}</tbody>
             </table></div>
           )}
         </Card>
       )}
+      {canWrite && deleted.length > 0 && (
+        <Card title={`Collaborateurs supprimés (${deleted.length})`} eyebrow="Retirés des prochaines planifications ; leurs affectations et leur historique sont conservés">
+          <ul className="stack" style={{ listStyle: "none", padding: 0, margin: 0 }} data-testid="deleted-employees">{deleted.map((d) => (
+            <li key={d.id} className="row spread"><span><strong>{d.name}</strong> <span className="faint">— supprimé le {(d.removed_on ?? d.deleted_at.slice(0, 10)).split("-").reverse().join("/")}</span></span><Button size="sm" onClick={() => restore(d)}>Réintégrer</Button></li>))}</ul>
+        </Card>
+      )}
       {sheetCtl.element}
+      {adding && <EmployeeAddModal open capLabel={sheetCtl.cap.data?.label ?? null} onClose={() => setAdding(false)} onAdded={(msg) => { setAdding(false); toast.push(msg, "ok"); refreshAll(); }} />}
+      <EmployeeIdentityModal employeeId={identity} onClose={() => setIdentity(null)} onSaved={() => { setIdentity(null); toast.push("Identité enregistrée.", "ok"); refreshAll(); }} />
+      <Modal open={!!del} onClose={() => !busy && setDel(null)} title={`Êtes-vous sûr de vouloir supprimer le collaborateur ${del?.name ?? ""} ?`} variant="confirm" hideClose>
+        <div className="stack">
+          {preview && preview.upcoming.length > 0 && <p className="help" data-testid="delete-upcoming">Ses affectations déjà planifiées restent dans les plannings existants (historique conservé) ; aucun nouveau shift ne lui sera attribué : {preview.upcoming.map((u) => `${u.period} (${u.assignments})`).join(", ")}.</p>}
+          <div className="row modal-actions"><Button onClick={() => setDel(null)} disabled={busy}>Annuler</Button><Button variant="danger" onClick={confirmDelete} disabled={busy} aria-busy={busy}>Supprimer</Button></div>
+        </div>
+      </Modal>
       <Modal open={!!sel} onClose={() => setSel(null)} title={`Contrat — ${sel?.name ?? ""}`} description="Laissez vide ce qui n'est pas connu : aucune valeur n'est supposée.">
         <form key={sel?.id ?? "none"} onSubmit={save} className="stack">
           <div className="grid-2" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(10rem, 1fr))" }}>

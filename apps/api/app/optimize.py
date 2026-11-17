@@ -1,5 +1,6 @@
 """Exécution d'une optimisation (worker RQ ou inline)."""
 import copy
+import re
 import threading
 import uuid
 from datetime import datetime, timezone
@@ -18,8 +19,31 @@ from . import models as m
 from . import realtime  # noqa: F401  (le worker annonce aussi la fin des générations)
 from .config import settings
 from .db import tenant_session
-from .services_bridge import assignments_for_validation, build_input, current_assignments, persist_result
+from .frozen import snapshot
+from .services_bridge import assignments_for_validation, build_input, current_assignments, params_mode, persist_result
 from .versioning import current_map, fingerprint, make_version
+
+
+def freeze_period(db, period, source: str, capture: dict = None, cap_used=None, used_cfg=None) -> None:
+    """Conserve sur le planning les paramètres habituels ACTUELS (ou ceux capturés au lancement du calcul). `used_cfg` : configuration
+    réellement utilisée par le calcul (pondérations comprises), pour retrouver les conditions de génération."""
+    if capture is None:
+        capture = {}
+        build_input(db, period, {"params": "current"}, capture=capture)
+    cfg = dict(capture["config"])
+    if used_cfg is not None:
+        cfg["weights"], cfg["hierarchical"] = dict(used_cfg.weights), bool(used_cfg.hierarchical)
+    if cap_used is not None or "monthly_cap_minutes" not in cfg:
+        cfg["monthly_cap_minutes"] = cap_used
+    period.frozen_params = snapshot(capture["employees"], cfg, source)
+    period.frozen_at = datetime.now(timezone.utc)
+    period.frozen_source = source
+
+
+def ensure_frozen(db, period, source: str = "manual") -> None:
+    """Premier contenu d'un planning (ajout manuel, restauration, simulation appliquée) : ses paramètres sont conservés dès ce moment."""
+    if not period.frozen_params:
+        freeze_period(db, period, source)
 
 
 def enqueue(tenant_id: str, run_id: str) -> None:
@@ -82,6 +106,43 @@ def _freeze_outside_scope(inp, prev: dict, locked: dict, config: dict) -> dict:
     return fixed
 
 
+def _keep_locks_of_removed(inp) -> None:
+    """Affectation verrouillée d'un collaborateur supprimé, à partir de sa date de retrait : conservée telle quelle (historique), sortie du
+    calcul et comptée comme shift déjà planifié ; aucun nouveau shift ne lui est attribué."""
+    emps = {e.id: e for e in inp.employees}
+    slots = {s.id: s for s in inp.slots}
+    gone = [sid for sid, eid in inp.locked.items() if eid in emps and emps[eid].left_on is not None and sid in slots and slots[sid].day >= emps[eid].left_on]
+    for sid in gone:
+        s = slots[sid]
+        inp.outside_shifts.append(OutsideShift(inp.locked.pop(sid), s.day, s.start, s.end, s.effective_minutes))
+    if gone:
+        drop = set(gone)
+        inp.slots = [s for s in inp.slots if s.id not in drop]
+        inp.previous = {k: v for k, v in inp.previous.items() if k not in drop}
+
+
+_CAP = re.compile(r"^MONTHLY_CAP: (.+) (\d+)>(\d+) minutes en (.+)$")
+
+
+def new_violations(found, before) -> list:
+    """Violations absentes de l'état précédent. Un dépassement du plafond mensuel qui existait déjà et n'augmente pas (heures inchangées ou
+    réduites) n'est pas nouveau : un planning établi avant le plafond peut être corrigé, jamais aggravé."""
+    prev = {}
+    for v in before:
+        mm = _CAP.match(v)
+        if mm:
+            prev[mm.group(1), mm.group(4)] = int(mm.group(2))
+    out = []
+    for v in found:
+        if v in before:
+            continue
+        mm = _CAP.match(v)
+        if mm and (mm.group(1), mm.group(4)) in prev and int(mm.group(2)) <= prev[mm.group(1), mm.group(4)]:
+            continue
+        out.append(v)
+    return out
+
+
 class PlanRejected(Exception):
     """Le planning enregistré enfreint une contrainte stricte : la transaction d'enregistrement est annulée."""
 
@@ -105,20 +166,34 @@ def verify_saved_plan(db, period, config: dict, before: set) -> dict:
     saved = assignments_for_validation(db, fresh, period)
     found = set(validate(fresh, saved))
     n_rows = db.scalar(select(func.count()).select_from(m.Assignment).where(m.Assignment.period_id == period.id)) or 0
-    return {"checked": len(saved), "unchecked": n_rows - len(saved), "violations": sorted(found - before), "already_known": len(found & before)}
+    fresh_new = new_violations(found, before)
+    return {"checked": len(saved), "unchecked": n_rows - len(saved), "violations": sorted(fresh_new), "already_known": len(found) - len(fresh_new)}
 
 
 def run_optimization(tenant_id: str, run_id: str) -> None:
     cancel = threading.Event()
     stop = threading.Event()
+    state = {"progress": {"phase": "preparing"}, "sent": None}
 
-    def watch():  # relaie cancel_requested (base) vers le solveur
+    def on_progress(p: dict) -> None:
+        state["progress"] = p
+
+    def push(db) -> None:
+        cur = state["progress"]
+        if cur is not state["sent"]:
+            r = db.get(m.OptimizationRun, uuid.UUID(run_id))
+            if r is not None:
+                r.progress = dict(cur)
+            state["sent"] = cur
+
+    def watch():  # relaie cancel_requested (base) vers le solveur et publie l'état du calcul (au plus une fois par seconde)
         while not stop.wait(1.0):
             with tenant_session(tenant_id) as db:
                 r = db.get(m.OptimizationRun, uuid.UUID(run_id))
                 if r is not None and r.cancel_requested:
                     cancel.set()
                     return
+                push(db)
 
     try:
         with tenant_session(tenant_id) as db:
@@ -128,23 +203,31 @@ def run_optimization(tenant_id: str, run_id: str) -> None:
                     run.status = "annule"
                 return
             run.status, run.started_at = "en_cours", datetime.now(timezone.utc)
+            run.progress = {"phase": "preparing"}
             period = db.get(m.PlanningPeriod, run.period_id)
-            inp = build_input(db, period, run.config)
+            # le plafond mensuel ACTUEL de l'entreprise s'applique à tout calcul ; les autres paramètres sont ceux du planning,
+            # sauf choix explicite des paramètres actuels (config["params"] == "current")
+            config = {**(run.config or {}), "cap": "current", "generation": True}
+            mode_used = params_mode(period, config)
+            captured: dict = {}
+            inp = build_input(db, period, config, capture=captured)
             prev, locked = current_assignments(db, period)
-            simulation, config = run.simulation, dict(run.config or {})
+            simulation = run.simulation
             keep_current = run.kind in ("partial", "local") or STRATEGIES.get(config.get("strategy"), {}).get("keep_current", False)
             inp.previous = prev if keep_current else {}
             inp.locked = _freeze_outside_scope(inp, prev, locked, config) if run.kind == "local" else locked
+            _keep_locks_of_removed(inp)
             base_fp = fingerprint(current_map(db, period.id))
-            before_plan = build_input(db, period, run.config)
+            before_plan = build_input(db, period, config)
             before_violations = set(validate(before_plan, assignments_for_validation(db, before_plan, period)))
             used_locks = dict(inp.locked)
         threading.Thread(target=watch, daemon=True).start()
-        res = solve(inp, cancel)
+        res = solve(inp, cancel, on_progress)
         stop.set()
         with tenant_session(tenant_id) as db:
             run = db.get(m.OptimizationRun, uuid.UUID(run_id))
             period = db.get(m.PlanningPeriod, run.period_id)
+            run.progress = {**(state["progress"] or {}), "phase": "saving", "elapsed_s": res.duration_s, "time_limit_s": inp.config.time_limit_s}
             report = _jsonable({k: v for k, v in res.to_dict().items() if k != "assignments"})
             report["weights_used"] = res.weights
             report["criteria_scores"] = breakdown(res.objective)  # coût par critère : quels critères ont influencé le choix
@@ -154,13 +237,15 @@ def run_optimization(tenant_id: str, run_id: str) -> None:
             if res.assignments:
                 fresh_violations = verify_on_fresh_data(db, period, config, res.assignments, used_locks)
                 verification["fresh_data"] = {"checked": len(res.assignments), "violations": fresh_violations}
-                new = [v for v in fresh_violations if v not in res.hard_violations and v not in before_violations]
+                new = [v for v in new_violations(fresh_violations, before_violations) if v not in res.hard_violations]
                 if new:
                     res.hard_violations = list(res.hard_violations) + new
                     report["hard_violations"] = res.hard_violations
             else:
                 verification["reason"] = "Aucun planning produit : rien à vérifier, rien n'est enregistré."
             report["verification"] = verification
+            report["params_used"] = {"mode": mode_used, "frozen_at": period.frozen_at.isoformat() if mode_used == "frozen" and period.frozen_at else None,
+                                     "monthly_cap_minutes": inp.config.monthly_cap_minutes}
             if simulation:  # une simulation n'écrit JAMAIS dans le planning : elle garde sa proposition jusqu'à une application explicite
                 report["base_fingerprint"] = base_fp
                 known = {s.id for s in inp.slots}
@@ -200,6 +285,15 @@ def run_optimization(tenant_id: str, run_id: str) -> None:
                         if saved["violations"]:
                             raise PlanRejected(saved["violations"])
                         make_version(db, run.tenant_id, period.id, "Planning généré", "generated", run.requested_by, run_id=run.id)
+                        # paramètres conservés par ce planning : ceux du calcul (actuels si choisis ou si le planning n'en avait pas)
+                        if mode_used == "current":
+                            freeze_period(db, period, "generation", captured, inp.config.monthly_cap_minutes, used_cfg=inp.config)
+                        else:
+                            fp = dict(period.frozen_params)
+                            fp["config"] = {**fp.get("config", {}), "monthly_cap_minutes": inp.config.monthly_cap_minutes,
+                                            "weights": dict(inp.config.weights), "hierarchical": bool(inp.config.hierarchical)}
+                            period.frozen_params = fp
+                        period.frozen_params = {**period.frozen_params, "generation_run_id": str(run.id)}  # calcul à l'origine du planning
                 except PlanRejected as exc:
                     report["blocked_by_verification"] = exc.violations
                     row.report = report

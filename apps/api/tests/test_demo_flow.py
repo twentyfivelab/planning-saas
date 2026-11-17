@@ -79,12 +79,34 @@ def test_lock_and_partial_reoptimization_preserve_locked(demo):
     assert changed < 60  # stabilité : la réoptimisation ne rebat pas tout le planning
 
 
+def _room(s) -> dict:
+    """Heures encore disponibles sous le plafond mensuel de l'entreprise (176 h), par collaborateur."""
+    used: dict = {}
+    for x in s["assignments"]:
+        used[x["employee_id"]] = used.get(x["employee_id"], 0) + x["effective_minutes"]
+    return {k: 10560 - v for k, v in used.items()}
+
+
+def test_monthly_cap_refuses_a_manual_move_beyond_176_hours(demo):
+    p = demo["planner"]
+    s = p.get(f"/periods/{demo['pid']}/schedule").json()
+    room = _room(s)
+    full = [e for e, r in room.items() if r < 480]
+    if not full:
+        pytest.skip("aucun collaborateur au plafond dans ce planning de démonstration")
+    a = next(x for x in s["assignments"] if x["employee_id"] not in full and not x["locked"])
+    r = p.put(f"/assignments/{a['assignment_id']}", json={"employee_id": full[0]})
+    assert r.status_code == 409 and r.json()["detail"]["code"] == "monthly_cap" and "176 h" in r.json()["detail"]["message"]
+    assert next(x for x in p.get(f"/periods/{demo['pid']}/schedule").json()["assignments"] if x["assignment_id"] == a["assignment_id"])["employee_id"] == a["employee_id"]
+
+
 def test_manual_move_reports_conflicts_immediately(demo):
     p = demo["planner"]
     s = p.get(f"/periods/{demo['pid']}/schedule").json()
     a = next(x for x in s["assignments"] if x["slot_key"].startswith("GVA9") and not x["locked"])
+    room = _room(s)  # le plafond mensuel de 176 h refuserait un collaborateur déjà au maximum : on en choisit un qui a de la marge
     other = next(x for x in s["assignments"] if x["day"] == a["day"] and x["employee_id"] != a["employee_id"]
-                 and x["slot_key"].startswith("GVA3") and not x["locked"])
+                 and x["slot_key"].startswith("GVA3") and not x["locked"] and room[x["employee_id"]] >= a["effective_minutes"])
     r = p.put(f"/assignments/{a['assignment_id']}", json={"employee_id": other["employee_id"]})
     assert r.status_code == 200 and any("OVERLAP" in c or "REST" in c for c in r.json()["conflicts"])
 
@@ -96,7 +118,8 @@ def test_versions_compare_and_publish_refused_when_exploratory(demo):
     s = p.get(f"/periods/{demo['pid']}/schedule").json()
     a = next(x for x in s["assignments"] if x["slot_key"].startswith("GVA3") and not x["locked"])
     emps = sorted(p.get("/employees").json(), key=lambda e: e["code"])
-    alt = next(e for e in emps if e["id"] != a["employee_id"])  # n'importe quel autre collaborateur : pas d'hypothèse sur un prénom
+    room = _room(s)
+    alt = next(e for e in emps if e["id"] != a["employee_id"] and room.get(e["id"], 10560) >= a["effective_minutes"])  # pas d'hypothèse sur un prénom ; sous le plafond mensuel
     moved = p.put(f"/assignments/{a['assignment_id']}", json={"employee_id": alt["id"]})
     assert moved.status_code == 200, moved.text
     v2 = p.post(f"/periods/{demo['pid']}/versions").json()

@@ -69,7 +69,16 @@ E2E_EMAIL=owner@e2e.example E2E_PASSWORD=<mdp> npx playwright test   # pile Dock
 ```
 Les tests navigateur modifient et régénèrent les plannings du compte utilisé : ils exigent un tenant dédié (`@e2e.example`), jamais celui que l'on consulte.
 Création : `python -c "from app.seed import seed; print(seed(tenant_name='Tests automatiques e2e', domain='e2e.example'))"` depuis `apps/api`, puis une génération de novembre 2026.
-Les tests d'intégration exigent PostgreSQL (compose) et migrent via `alembic upgrade head`.
+Les tests d'intégration exigent PostgreSQL (compose). **Ils ne touchent jamais la base de l'application** : chaque session crée sa propre
+base `planning_test_<pid>` (nom imposé par `TEST_DB_NAME`, toujours préfixé `planning_test`), y applique `alembic upgrade head`, puis la
+supprime à la fin (`KEEP_TEST_DB=1` pour la conserver). Les anciennes exécutions, faites dans la base de l'application, y ont laissé des
+tenants de test : `apps/api/scripts/purge_test_tenants.py` les liste (sans rien modifier) ; `--apply` les supprime, uniquement après
+accord et sauvegarde (domaines protégés : rules.example, e2e.example, demo.example, stack.example).
+**Tests navigateur sur une pile isolée** (base `planning_e2e`, ports 3100 / 8100, aucun volume partagé avec le développement) :
+`scripts/ops/e2e_stack.sh up` (construit, crée le tenant de test et génère novembre), `scripts/ops/e2e_stack.sh test`, `scripts/ops/e2e_stack.sh down`.
+Les fiches d'essai créées par `e2e/team.spec.ts` sont retirées en fin de session (`e2e/global-teardown.ts`, tenant `@e2e.example`
+uniquement ; `E2E_DB_CLEANUP=0` pour désactiver).
+Exploitation : `scripts/ops/backup.sh`, `scripts/ops/verify_backup.sh` (restauration réelle dans une base isolée), `scripts/ops/check_storage.sh`.
 Couverture notable : total 1 752 h ; 90/60/8 shifts ; présence/pause/effectif ; repos 11 h ; 6 jours max ;
 Sabrina ; Jane/Chloé ; Ying ≤ 3 j/sem ; verrouillage + réoptimisation partielle ; diagnostic d'infaisabilité ;
 Lindt/Toblerone ; aucun contrat inventé ; isolation inter-tenants (API **et** RLS en SQL brut) ; rôles ; CSRF ;
@@ -221,6 +230,26 @@ Pensée pour une société de placement : plusieurs clients, marques, sites et m
 **Rôles** : propriétaire, administrateur, manager, planificateur, responsable de marque (limité à ses marques, `users.scope`), collaborateur (son planning publié uniquement), auditeur.
 
 Migration : `0007_workforce_management.py` (non destructive). Limites restantes : `docs/limits-and-next-steps.md`.
+
+## Collaborateurs, plafond mensuel et paramètres conservés par chaque planning
+- **Fiche d'ajout** (Collaborateurs → « Ajouter un collaborateur ») : prénom et nom séparés, date de naissance, adresse, téléphone, e-mail,
+  volume horaire, marques et sites autorisés, disponibilités et indisponibilités, préférence horaire, jours minimum / maximum par mois.
+  Doublons vérifiés avant l'ajout (même e-mail ou téléphone : refusé ; homonyme ou fiche au seul prénom : confirmation demandée).
+- **Suppression** : question de confirmation (Annuler / Supprimer) ; le collaborateur n'est plus proposé ni planifié par les nouvelles
+  générations ; ses affectations et son historique restent ; réintégration possible.
+- **Plafond mensuel** (règle interne de l'entreprise, pas une valeur légale ; 176 h par défaut, `PUT /settings/monthly-cap`) : travail
+  effectif par collaborateur et par mois civil, tous sites et marques cumulés. Strict pour toute génération ; une modification manuelle
+  ne peut jamais créer ni aggraver un dépassement (réduire les heures reste possible). Les plannings établis avant le plafond ne sont pas
+  modifiés : un dépassement y est signalé, sans être compté comme incompatibilité.
+- **Jours par mois** : minimum et maximum, deux contraintes obligatoires indépendantes (« Pas de préférence » désactive la limite
+  correspondante) ; une journée compte une fois. Un minimum impossible bloque la génération avec la raison (jours possibles, plafond,
+  limite hebdomadaire, jours consécutifs, ou minimums incompatibles entre eux).
+- **Indépendance des plannings** : chaque planning conserve, dès sa création, les paramètres des fiches, l'effectif (contrats terminés,
+  collaborateurs supprimés), les règles et les pondérations de sa génération. Un changement fait ensuite (par exemple pour le mois suivant)
+  ne le modifie pas et n'y crée aucune incompatibilité. L'appliquer est toujours explicite : « Appliquer les paramètres actuels » ou une
+  génération lancée avec « Paramètres actuels » (choix obligatoire quand des paramètres ont changé). Les données propres au mois
+  (effectif du mois, exceptions du mois, absences datées) restent lues en direct.
+- **Incompatibilités** : détail par collaborateur, date, horaires, site, règle et raison ; contraintes obligatoires et préférences séparées.
 
 ## Hypothèses non validées (paramétrables)
 Les horaires de toutes les marques sont désormais fournis (voir ci-dessus) ; ils restent modifiables (`/shift-templates`, ou `cn_templates` /

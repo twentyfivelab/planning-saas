@@ -5,7 +5,7 @@ export const metadata: Metadata = { title: "Planning — planification automatiq
 export const viewport: Viewport = { width: "device-width", initialScale: 1, colorScheme: "light dark" };
 
 // Thème posé avant hydratation (pas de flash) : préférence enregistrée, sinon réglage du système.
-const THEME_SCRIPT = `(function(){try{var p=localStorage.getItem('theme-pref')||'system';var d=p==='dark'||(p==='system'&&matchMedia('(prefers-color-scheme: dark)').matches);document.documentElement.dataset.theme=d?'dark':'light'}catch(e){document.documentElement.dataset.theme='light'}})()`;
+const THEME_SCRIPT = `(function(){try{document.documentElement.dataset.theme=localStorage.getItem('theme-pref')==='dark'?'dark':'light'}catch(e){document.documentElement.dataset.theme='light'}})()`;
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (

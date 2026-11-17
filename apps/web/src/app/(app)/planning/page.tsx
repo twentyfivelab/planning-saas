@@ -31,7 +31,7 @@ import {
 } from "@/lib/schedule";
 
 type Schedule = { assignments: Assignment[]; uncovered: { shift_id: string; slot_key: string; day: string; site: string; start: string; end: string }[] };
-type Emp = { id: string; code: string; name: string; brands?: Record<string, string>; sunday_quota?: number | null; sunday_mode?: "max" | "exact" };
+type Emp = { id: string; code: string; name: string; brands?: Record<string, string>; sunday_quota?: number | null; sunday_mode?: "max" | "exact"; deleted_at?: string | null };
 const VIEWS = [["month", "Mois"], ["general", "Planning général"], ["day", "Jour"], ["employee", "Collaborateur"], ["brand", "Marque / site"]] as const;
 type View = (typeof VIEWS)[number][0];
 const KIND_ICON = { open: "sunrise", day: "briefcase", close: "sunset" } as const;
@@ -49,7 +49,9 @@ export default function PlanningPage() {
   const cal = useApi<MonthCalendar>(`/calendar?year=${ym.y}&month=${ym.m}`);
   const sched = useApi<Schedule>(period ? `/periods/${period.id}/schedule` : null);
   const confl = useApi<{ hard_violations: string[] }>(period ? `/periods/${period.id}/conflicts` : null);
-  const emps = useApi<Emp[]>("/employees");
+  // supprimés compris : leurs affectations passées restent affichées ; ils ne sont jamais proposés pour une nouvelle affectation
+  const empsAll = useApi<Emp[]>("/employees?include_deleted=true");
+  const emps = useMemo(() => ({ ...empsAll, data: empsAll.data?.filter((e) => !e.deleted_at) }), [empsAll]);
   const budgets = useApi<BudgetRow[]>("/budgets");
   const sunday = useApi<SundaySummary>(period ? `/periods/${period.id}/sunday-summary` : null);
 
@@ -64,6 +66,8 @@ export default function PlanningPage() {
   const focus = focusState || defaultWeek(days);
   const all = useMemo(() => sched.data?.assignments ?? [], [sched.data]);
   const list = useMemo(() => filterAssignments(all, { text, site, brand, employee: empF }), [all, text, site, brand, empF]);
+  const histEmps = useMemo(() => (empsAll.data ?? []).filter((e) => !e.deleted_at || all.some((a) => a.employee_id === e.id))
+    .map((e) => (e.deleted_at ? { ...e, name: `${e.name} (supprimé·e)` } : e)), [empsAll.data, all]);
   const alertMap = useMemo(() => conflictsBySlot(confl.data?.hard_violations ?? [], all), [confl.data, all]);
   const sites = useMemo(() => [...new Set(all.map((a) => a.site))].sort(), [all]);
   const brands = useMemo(() => [...new Set(all.flatMap((a) => Object.keys(a.allocations)))].sort(), [all]);
@@ -171,7 +175,7 @@ export default function PlanningPage() {
       <Legend brands={brands} />
 
       {archived && <Callout kind="info" title={`${period!.name} est archivé`}>Ce planning reste consultable (planning général, plannings individuels, historique, versions) mais n&apos;est plus modifiable. Désarchivez-le pour le modifier.</Callout>}
-      {period && all.length > 0 && !archived && <CompatBanner periodId={period.id} />}
+      {period && all.length > 0 && !archived && <CompatBanner periodId={period.id} periodName={period.name} />}
       {(confl.data?.hard_violations.length ?? 0) > 0 && (
         <Callout kind="warn" title={`${confl.data!.hard_violations.length} conflit(s) de contraintes dures`}>
           Les cartes concernées sont entourées en orange. <a href="/alerts" style={{ textDecoration: "underline" }}>Voir le détail</a>
@@ -193,9 +197,9 @@ export default function PlanningPage() {
       ) : (
         <Card>
           {view === "month" && <MonthView days={days} list={list} alertMap={alertMap} onPickDay={(d) => { setFocus(d); setView("day"); }} />}
-          {view === "general" && <GeneralGrid periodId={period!.id} days={days} inPeriod={inPeriod} list={list} emps={(emps.data ?? []).filter((e) => !empF || e.id === empF)} cardProps={cardProps} cellDnD={cellDnD} dragging={!!drag} canEdit={canEdit} onAdd={(emp, day) => setPicking({ emp, day })} />}
-          {view === "day" && <DayView day={focus} list={list.filter((a) => a.day === focus)} uncovered={(sched.data?.uncovered ?? []).filter((u) => u.day === focus).length} cardProps={cardProps} emps={emps.data ?? []} canEdit={canEdit} onChange={reassign.request} />}
-          {view === "employee" && <EmployeeView days={days} list={list} emps={emps.data ?? []} cardProps={cardProps} canEdit={canEdit} onAdd={(emp, day) => setPicking({ emp, day })} />}
+          {view === "general" && <GeneralGrid periodId={period!.id} days={days} inPeriod={inPeriod} list={list} emps={histEmps.filter((e) => !empF || e.id === empF)} cardProps={cardProps} cellDnD={cellDnD} dragging={!!drag} canEdit={canEdit} onAdd={(emp, day) => setPicking({ emp, day })} />}
+          {view === "day" && <DayView day={focus} list={list.filter((a) => a.day === focus)} uncovered={(sched.data?.uncovered ?? []).filter((u) => u.day === focus).length} cardProps={cardProps} emps={histEmps} canEdit={canEdit} onChange={reassign.request} />}
+          {view === "employee" && <EmployeeView days={days} list={list} emps={histEmps} cardProps={cardProps} canEdit={canEdit} onAdd={(emp, day) => setPicking({ emp, day })} />}
           {view === "brand" && <BrandView days={days} list={list} budgets={(budgets.data ?? []).filter((x) => (x as { month?: string }).month === period?.start_date)} />}
         </Card>
       )}
@@ -205,7 +209,7 @@ export default function PlanningPage() {
       <RemoveDialog a={removing} onClose={() => setRemoving(null)} onDone={() => { setRemoving(null); refresh(); }} />
       <HistoryPanel open={historyOpen} periodId={period?.id ?? ""} employeeId={empF || undefined} onClose={() => setHistoryOpen(false)} />
       <AddShiftModal target={adding} periodId={period?.id ?? ""} onClose={() => setAdding(null)} onAdded={() => { setAdding(null); refresh(); }} />
-      <ShiftModal a={sel} onClose={() => setSel(null)} canEdit={canEdit} emps={emps.data ?? []} alerts={sel ? alertMap.get(sel.assignment_id) ?? [] : []}
+      <ShiftModal a={sel} onClose={() => setSel(null)} canEdit={canEdit} emps={histEmps} alerts={sel ? alertMap.get(sel.assignment_id) ?? [] : []}
         onReassign={(a, to) => { setSel(null); reassign.request(a, to); }} onLock={toggleLock} onTimes={editTimes} onRemove={(a) => { setSel(null); setRemoving(a); }}
         onExplain={(a) => setExplain(a.assignment_id)} onReplacements={(a) => { setSel(null); setReplace({ shift_id: a.shift_id, label: `${dayLabel(a.day)} · ${a.site} · ${timeShort(a.start)}–${timeShort(a.end)}` }); }} />
       <ExplainModal assignmentId={explain} onClose={() => setExplain(null)} />
@@ -324,7 +328,7 @@ function GeneralGrid({ periodId, days, inPeriod, list, emps, cardProps, cellDnD,
                 {days.map((d) => (
                   <div key={d} className="cal-cell" role="cell" data-off={!inPeriod(d) || undefined} data-weekend={weekdayIdx(d) >= 5 || undefined} {...cellDnD(e.id, d)} aria-label={`${e.name}, ${dayLabel(d)}`}>
                     {(mine?.get(d) ?? []).map((a) => <ShiftCard key={a.assignment_id} {...cardProps(a)} />)}
-                    {canEdit && inPeriod(d) && !mine?.get(d)?.length && <button type="button" className="cal-add" aria-label={`Ajouter un shift pour ${e.name}, ${dayLabel(d)}`} onClick={() => onAdd(e, d)}>+</button>}
+                    {canEdit && !e.deleted_at && inPeriod(d) && !mine?.get(d)?.length && <button type="button" className="cal-add" aria-label={`Ajouter un shift pour ${e.name}, ${dayLabel(d)}`} onClick={() => onAdd(e, d)}>+</button>}
                   </div>
                 ))}
                 <div className="cal-cell cal-total num" role="cell">{mins ? fmtHM(mins) : "–"}</div>
@@ -378,7 +382,7 @@ function DayView({ day, list, uncovered, cardProps, emps, canEdit, onChange }: {
               <td data-label="Site">{a.site}</td>
               <td data-label="Collaborateur">
                 <Select aria-label={`Collaborateur pour ${a.site} ${timeShort(a.start)}–${timeShort(a.end)}`} value={a.employee_id} disabled={!canEdit || a.locked} onChange={(e) => onChange(a, e.target.value)} style={{ minWidth: "11rem" }}>
-                  {emps.map((e) => { const ok = e.id === a.employee_id || canWork(e.brands, Object.keys(a.allocations)); return <option key={e.id} value={e.id} disabled={!ok}>{e.name}{ok ? "" : " — marque non autorisée"}</option>; })}
+                  {emps.filter((e) => !e.deleted_at || e.id === a.employee_id).map((e) => { const ok = e.id === a.employee_id || canWork(e.brands, Object.keys(a.allocations)); return <option key={e.id} value={e.id} disabled={!ok}>{e.name}{ok ? "" : " — marque non autorisée"}</option>; })}
                 </Select>
               </td>
             </tr>))}</tbody>
@@ -474,7 +478,7 @@ function ShiftModal({ a, onClose, canEdit, emps, alerts, onReassign, onLock, onT
           {canEdit ? (
             <>
               <div className="row" style={{ alignItems: "flex-end" }}>
-                <Field label="Réaffecter à">{(p) => <Select {...p} value={to} disabled={a.locked} onChange={(e) => setTo(e.target.value)} style={{ minWidth: "12rem" }}>{emps.map((e) => { const ok = canWork(e.brands, Object.keys(a.allocations)); return <option key={e.id} value={e.id} disabled={!ok}>{e.name}{ok ? "" : " — marque non autorisée"}</option>; })}</Select>}</Field>
+                <Field label="Réaffecter à">{(p) => <Select {...p} value={to} disabled={a.locked} onChange={(e) => setTo(e.target.value)} style={{ minWidth: "12rem" }}>{emps.filter((e) => !e.deleted_at || e.id === a.employee_id).map((e) => { const ok = !e.deleted_at && canWork(e.brands, Object.keys(a.allocations)); return <option key={e.id} value={e.id} disabled={!ok}>{e.name}{ok ? "" : e.deleted_at ? "" : " — marque non autorisée"}</option>; })}</Select>}</Field>
                 <Button variant="primary" disabled={a.locked || to === a.employee_id} onClick={() => onReassign(a, to)}>Réaffecter</Button>
               </div>
               <form className="row" style={{ alignItems: "flex-end" }} onSubmit={(e) => { e.preventDefault(); onTimes(a, new FormData(e.currentTarget)); }}>

@@ -97,7 +97,11 @@ test("F-I. décembre 2026 et janvier 2027 : calendrier exact, 35 puis 28 shifts 
   await expect(page.getByLabel("Mois", { exact: true })).toHaveValue("12");
   await expect(page.getByTestId("sunday-formula")).toContainText("4 dimanches × 7 shifts = 28");
   await page.getByRole("button", { name: "Continuer", exact: true }).click();
-  await page.getByLabel("Durée maximale (secondes)").fill("20");
+  await page.getByLabel("Durée maximale du calcul (secondes)").fill("20");
+  await expect(page.getByTestId("time-limit-help")).toContainText("C'est une limite, pas une durée fixe.");
+  await expect(page.getByTestId("params-choice").or(page.getByText("Ce mois n'a pas encore de planning"))).toBeVisible({ timeout: 15_000 });
+  const keep = page.getByTestId("params-choice").getByRole("radio", { name: /Paramètres de ce planning/ }); // planning existant : choix explicite
+  if (await keep.isVisible().catch(() => false) && !(await keep.isChecked())) await keep.check();
   await page.getByRole("button", { name: "Générer automatiquement le planning" }).click();
   if (await page.getByRole("button", { name: "Confirmer et lancer" }).isVisible().catch(() => false)) await page.getByRole("button", { name: "Confirmer et lancer" }).click();
   await expect(page.getByText(/Résultat :/)).toBeVisible({ timeout: 90_000 });
@@ -172,7 +176,8 @@ test("E. pondérations : curseur + saisie, enregistrement automatique, persistan
   // le solveur reçoit les poids enregistrés
   const nov = (await periodOf(page, "2026-11"))!;
   const token = await csrf(page);
-  await page.request.post(`${API}/periods/${nov.id}/reoptimize`, { headers: { "X-CSRF-Token": token, "Idempotency-Key": `w-${Date.now()}` }, data: { time_limit_s: 20 } });
+  // nouvelles pondérations appliquées à novembre : choix explicite (sinon le planning garde les pondérations de sa génération)
+  await page.request.post(`${API}/periods/${nov.id}/reoptimize`, { headers: { "X-CSRF-Token": token, "Idempotency-Key": `w-${Date.now()}` }, data: { time_limit_s: 20, params: "current" } });
   await expect.poll(async () => (await j(page, "/runs"))[0].status, { timeout: 60_000 }).toBe("termine");
   const run = (await j(page, "/runs"))[0];
   const rep = (await j(page, `/runs/${run.id}/diagnostic`)).report;

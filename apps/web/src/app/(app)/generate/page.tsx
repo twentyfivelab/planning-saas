@@ -15,6 +15,7 @@ import { MonthNeeds, type MonthCalendar } from "@/components/planning/MonthNeeds
 import { copyPreviousBudgets } from "@/lib/budgetCopy";
 import { invalidate } from "@/lib/invalidate";
 import { monthLabel, parseMonthKey } from "@/lib/months";
+import { ParamsChoice, RunFailure, RunProgress, TimeLimitField, type ParamsMode } from "@/components/planning/RunStatus";
 
 const WEIGHT_LABELS: Record<string, string> = { coverage: "Couverture", budget: "Budgets", reinforce: "Renforts", preference: "Préférences", fairness: "Équité", overtime: "Heures supplémentaires", site_change: "Changements de site", balance: "Équilibre ouvertures/fermetures/week-ends", fatigue: "Enchaînements fatigants", family: "Relations entre collaborateurs", stagger: "Décalage cosmétique", rest_days: "Jours de repos", stability: "Stabilité", time_pref: "Préférence matin/middle/soir", secondary: "Marques secondaires", budget_over: "Dépassement de budget souple", sunday_quota: "Objectif exact de dimanches", individual: "Priorité individuelle", sunday_balance: "Équilibrage des dimanches", alternation: "Alternance matin/soir", days_balance: "Équilibrage des jours", cost: "Coût estimé" };
 const STEPS = ["Vérification", "Paramètres", "Calcul", "Résultat"];
@@ -34,6 +35,7 @@ export default function Generate() {
   const compat = useApi<{ has_plan: boolean; locked: number; unlocked: number; hard: string[]; soft: unknown[] }>(period ? `/periods/${period.id}/compatibility` : null);
   const [partial, setPartial] = useState(false); const [limit, setLimit] = useState(30); const [weights, setWeights] = useState<Record<string, number>>({});
   const [run, setRun] = useState<any>(null); const [diag, setDiag] = useState<any>(null);
+  const [paramsMode, setParamsMode] = useState<ParamsMode>(null); const [failed, setFailed] = useState<{ id: string; status: string } | null>(null);
   const [diff, setDiff] = useState<ReturnType<typeof diffSchedules> | null>(null);
   const before = useRef<Assignment[]>([]);
   const key = useRef("");
@@ -49,7 +51,7 @@ export default function Generate() {
       const after = (await api(`/periods/${runPeriod || run.period_id}/schedule`)).assignments; setDiff(diffSchedules(before.current, after)); setStep(4);
       toast.push("Génération terminée.", "ok");
     })();
-    if (run?.status === "annule" || run?.status === "erreur") { toast.push(run.status === "annule" ? "Exécution annulée." : "L'exécution a échoué.", run.status === "annule" ? "warn" : "bad"); setStep(2); }
+    if (run?.status === "annule" || run?.status === "erreur") { toast.push(run.status === "annule" ? "Exécution annulée." : "L'exécution a échoué.", run.status === "annule" ? "warn" : "bad"); setFailed({ id: run.id, status: run.status }); setStep(2); }
   }, [run?.status]); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function start() {
@@ -57,14 +59,15 @@ export default function Generate() {
       const p = period ?? await ensure(); // le planning du mois est créé s'il n'existe pas (les autres mois ne sont jamais touchés)
       setRunPeriod(p.id);
       before.current = (await api(`/periods/${p.id}/schedule`)).assignments;
-      const r = await api<{ run_id: string }>(`/periods/${p.id}/${partial ? "reoptimize" : "runs"}`, { method: "POST", json: { time_limit_s: limit, weights, kind: partial ? "partial" : "full", confirm_replace: true }, headers: { "Idempotency-Key": key.current } }); // la confirmation est demandée ci-dessous quand un planning existe
+      setFailed(null);
+      const r = await api<{ run_id: string }>(`/periods/${p.id}/${partial ? "reoptimize" : "runs"}`, { method: "POST", json: { time_limit_s: limit, weights, kind: partial ? "partial" : "full", confirm_replace: true, params: paramsMode ?? "frozen" }, headers: { "Idempotency-Key": key.current } }); // la confirmation est demandée ci-dessous quand un planning existe
       key.current = crypto.randomUUID(); setRun(await api(`/runs/${r.run_id}`)); setStep(3);
     } catch (e: any) { toast.push(String(e.message), "bad"); }
   }
   const running = run && !["termine", "annule", "erreur"].includes(run.status);
   return (
     <>
-      <PageHead eyebrow={monthLabel(month)} title={t("nav.generate")}><a className="btn btn-primary" href="/plannings/new"><Icon name="plus" size={16} />Générer un nouveau planning</a><MonthSwitcher month={month} onChange={(m) => { setMonth(m); setStep(1); setRun(null); }} /></PageHead>
+      <PageHead eyebrow={monthLabel(month)} title={t("nav.generate")}><a className="btn btn-primary" href="/plannings/new"><Icon name="plus" size={16} />Générer un nouveau planning</a><MonthSwitcher month={month} onChange={(m) => { setMonth(m); setStep(1); setRun(null); setParamsMode(null); }} /></PageHead>
       {step <= 2 && cal.data && <MonthNeeds cal={cal.data} actions={cal.data.budgets_missing ? <Button size="sm" onClick={copyBudgets}>Copier les budgets du mois précédent</Button> : undefined} />}
       <ol className="stepper" aria-label="Étapes">
         {STEPS.map((l, i) => <li key={l} className="step" data-done={i + 1 < step || undefined} aria-current={step === i + 1 ? "step" : undefined}><i>{i + 1 < step ? <Icon name="check" size={12} /> : i + 1}</i>{l}</li>)}
@@ -83,12 +86,14 @@ export default function Generate() {
         <Card title="Paramètres d'optimisation">
           <div className="stack">
             <label className="row"><input type="checkbox" checked={partial} onChange={(e) => setPartial(e.target.checked)} /> Réoptimisation partielle <span className="help">— les affectations verrouillées sont conservées</span></label>
-            <Field label="Durée maximale (secondes)">{(p) => <Input {...p} type="number" min={5} max={600} value={limit} onChange={(e) => setLimit(+e.target.value)} style={{ width: "10rem" }} />}</Field>
+            {failed && <RunFailure runId={failed.id} status={failed.status} />}
+            <ParamsChoice periodId={period?.id ?? null} value={paramsMode} onChange={setParamsMode} />
+            <TimeLimitField value={limit} onChange={setLimit} width="10rem" />
             <fieldset style={{ border: 0, padding: 0, margin: 0 }}>
               <legend className="h2" style={{ marginBottom: "var(--sp-2)" }}>Ajustement exceptionnel des poids <span className="help">(vide = pondération enregistrée dans <a href="/settings" style={{ textDecoration: "underline" }}>Paramètres</a>)</span></legend>
               <div className="toolbar">{Object.entries(WEIGHT_LABELS).map(([k, l]) => <Field key={k} label={l}>{(p) => <Input {...p} type="number" min={0} onChange={(e) => setWeights({ ...weights, [k]: +e.target.value })} />}</Field>)}</div>
             </fieldset>
-            <div className="row"><Button onClick={() => setStep(1)}>Retour</Button><Button variant="primary" icon="sparkles" onClick={() => (compat.data?.has_plan ? setConfirming(true) : start())}>Générer automatiquement le planning</Button></div>
+            <div className="row"><Button onClick={() => setStep(1)}>Retour</Button><Button variant="primary" icon="sparkles" disabled={paramsMode === null} onClick={() => (compat.data?.has_plan ? setConfirming(true) : start())}>Générer automatiquement le planning</Button>{paramsMode === null && <span className="help">Choisissez d&apos;abord les paramètres à utiliser.</span>}</div>
           </div>
         </Card>
       )}
@@ -96,7 +101,7 @@ export default function Generate() {
         <div className="stack">
           {(period?.status === "validated" || period?.status === "published") && <Callout kind="warn" title={`Planning ${period.status_label?.toLowerCase()}`}>La version {period.status === "published" ? "publiée" : "validée"} reste conservée, mais le planning en cours sera remplacé et devra être de nouveau validé et publié.</Callout>}
           <p><strong>{compat.data?.locked ?? 0}</strong> affectation(s) verrouillée(s) ou ajoutée(s) à la main resteront inchangées.</p>
-          <p><strong>{compat.data?.unlocked ?? 0}</strong> affectation(s) non verrouillée(s) seront recalculées avec les paramètres actuels{partial ? " (réoptimisation partielle : le moins de changements possible)" : ""}.</p>
+          <p><strong>{compat.data?.unlocked ?? 0}</strong> affectation(s) non verrouillée(s) seront recalculées avec {paramsMode === "current" ? "les paramètres actuels" : "les paramètres de ce planning"}{partial ? " (réoptimisation partielle : le moins de changements possible)" : ""}.</p>
           {!!(compat.data && (compat.data.hard.length || compat.data.soft.length)) && <p className="help">{compat.data!.hard.length + compat.data!.soft.length} incompatibilité(s) actuelle(s) avec les paramètres seront traitées. Un comparatif avant/après sera affiché.</p>}
           <div className="row modal-actions"><Button onClick={() => setConfirming(false)}>Annuler</Button><a className="btn" href="/planning"><Icon name="calendar" size={16} />Ouvrir le planning existant</a><Button variant="primary" onClick={() => { setConfirming(false); void start(); }}>Confirmer et lancer</Button></div>
         </div>
@@ -104,8 +109,7 @@ export default function Generate() {
       {step === 3 && (
         <Card title="Calcul en cours">
           <div className="stack" role="status" aria-live="polite">
-            <p>Statut : <Badge tone={running ? "info" : "neutral"}>{run?.status ?? "…"}</Badge></p>
-            <div className="progress" aria-hidden="true"><span style={{ ["--value" as string]: 100, animation: "shimmer 1.4s linear infinite", backgroundImage: "linear-gradient(100deg, var(--accent) 30%, var(--brand-5) 50%, var(--accent) 70%)", backgroundSize: "200% 100%" }} /></div>
+            {run && <RunProgress run={run} limit={limit} />}
             <p className="help">Le solveur tourne en arrière-plan ; vous pouvez l&apos;interrompre.</p>
             {running && <div><Button onClick={() => api(`/runs/${run.id}/cancel`, { method: "POST" })}>Annuler l&apos;exécution</Button></div>}
           </div>
@@ -113,6 +117,9 @@ export default function Generate() {
       )}
       {step === 4 && diag && (
         <>
+          {(diag.status === "infaisable" || (diag.status === "interrompu" && !diag.verification?.executed)) && (
+            <Callout kind="bad" title="Aucun planning enregistré">{diag.status === "infaisable" ? "Les contraintes obligatoires ne permettent aucun planning : voir le diagnostic ci-dessous." : "Aucune solution trouvée dans la durée maximale : augmentez-la ou allégez les contraintes."} Le planning existant n&apos;a pas été modifié.</Callout>)}
+          {diag.params_used && <p className="help">Paramètres utilisés : {diag.params_used.mode === "frozen" ? "ceux conservés par ce planning" : "paramètres actuels (désormais conservés par ce planning)"}{diag.params_used.monthly_cap_minutes ? ` · plafond mensuel ${Math.round(diag.params_used.monthly_cap_minutes / 60)} h par collaborateur` : ""}.</p>}
           <Card title={`Résultat : ${String(diag.status).replace(/_/g, " ")}`} eyebrow={`${diag.duration_s} s`} actions={<div className="row">{diag.verification?.executed && <Badge tone={diag.hard_violations?.length ? "bad" : "ok"} icon={diag.hard_violations?.length ? "alert" : "check"} data-testid="verification">{diag.hard_violations?.length ? `Vérificateur : ${diag.hard_violations.length} violation(s), planning refusé` : "Vérificateur indépendant : aucune violation"}</Badge>}<Badge tone={diag.mode === "simulation_exploratoire" ? "warn" : "ok"} icon={diag.mode === "simulation_exploratoire" ? "alert" : "check"}>{diag.mode === "simulation_exploratoire" ? t("exploratory") : "Validable"}</Badge></div>}>
             <h3 className="h2" style={{ marginBottom: "var(--sp-2)" }}>Budgets</h3>
             <div className="stack">{diag.budgets.map((b: any) => (

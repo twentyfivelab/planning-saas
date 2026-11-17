@@ -47,6 +47,8 @@ def build(o):
 
 
 def run(o, pid, **body):
+    """Les scénarios modifient compétences, contrats ou règles puis régénèrent : ils appliquent explicitement les paramètres actuels."""
+    body.setdefault("params", "current")
     r = o.post(f"/periods/{pid}/runs", json={"time_limit_s": 8, **body}, headers={"Idempotency-Key": uuid.uuid4().hex})
     assert r.status_code == 202, r.text
     res = o.get(f"/runs/{r.json()['run_id']}").json()
@@ -666,8 +668,8 @@ def test_donnee_modifiee_pendant_le_calcul_le_plan_est_rejete(vt, monkeypatch):
     real = opt.solve
     tid = o.get("/tenant").json()["id"]
 
-    def solve_then_absence(inp, cancel=None):
-        res = real(inp, cancel)
+    def solve_then_absence(inp, cancel=None, progress=None):
+        res = real(inp, cancel, progress)
         a = res.assignments[0]
         code = a.employee_id
         with tenant_session(tid) as db:
