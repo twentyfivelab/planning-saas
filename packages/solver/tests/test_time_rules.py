@@ -70,3 +70,21 @@ def test_un_jour_avec_deux_affectations_compte_une_fois():
     emp = Employee("ana", "Ana", {"A": PRIORITY}, max_days_month=1)
     inp = SolverInput(date(2026, 11, 1), date(2026, 11, 30), [am, pm], [emp], [], SolverConfig(rest_hours=0))
     assert not [v for v in violations(inp, [_assign(am, "ana"), _assign(pm, "ana")]) if v.code == "MAX_DAYS_MONTH"]
+
+
+def test_regles_du_verificateur_reecrites_et_equivalentes_au_generateur():
+    """Le vérificateur ne réutilise plus le code du générateur : ses propres fonctions donnent les mêmes résultats sur 2 000 cas."""
+    import random
+    from planning_solver.context import required_break
+    from planning_solver.model import site_start_times, slot_category
+    from planning_solver.validator import _break_needed, _category, _starts_by_site
+    rnd = random.Random(3)
+    for _ in range(2000):
+        rules = [(rnd.choice([300, 330, 420, 540]), rnd.choice([15, 30, 60])) for _k in range(rnd.randint(0, 3))]
+        h0, m0 = rnd.randint(5, 14), rnd.choice([0, 15, 30, 45])
+        d = date(2026, 11, rnd.randint(1, 30))
+        s = _slot("S", d, rnd.choice(["A", "B"]), time(h0, m0), time(min(23, h0 + rnd.randint(3, 9)), m0), rnd.choice([0, 30, 60]), {"X": 1})
+        assert _break_needed(rules, s.effective_minutes) == required_break(rules, s)
+        others = [_slot(f"O{k}", d, s.site, time(rnd.randint(5, 14), 0), time(20, 0), 0, {"X": 1}) for k in range(rnd.randint(0, 2))]
+        inp = SolverInput(d, d, [s, *others], [], [], SolverConfig())
+        assert _category(s, _starts_by_site(inp)) == slot_category(s, site_start_times(inp))

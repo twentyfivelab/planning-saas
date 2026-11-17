@@ -14,6 +14,7 @@ import { brandColor } from "@/lib/brand";
 import { t } from "@/lib/i18n";
 import { errText, parseRate, rateInput } from "@/lib/wfm";
 import { EmployeeAddModal, EmployeeIdentityModal } from "@/components/planning/EmployeeForm";
+import { EmployeeMonthModal } from "@/components/planning/EmployeeMonth";
 import { invalidate } from "@/lib/invalidate";
 
 type Deleted = { id: string; name: string; removed_on: string | null; deleted_at: string };
@@ -36,6 +37,7 @@ export default function Employees() {
   const all = useApi<Deleted[]>(canWrite ? "/employees?include_deleted=true" : null);
   const deleted = (all.data ?? []).filter((e) => e.deleted_at);
   const [adding, setAdding] = useState(false);
+  const [empMonth, setEmpMonth] = useState<{ id: string; name: string } | null>(null);
   const [identity, setIdentity] = useState<string | null>(null);
   const [del, setDel] = useState<Emp | null>(null); const [preview, setPreview] = useState<Preview | null>(null); const [busy, setBusy] = useState(false);
   const refreshAll = () => { sheetCtl.reload(); all.reload(); contracts.reload(); invalidate(); };
@@ -78,7 +80,7 @@ export default function Employees() {
             <div className="table-wrap"><table className="table table-cards">
               <thead><tr><th>Nom</th><th>Marques</th><th>Limites et préférences</th><th>Poids</th><th>Contrat</th><th><span className="sr-only">Actions</span></th></tr></thead>
               <tbody>{rows.map((e) => (
-                <tr key={e.id}><td className="cell-main nowrap"><strong>{e.name}</strong>{canWrite && !e.first_name && !e.last_name && <> <Badge tone="info">Prénom et nom à compléter</Badge></>}</td>
+                <tr key={e.id}><td className="cell-main nowrap"><button type="button" className="name-link" onClick={() => setEmpMonth({ id: e.id, name: e.name })} title={`Ouvrir le planning mensuel de ${e.name}`}>{e.name}</button>{canWrite && !e.first_name && !e.last_name && <> <Badge tone="info">Prénom et nom à compléter</Badge></>}</td>
                   <td data-label="Marques"><div className="row">{Object.entries(e.brands).map(([b, l]) => <Badge key={b} tone={l === "priority" ? "accent" : "neutral"}><i className="dot" style={{ ["--c" as string]: brandColor(b) }} />{b}{l === "priority" ? "" : " · renfort"}</Badge>)}</div></td>
                   <td data-label="Limites"><div className="row">{summarize(sheetCtl.effective(e)).length ? summarize(sheetCtl.effective(e)).map((t) => <Badge key={t} tone="accent">{t}</Badge>) : <span className="faint">Pas de préférence</span>}</div></td>
                   <td className="num" data-label="Poids">{e.allocation_weight}</td>
@@ -96,6 +98,7 @@ export default function Employees() {
         </Card>
       )}
       {sheetCtl.element}
+      {empMonth && <EmployeeMonthModal employee={empMonth} onClose={() => setEmpMonth(null)} />}
       {adding && <EmployeeAddModal open capLabel={sheetCtl.cap.data?.label ?? null} onClose={() => setAdding(false)} onAdded={(msg) => { setAdding(false); toast.push(msg, "ok"); refreshAll(); }} />}
       <EmployeeIdentityModal employeeId={identity} onClose={() => setIdentity(null)} onSaved={() => { setIdentity(null); toast.push("Identité enregistrée.", "ok"); refreshAll(); }} />
       <Modal open={!!del} onClose={() => !busy && setDel(null)} title={`Êtes-vous sûr de vouloir supprimer le collaborateur ${del?.name ?? ""} ?`} variant="confirm" hideClose>

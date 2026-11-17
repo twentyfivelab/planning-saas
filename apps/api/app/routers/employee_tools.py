@@ -13,7 +13,7 @@ from planning_solver.timecalc import shift_hours
 from .. import models as m
 from ..deps import Ctx, audit, get_or_404, require
 from ..history import assignment_detail
-from ..period_state import ensure_editable
+from ..period_state import ensure_editable, has_official_version
 from ..limits import guard_monthly_cap, month_minutes
 from ..optimize import ensure_frozen, freeze_period
 from ..services_bridge import assignments_for_validation, brand_schedules, build_input, params_mode, tenant_cap
@@ -54,9 +54,12 @@ def set_unavailable_dates(eid: str, body: DatesIn, ctx: Ctx = Depends(require("a
         ctx.db.execute(delete(m.Unavailability).where(m.Unavailability.employee_id == e.id, m.Unavailability.on_date.in_(removed)))
     for d in added:
         ctx.db.add(m.Unavailability(tenant_id=ctx.tenant_id, employee_id=e.id, on_date=d, reason="calendrier"))
+    revisions = []
     if added or removed:
         audit(ctx, "availability.dates", "employee", e.id, {"added": [d.isoformat() for d in added], "removed": [d.isoformat() for d in removed]})
-    return {"dates": [d.isoformat() for d in wanted]}
+        from ..revision import propose_revision
+        revisions = propose_revision(ctx.db, ctx.tenant_id, e, added, ctx.user.id)  # planning officiel touché : révision proposée
+    return {"dates": [d.isoformat() for d in wanted], "revisions": revisions}
 
 
 @router.get("/brand-schedules")
@@ -135,10 +138,13 @@ def delete_assignment(aid: str, force: bool = False, reason: Optional[str] = Non
     sh = ctx.db.get(m.Shift, a.shift_id)
     who = ctx.db.get(m.Employee, a.employee_id)
     detail = assignment_detail(ctx.db, sh, who, None, forced=bool(a.locked), reason=reason)
+    pid_ = a.period_id
     ctx.db.delete(a)
     ctx.db.flush()
     if sh is not None and sh.slot_key.startswith("MANUAL|"):
         ctx.db.delete(sh)
+    from .. import regularize
+    regularize.resolve(ctx.db, pid_)  # affectation initiale retirée : le rappel disparaît
     audit(ctx, "assignment.manual_remove", "assignment", aid, detail)
 
 
@@ -162,7 +168,7 @@ def compat_report(ctx: Ctx, p: m.PlanningPeriod, params: str = "plan") -> dict:
     out = {"hard": res["hard"], "soft": res["soft"], "items": res["items"], "checked": res["checked"],
            "flagged_assignment_ids": [str(a.id) for a in rows if keys.get(a.shift_id) in flagged_slots],
            "locked": sum(1 for a in rows if a.locked), "unlocked": sum(1 for a in rows if not a.locked), "has_plan": bool(rows),
-           "compatible": not res["items"], "params": {"mode": mode, "requested": params, "frozen_at": p.frozen_at.isoformat() if p.frozen_at else None,
+           "compatible": not res["items"], "official": has_official_version(ctx.db, p.id), "params": {"mode": mode, "requested": params, "frozen_at": p.frozen_at.isoformat() if p.frozen_at else None,
                                                       "source": p.frozen_source, "monthly_cap_minutes": inp.config.monthly_cap_minutes}}
     cap = tenant_cap(ctx.db, ctx.tenant_id)
     if params != "current" and cap is not None and inp.config.monthly_cap_minutes != cap and assigns:

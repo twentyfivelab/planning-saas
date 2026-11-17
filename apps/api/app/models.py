@@ -510,6 +510,25 @@ class ScheduleVersion(TenantOwned, Base):
     validated_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     published_by: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True))
     note: Mapped[Optional[str]] = mapped_column(String(300))
+    # contexte de génération FIGÉ à la création de la version (jamais réécrit) : entrée complète du moteur (collaborateurs, disponibilités,
+    # absences datées, besoins, budgets, règles, pondérations, verrous) ; NULL = version antérieure à cette conservation (« contexte incomplet »)
+    context: Mapped[Any] = mapped_column(JSONB, nullable=True)
+    context_hash: Mapped[Optional[str]] = mapped_column(String(64))
+    engine_version: Mapped[Optional[str]] = mapped_column(String(32))
+
+
+class Regularization(TenantOwned, Base):
+    """Double affectation confirmée provisoirement (remplacement d'un collaborateur déjà affecté ailleurs le même jour) : rappel
+    « À régulariser » rattaché au planning et aux deux affectations, visible tant que la double affectation existe."""
+    __tablename__ = "regularizations"
+    period_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("planning_periods.id", ondelete="CASCADE"), index=True)
+    employee_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True))
+    day: Mapped[date] = mapped_column(Date)
+    new_assignment_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True))  # affectation ajoutée par le remplacement
+    initial_assignment_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True))  # affectation initiale à traiter
+    created_by: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True))
+    resolved_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    resolution: Mapped[Optional[str]] = mapped_column(String(200))
 
 
 class LockedAssignment(TenantOwned, Base):

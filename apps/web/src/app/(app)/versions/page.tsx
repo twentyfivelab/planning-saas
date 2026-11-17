@@ -11,7 +11,10 @@ import { invalidate } from "@/lib/invalidate";
 import { t } from "@/lib/i18n";
 import { errText } from "@/lib/wfm";
 
-type V = { id: string; number: number; label: string | null; state: "snapshot" | "in_review" | "validated" | "published" | "superseded"; state_label: string; kind: string; kind_label: string; published: boolean; exploratory: boolean; created_at: string; assignments: number; created_by: string | null; validated_by: string | null; published_by: string | null; same_as_current: boolean; note: string | null };
+type V = { id: string; number: number; label: string | null; state: "snapshot" | "in_review" | "validated" | "published" | "superseded"; state_label: string; kind: string; kind_label: string; published: boolean; exploratory: boolean; created_at: string; assignments: number; created_by: string | null; validated_by: string | null; published_by: string | null; same_as_current: boolean; note: string | null; conformity?: Conformity; engine_version?: string | null; has_context?: boolean };
+type Side = { status: "conforme" | "non_conforme" | "contexte_incomplet"; violations: number | null; preferences?: number; checked: number; unchecked: number; checked_at?: string; message?: string;
+  items?: { code: string; rule: string; employee: string; reason: string }[] };
+type Conformity = { creation: Side; current: Side | null };
 type Cmp = { changed: { slot_key: string; from: string; to: string }[]; added: string[]; removed: string[]; unchanged: number };
 const TONE = { snapshot: "neutral", in_review: "accent", validated: "ok", published: "ok", superseded: "neutral" } as const;
 const fmt = (d: string) => new Date(d).toLocaleString("fr-CH", { timeZone: "Europe/Zurich", dateStyle: "short", timeStyle: "short" });
@@ -25,6 +28,7 @@ export default function Versions() {
   const [purging, setPurging] = useState(false); const [resetting, setResetting] = useState(false); const [typed, setTyped] = useState("");
   const [label, setLabel] = useState(""); const [restoring, setRestoring] = useState<V | null>(null); const [publishing, setPublishing] = useState<V | null>(null); const [notify, setNotify] = useState(true);
   const refresh = () => { v.reload(); reloadPeriods(); invalidate(); };
+  const [detail, setDetail] = useState<V | null>(null);
   async function act(fn: () => Promise<unknown>, msg: string) { try { await fn(); toast.push(msg, "ok"); refresh(); } catch (e) { toast.push(errText(e), "bad"); } }
   async function publish() {
     if (!publishing) return;
@@ -46,9 +50,10 @@ export default function Versions() {
         <>
           <Card title="Historique des versions" actions={can("planning.edit") ? <form className="row" onSubmit={async (e) => { e.preventDefault(); await act(() => api(`/periods/${period.id}/versions`, { method: "POST", json: { label: label.trim() || null } }), "Version créée."); setLabel(""); }}><Input aria-label="Libellé de la version" placeholder="ex. Planning corrigé" value={label} maxLength={100} onChange={(e) => setLabel(e.target.value)} style={{ width: "13rem" }} /><Button type="submit" variant="primary" icon="plus">Nouvelle version</Button></form> : undefined}>
             {!v.data?.length ? <EmptyState icon="history" title="Aucune version">Une version est créée à chaque génération ; vous pouvez aussi en enregistrer une à tout moment.</EmptyState> : (
-              <div className="table-wrap"><table className="table table-cards" aria-label="Versions"><thead><tr><th>N°</th><th>Libellé</th><th>Origine</th><th>Créée le</th><th>Affectations</th><th>État</th><th><span className="sr-only">Actions</span></th></tr></thead>
+              <div className="table-wrap"><table className="table table-cards" aria-label="Versions"><thead><tr><th>N°</th><th>Libellé</th><th>Origine</th><th>Créée le</th><th>Affectations</th><th>Conformité</th><th>État</th><th><span className="sr-only">Actions</span></th></tr></thead>
                 <tbody>{[...v.data].reverse().map((x) => (
                   <tr key={x.id}><td className="num cell-main"><strong>v{x.number}</strong></td><td data-label="Libellé">{x.label ?? <span className="faint">—</span>}{x.same_as_current && <> <Badge tone="info">Planning actuel</Badge></>}</td><td data-label="Origine">{x.kind_label}{x.created_by ? ` · ${x.created_by}` : ""}</td><td className="num nowrap" data-label="Créée le">{fmt(x.created_at)}</td><td className="num" data-label="Affectations">{x.assignments}</td>
+                    <td data-label="Conformité"><ConformityCell x={x} onDetail={() => setDetail(x)} /></td>
                     <td data-label="État"><div className="row"><Badge tone={TONE[x.state]} icon={x.state === "published" || x.state === "validated" ? "check" : undefined}>{x.state_label}</Badge>{x.exploratory && <Badge tone="warn" icon="alert">Données incomplètes · non publiable</Badge>}</div></td>
                     <td><div className="row">
                       {x.state === "snapshot" && can("planning.edit") && x.same_as_current && <Button size="sm" onClick={() => act(() => api(`/versions/${x.id}/submit`, { method: "POST" }), "Version soumise à validation.")}>Soumettre</Button>}
@@ -107,6 +112,54 @@ export default function Versions() {
           <div className="row modal-actions"><Button onClick={() => setRestoring(null)}>Annuler</Button><Button variant="primary" onClick={restore}>Restaurer</Button></div>
         </div>
       </Modal>
+      {detail && <ConformityModal v={detail} onClose={() => setDetail(null)} />}
     </>
+  );
+}
+
+
+function sideBadge(side: Side | null | undefined, label: string) {
+  if (!side) return null;
+  if (side.status === "contexte_incomplet") return <Badge tone="neutral" icon="info">{label} : contexte incomplet</Badge>;
+  return side.status === "conforme"
+    ? <Badge tone="ok" icon="check">{label} : conforme</Badge>
+    : <Badge tone="warn" icon="alert">{label} : {side.violations} règle(s) non respectée(s)</Badge>;
+}
+
+/** Conformité informative : aux règles de la création (contexte figé de la version) et aux règles actuelles (date de vérification). */
+function ConformityCell({ x, onDetail }: { x: V; onDetail: () => void }) {
+  const c = x.conformity;
+  if (!c) return <span className="faint">—</span>;
+  return (
+    <div className="stack" style={{ gap: "var(--sp-1)" }} data-testid={`conformity-v${x.number}`}>
+      {sideBadge(c.creation, "Règles de création")}
+      {sideBadge(c.current, `Règles actuelles${c.current?.checked_at ? ` (${fmt(c.current.checked_at)})` : ""}`)}
+      <button type="button" className="link-btn" onClick={onDetail}>Détail</button>
+    </div>
+  );
+}
+
+function ConformityModal({ v, onClose }: { v: V; onClose: () => void }) {
+  const d = useApi<Conformity & { engine_version: string | null; params: { mode: string; frozen_at: string | null } | null }>(`/versions/${v.id}/conformity`);
+  const block = (title: string, side: Side | null | undefined) => side && (
+    <section className="stack" style={{ gap: "var(--sp-2)" }}>
+      <h3 className="h2" style={{ margin: 0 }}>{title}</h3>
+      {side.status === "contexte_incomplet" ? <Callout kind="info" title="Contexte incomplet">{side.message}</Callout>
+        : side.status === "conforme" ? <p style={{ margin: 0 }}>{sideBadge(side, "Conforme")} <span className="help">{side.checked} affectation(s) vérifiée(s){side.unchecked ? `, ${side.unchecked} hors de ces données` : ""}.</span></p>
+        : <ul style={{ margin: 0, paddingLeft: "1.1rem" }}>{(side.items ?? []).map((i, n) => <li key={n}><strong>{i.employee}</strong> · {i.rule} — {i.reason}</li>)}</ul>}
+    </section>
+  );
+  return (
+    <Modal open onClose={onClose} title={`Conformité de la version ${v.number}`} description="Information uniquement : ni les affectations, ni le statut, ni les paramètres enregistrés ne sont modifiés.">
+      <div className="stack">
+        {!d.data ? <div className="skeleton" style={{ height: "6rem" }} aria-hidden="true" /> : (
+          <>
+            {block(`Règles utilisées lors de la création${d.data.engine_version ? ` (moteur ${d.data.engine_version})` : ""}`, d.data.creation)}
+            {block(`Règles actuelles — vérifié le ${d.data.current?.checked_at ? fmt(d.data.current.checked_at) : "—"}`, d.data.current)}
+          </>
+        )}
+        <div className="row modal-actions"><Button variant="primary" onClick={onClose}>Fermer</Button></div>
+      </div>
+    </Modal>
   );
 }

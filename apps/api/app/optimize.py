@@ -280,6 +280,8 @@ def run_optimization(tenant_id: str, run_id: str) -> None:
                             make_version(db, run.tenant_id, period.id, "Avant génération", "safety", run.requested_by)
                         persist_result(db, run.tenant_id, period, inp, res, run.id)
                         db.flush()
+                        from . import regularize
+                        regularize.resolve(db, period.id)
                         saved = verify_saved_plan(db, period, config, before_violations)
                         verification["after_save"] = saved
                         if saved["violations"]:

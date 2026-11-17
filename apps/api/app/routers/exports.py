@@ -77,6 +77,33 @@ def export_csv(pid: str, ctx: Ctx = Depends(require("export.run")), f: dict = De
                     headers={"Content-Disposition": 'attachment; filename="planning.csv"'})
 
 
+def _style_workbook(wb) -> None:
+    """En-têtes roses (texte blanc gras), lignes alternées blanc rosé, filets roses, volets figés, filtres et largeurs lisibles."""
+    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+    from openpyxl.utils import get_column_letter
+    from ..brand_style import INK, LINE, PINK, PINK_SOFT, WHITE
+    head_fill, alt_fill = PatternFill("solid", fgColor=PINK), PatternFill("solid", fgColor=PINK_SOFT)
+    edge = Side(style="thin", color=LINE)
+    for ws in wb.worksheets:
+        if ws.max_row < 1:
+            continue
+        for c in ws[1]:
+            c.fill, c.font = head_fill, Font(bold=True, color=WHITE)
+            c.alignment = Alignment(vertical="center", wrap_text=True)
+        for r, row in enumerate(ws.iter_rows(min_row=2), start=2):
+            for c in row:
+                c.font = Font(color=INK)
+                c.border = Border(bottom=edge)
+                if r % 2 == 0:
+                    c.fill = alt_fill
+        ws.freeze_panes = "A2"
+        if ws.max_row > 1 and ws.max_column > 1:
+            ws.auto_filter.ref = ws.dimensions
+        for i, col in enumerate(ws.iter_cols(min_row=1, max_row=min(ws.max_row, 200)), start=1):
+            width = max((len(str(c.value)) for c in col if c.value is not None), default=8)
+            ws.column_dimensions[get_column_letter(i)].width = min(60, max(10, width + 2))
+
+
 @router.get("/periods/{pid}/export.xlsx")
 def export_xlsx(pid: str, ctx: Ctx = Depends(require("export.run")), f: dict = Depends(_filters)):
     from openpyxl import Workbook
@@ -121,6 +148,7 @@ def export_xlsx(pid: str, ctx: Ctx = Depends(require("export.run")), f: dict = D
               "Outil d'aide à la décision, pas un conseil juridique ; validation par un spécialiste du droit "
               "suisse requise.", "Contrats et disponibilités non renseignés = non supposés."):
         ws5.append([t])
+    _style_workbook(wb)
     bio = io.BytesIO()
     wb.save(bio)
     _job(ctx, "xlsx", f)
@@ -161,6 +189,9 @@ def export_pdf(pid: str, ctx: Ctx = Depends(require("export.run")), f: dict = De
     bio = io.BytesIO()
     doc = SimpleDocTemplate(bio, pagesize=landscape(A4), title="Planning")
     st = getSampleStyleSheet()
+    from ..brand_style import INK as _ink, PINK as _pink
+    st["Title"].textColor = colors.HexColor("#" + _pink)
+    st["Italic"].textColor = colors.HexColor("#" + _ink)
     p = data["period"]
     body = [Paragraph(f"Planning {p['name']} ({p['start_date']} → {p['end_date']})", st["Title"]),
             Paragraph("Simulation exploratoire éventuelle : voir l'onglet Hypothèses de l'export Excel. "
@@ -168,8 +199,13 @@ def export_pdf(pid: str, ctx: Ctx = Depends(require("export.run")), f: dict = De
     t = Table([["Date", "Site", "Début", "Fin", "Effectif (h)", "Collaborateur"]] +
               [[a["day"], a["site"], a["start"][:5], a["end"][:5], f"{a['effective_minutes'] / 60:g}",
                 a["employee"]] for a in rows], repeatRows=1)
-    t.setStyle(TableStyle([("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey), ("FONTSIZE", (0, 0), (-1, -1), 8),
-                           ("GRID", (0, 0), (-1, -1), 0.25, colors.grey)]))
+    from ..brand_style import INK, LINE, PINK, PINK_SOFT
+    pink, soft, line, ink = (colors.HexColor("#" + x) for x in (PINK, PINK_SOFT, LINE, INK))
+    t.setStyle(TableStyle([("BACKGROUND", (0, 0), (-1, 0), pink), ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+                           ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"), ("FONTSIZE", (0, 0), (-1, -1), 8),
+                           ("TEXTCOLOR", (0, 1), (-1, -1), ink), ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, soft]),
+                           ("LINEBELOW", (0, 0), (-1, -1), 0.25, line), ("BOX", (0, 0), (-1, -1), 0.5, line),
+                           ("TOPPADDING", (0, 0), (-1, -1), 3), ("BOTTOMPADDING", (0, 0), (-1, -1), 3)]))
     body.append(t)
     doc.build(body)
     _job(ctx, "pdf", f)

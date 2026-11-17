@@ -110,12 +110,27 @@ def test_a_manager_cannot_approve_a_derogation_that_concerns_themselves(t):
 
 
 def test_non_derogable_rules_stay_blocked_even_for_the_owner(t):
+    """Le plafond mensuel n'est jamais dérogeable, même pour le propriétaire. (La double affectation le même jour, elle, peut être
+    confirmée provisoirement avec un rappel « À régulariser » : voir test_manual_shifts.)"""
+    o = t["o"]
     rows = sched(t)
     a = next(x for x in rows if not x["locked"])
-    other = next(x for x in rows if x["day"] == a["day"] and x["employee_id"] != a["employee_id"])
-    code = next(c for c, e in t["emps"].items() if e["id"] == other["employee_id"])
-    r = assign(t["o"], t, code, a, force=True)
-    assert r.status_code == 409 and r.json()["detail"]["code"] == "blocked"
+    used: dict = {}
+    for x in rows:
+        used[x["employee_id"]] = used.get(x["employee_id"], 0) + x["effective_minutes"]
+    busy = {x["employee_id"] for x in rows if x["day"] == a["day"]}
+    eid = next(i for i in sorted(used, key=used.get) if i not in busy)
+    code = next(c for c, e in t["emps"].items() if e["id"] == eid)
+    before = o.get("/settings/monthly-cap").json()["minutes"]
+    try:  # plafond juste au-dessus des heures actuelles : cette affectation créerait un dépassement
+        assert o.put("/settings/monthly-cap", json={"hours": (used[eid] + a["effective_minutes"] // 2) / 60}).status_code == 200
+        r = assign(o, t, code, a, force=True, reason="essai")
+        assert r.status_code == 409, r.text
+        d = r.json()["detail"]
+        assert d["code"] == "blocked" and d["can_override"] is False
+        assert any(i["code"] == "MONTHLY_CAP" and i["level"] == "blocking" for i in d["issues"])
+    finally:
+        o.put("/settings/monthly-cap", json={"hours": before / 60 if before is not None else None})
 
 
 # ---------- 2. temps réel ----------
@@ -178,7 +193,9 @@ def test_legacy_sunday_quota_report_never_changes_history_or_validated_plans(t):
     vid = o.post(f"/periods/{t['pid']}/versions").json()["id"]
     with tenant_session(t["tenant"]) as db:
         db.get(m.ScheduleVersion, uuid.UUID(vid)).published = True
-    snap_v = o.get(f"/periods/{t['pid']}/versions").json()
+    def stable(rows):  # la date de vérification aux règles actuelles change à chaque lecture, par définition ; tout le reste doit être identique
+        return [{**x, "conformity": {**x["conformity"], "current": {k: v for k, v in (x["conformity"]["current"] or {}).items() if k != "checked_at"}}} for x in rows]
+    snap_v = stable(o.get(f"/periods/{t['pid']}/versions").json())
     snap_a = sorted((x["slot_key"], x["employee"]) for x in sched(t))
     q = lambda pid: o.get(f"/periods/{pid}/sunday-summary").json()["employees"][e["code"]]  # noqa: E731
     before = (q(t["pid"])["quota"], q(t["pid"])["mode"], q(dec)["quota"], q(dec)["mode"])
@@ -188,7 +205,7 @@ def test_legacy_sunday_quota_report_never_changes_history_or_validated_plans(t):
     assert r.status_code == 200
     assert (q(t["pid"])["quota"], q(t["pid"])["mode"], q(dec)["quota"], q(dec)["mode"]) == before  # valeurs effectives inchangées
     assert sorted((x["slot_key"], x["employee"]) for x in sched(t)) == snap_a  # aucune affectation modifiée
-    assert o.get(f"/periods/{t['pid']}/versions").json() == snap_v  # version publiée intacte
+    assert stable(o.get(f"/periods/{t['pid']}/versions").json()) == snap_v  # version publiée intacte
     with tenant_session(t["tenant"]) as db:
         row = db.get(m.Employee, uuid.UUID(e["id"]))
         assert row.sunday_quota == 2 and row.sunday_quota_migrated_at is not None  # valeur historique CONSERVÉE
@@ -203,7 +220,7 @@ def test_legacy_sunday_quota_report_never_changes_history_or_validated_plans(t):
     # modifier un mois publié : la version publiée ne change pas, l'utilisateur est prévenu
     n = o.put(f"/employees/{e['id']}/month-params/2026-11", json={"sunday_quota": 1, "sunday_mode": "max"}).json()
     assert n["published"] is True and n["notice"]
-    assert o.get(f"/periods/{t['pid']}/versions").json() == snap_v and sorted((x["slot_key"], x["employee"]) for x in sched(t)) == snap_a
+    assert stable(o.get(f"/periods/{t["pid"]}/versions").json()) == snap_v and sorted((x["slot_key"], x["employee"]) for x in sched(t)) == snap_a
 
 
 

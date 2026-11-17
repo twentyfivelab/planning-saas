@@ -315,3 +315,110 @@ def test_collaborateur_ajoute_apres_un_planning_ne_le_modifie_pas(t):
     assert o.put(f"/periods/{pids[OCT]}/roster", json={"employees": [{"employee_id": r.json()["id"], "included": True}]}).status_code == 200
     run(o, pids[OCT])
     assert len({k.split("|")[1] for k, e in sched(o, pids[OCT]) if e == r.json()["id"]}) >= 5
+
+
+def test_chaque_version_fige_son_contexte_et_sa_conformite(t):
+    """Chaque version garde SES données de génération (immuables) ; la conformité aux règles actuelles est informative et datée."""
+    o, pids, ben = t["o"], t["pids"], t["emps"]["ben"]
+    run(o, pids[OCT])
+    v1 = o.get(f"/periods/{pids[OCT]}/versions").json()[-1]
+    assert v1["has_context"] and v1["engine_version"]
+    assert v1["conformity"]["creation"]["status"] == "conforme" and v1["conformity"]["current"]["status"] == "conforme"
+    assert v1["conformity"]["current"]["checked_at"]
+    # changement fait ensuite : Ben n'est plus autorisé sur Alpha
+    assert o.put(f"/employees/{ben['id']}", json={"code": "ben", "name": "Ben", "brands": {}}).status_code == 200
+    before_params = o.get(f"/periods/{pids[OCT]}/params").json()
+    row = next(x for x in o.get(f"/periods/{pids[OCT]}/versions").json() if x["id"] == v1["id"])
+    assert row["conformity"]["creation"]["status"] == "conforme"  # ses propres règles : toujours conforme
+    assert row["conformity"]["current"]["status"] == "non_conforme" and row["conformity"]["current"]["violations"] > 0
+    assert (row["state"], row["assignments"]) == (v1["state"], v1["assignments"])  # rien n'est modifié par la vérification
+    assert o.get(f"/periods/{pids[OCT]}/params").json()["frozen_at"] == before_params["frozen_at"]
+    det = o.get(f"/versions/{v1['id']}/conformity").json()
+    assert any(i["code"] == "BRAND_NOT_ELIGIBLE" and i["employee"] == "Ben" for i in det["current"]["items"])
+    assert det["params"]["mode"] in ("frozen", "current") and det["run"] and det["run"]["id"]
+    # une nouvelle version n'écrase jamais le contexte des précédentes
+    assert o.post(f"/periods/{pids[OCT]}/versions", json={"label": "Copie"}).status_code == 201
+    import app.models as m
+    from app.db import tenant_session
+    from sqlalchemy import select
+    with tenant_session(t["o"].get("/auth/me").json()["tenant_id"]) as db:
+        rows = list(db.scalars(select(m.ScheduleVersion).where(m.ScheduleVersion.period_id == __import__("uuid").UUID(pids[OCT])).order_by(m.ScheduleVersion.number)))
+        first = next(r for r in rows if str(r.id) == v1["id"])
+        assert first.context and first.context_hash and len({r.context_hash for r in rows}) >= 2  # contexte propre à chaque version
+        first_hash = first.context_hash
+    with pytest.raises(Exception):  # immuable, garanti par la base
+        with tenant_session(t["o"].get("/auth/me").json()["tenant_id"]) as db:
+            r = db.get(m.ScheduleVersion, __import__("uuid").UUID(v1["id"]))
+            r.context = {**r.context, "params": {"mode": "falsifié"}}
+            db.flush()
+    with tenant_session(t["o"].get("/auth/me").json()["tenant_id"]) as db:
+        assert db.get(m.ScheduleVersion, __import__("uuid").UUID(v1["id"])).context_hash == first_hash
+
+
+def test_version_sans_contexte_marquee_contexte_incomplet():
+    from types import SimpleNamespace
+    from app.versioning import version_conformity
+    v = SimpleNamespace(snapshot=[{"slot_key": "X|2026-10-01"}], context=None, engine_version=None)
+    out = version_conformity(v)
+    assert out["creation"]["status"] == "contexte_incomplet" and out["creation"]["violations"] is None and out["current"] is None
+
+
+def test_exports_dans_l_identite_rose_et_blanc(t):
+    import io
+    from openpyxl import load_workbook
+    o, pids = t["o"], t["pids"]
+    run(o, pids[OCT])
+    wb = load_workbook(io.BytesIO(o.get(f"/periods/{pids[OCT]}/export.xlsx").content))
+    ws = wb["Planning"]
+    head = ws["A1"]
+    assert head.fill.fgColor.rgb.endswith("CC0256") and head.font.bold and head.font.color.rgb.endswith("FFFFFF")
+    assert ws.freeze_panes == "A2" and ws["A2"].fill.fgColor.rgb.endswith("FDF6F9") and ws.auto_filter.ref  # lignes alternées blanc rosé
+    pdf = o.get(f"/periods/{pids[OCT]}/export.pdf").content
+    assert pdf.startswith(b"%PDF") and len(pdf) > 2000
+
+
+def test_absence_sur_un_planning_valide_propose_une_revision(t):
+    o, pids = t["o"], t["pids"]
+    run(o, pids[OCT])
+    v = o.post(f"/periods/{pids[OCT]}/versions", json={"label": "Officielle"}).json()
+    assert o.post(f"/versions/{v['id']}/validate").status_code == 200
+    a = o.get(f"/periods/{pids[OCT]}/schedule").json()["assignments"][0]
+    before = sched(o, pids[OCT])
+    r = o.put(f"/employees/{a['employee_id']}/unavailable-dates", json={"dates": [a["day"]]})
+    assert r.status_code == 200 and r.json()["revisions"] and r.json()["revisions"][0]["period_id"] == pids[OCT]
+    assert any(s["assignment_id"] == a["assignment_id"] for s in r.json()["revisions"][0]["shifts"])
+    notes = [n for n in o.get("/notifications").json()["items"] if n["kind"] == "revision_needed"]
+    assert len(notes) == 1 and "Révision proposée" in notes[0]["title"]
+    assert sched(o, pids[OCT]) == before  # rien n'est modifié automatiquement
+    comp = o.get(f"/periods/{pids[OCT]}/compatibility").json()
+    assert comp["official"] and any(i["code"] == "UNAVAILABLE" for i in comp["items"])
+    o.put(f"/employees/{a['employee_id']}/unavailable-dates", json={"dates": []})
+    o.put(f"/employees/{a['employee_id']}/unavailable-dates", json={"dates": [a["day"]]})  # même absence redéclarée : pas de doublon non lu
+    again = o.get("/notifications").json()["items"]
+    assert len([n for n in again if n["kind"] == "revision_needed"]) == 1
+
+
+def test_planning_mensuel_individuel_lecture_seule_et_compteurs_exacts(t):
+    o, pids, ana = t["o"], t["pids"], t["emps"]["ana"]
+    run(o, pids[OCT])
+    rows = [a for a in o.get(f"/periods/{pids[OCT]}/schedule").json()["assignments"] if a["employee_id"] == ana["id"]]
+    free = next(f"2026-10-{d:02d}" for d in range(1, 32) if f"2026-10-{d:02d}" not in {a["day"] for a in rows})
+    o.put(f"/employees/{ana['id']}/unavailable-dates", json={"dates": [free]})
+    periods_before = len(o.get("/periods").json())
+    r = o.get(f"/employees/{ana['id']}/month?month=2026-10").json()
+    assert r["label"] == "Octobre 2026" and r["has_plan"] and r["period"]["id"] == pids[OCT] and len(r["days"]) == 31
+    assert r["totals"]["effective_minutes"] == sum(a["effective_minutes"] for a in rows)
+    assert r["totals"]["days_worked"] == len({a["day"] for a in rows})
+    import datetime as dt
+    assert r["totals"]["sundays_worked"] == len({a["day"] for a in rows if dt.date.fromisoformat(a["day"]).weekday() == 6})
+    assert r["limits"]["monthly_cap_minutes"] == 10560
+    day = next(x for x in r["days"] if x["date"] == free)
+    assert day["off"]["kind"] == "indisponible" and not day["assignments"]
+    worked = next(x for x in r["days"] if x["assignments"])
+    s0 = worked["assignments"][0]
+    assert {"start", "end", "break_minutes", "site_name", "brands", "effective_minutes"} <= set(s0)
+    for mo in ("2026-12", "2027-01", "2027-03"):  # passage d'année et mois sans planning : rien n'est créé
+        x = o.get(f"/employees/{ana['id']}/month?month={mo}").json()
+        assert x["month"] == mo and (mo != "2027-03" or (x["period"] is None and not x["has_plan"]))
+    assert len(o.get("/periods").json()) == periods_before
+    o.put(f"/employees/{ana['id']}/unavailable-dates", json={"dates": []})

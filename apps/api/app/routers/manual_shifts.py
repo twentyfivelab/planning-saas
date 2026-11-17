@@ -17,6 +17,7 @@ from ..approval import OVERRIDE_ROLES, override_refusal
 from ..deps import Ctx, audit, get_or_404, require
 from ..history import assignment_detail
 from ..period_state import ensure_editable
+from .. import regularize
 from ..limits import guard_monthly_cap, month_minutes
 from ..optimize import ensure_frozen
 from ..services_bridge import assignments_for_validation, build_input
@@ -125,9 +126,11 @@ def _issues(ctx: Ctx, p: m.PlanningPeriod, e: m.Employee, sh: m.Shift, current: 
     other = ctx.db.execute(select(m.Shift).join(m.Assignment, m.Assignment.shift_id == m.Shift.id)
                            .where(m.Assignment.employee_id == e.id, m.Shift.day == sh.day, m.Shift.id != sh.id)).scalars().first()
     if other is not None:
-        out.append(_issue("SAME_DAY", "blocking", f"{e.name} est déjà affecté·e ce jour-là ({other.site_code} {other.start_time:%Hh%M}–{other.end_time:%Hh%M}) : "
-                          "un collaborateur ne fait qu'un shift par jour. Retirez d'abord l'autre shift.", rule="Un seul shift par jour",
-                          limit="1 shift", reached="2 shifts", consequence="Deux shifts le même jour : impossible."))
+        out.append(_issue("SAME_DAY", "override", f"{e.name} est déjà affecté·e ce jour-là ({other.site_code} {other.start_time:%Hh%M}–{other.end_time:%Hh%M}). "
+                          "En confirmant, la nouvelle affectation est enregistrée provisoirement et un rappel « À régulariser » vous demandera "
+                          "de traiter l'affectation initiale.", rule="Un seul shift par jour",
+                          limit="1 shift", reached="2 shifts",
+                          consequence="Double affectation provisoire : conflit à corriger avant toute validation ou publication."))
     pre = pre or Pre(ctx, p)
     inp, base = pre.inp, pre.base
     slot = pre.slots.get(sh.slot_key)
@@ -313,8 +316,18 @@ def manual_assign(pid: str, body: ManualIn, ctx: Ctx = Depends(require("planning
     ctx.db.flush()
     guard_monthly_cap(ctx.db, ctx.tenant_id, before_minutes, [e.id], [(sh.day.year, sh.day.month)])  # filet de sécurité : tout ou rien
     ensure_frozen(ctx.db, p)
+    regularize.resolve(ctx.db, p.id)  # un transfert peut régulariser une double affectation existante
+    reminders = regularize.register_doubles(ctx.db, ctx.tenant_id, p.id, e.id, a.id, ctx.user.id)
     audit(ctx, action, "assignment", a.id, assignment_detail(ctx.db, sh, from_emp, e, **extra))
-    return {"assignment_id": str(a.id), "kind": "transfer" if from_emp else "assign", "forced": bool(issues), "conflicts": _conflicts(ctx, p.id)}
+    return {"assignment_id": str(a.id), "kind": "transfer" if from_emp else "assign", "forced": bool(issues), "conflicts": _conflicts(ctx, p.id),
+            "regularizations": reminders}
+
+
+@router.get("/periods/{pid}/regularizations")
+def regularizations(pid: str, ctx: Ctx = Depends(require("planning.read"))):
+    """Rappels « À régulariser » encore valides (doubles affectations confirmées provisoirement)."""
+    p = get_or_404(ctx, m.PlanningPeriod, pid)
+    return regularize.open_items(ctx.db, p.id)
 
 
 KINDS = {"assignment.manual_assign": "Attribution", "assignment.manual_transfer": "Transfert", "assignment.manual_remove": "Retrait",

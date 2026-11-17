@@ -119,7 +119,9 @@ def declare_absence(pid: str, body: AbsenceIn, ctx: Ctx = Depends(require("avail
         d += timedelta(days=1)
     ctx.db.flush()
     audit(ctx, "availability.absence", "employee", e.id, {"start": body.start.isoformat(), "end": body.end.isoformat(), "reason": body.reason, "added": added})
-    return impact(pid, e.id, body.start, body.end, ctx)
+    from ..revision import propose_revision
+    revisions = propose_revision(ctx.db, ctx.tenant_id, e, [date.fromisoformat(x) for x in added], ctx.user.id)
+    return {**impact(pid, e.id, body.start, body.end, ctx), "revisions": revisions}
 
 
 @router.get("/periods/{pid}/absence-impact")
@@ -337,6 +339,8 @@ def apply_simulation(rid: str, body: Optional[ApplyIn] = None, ctx: Ctx = Depend
         raise HTTPException(409, detail={"code": "hard_violations", "message": f"{len(bad)} contrainte(s) stricte(s) ne seraient pas respectées : application refusée.", "violations": bad[:20]})
     safety = make_version(ctx.db, ctx.tenant_id, p.id, f"Avant application : {(run.config or {}).get('label', 'simulation')}", "safety", ctx.user.id)
     persist_result(ctx.db, ctx.tenant_id, p, inp, SimpleNamespace(assignments=plan), run.id)
+    from .. import regularize
+    regularize.resolve(ctx.db, p.id)
     run.applied_at = datetime.now(timezone.utc)
     ctx.db.flush()
     saved = verify_saved_plan(ctx.db, p, flags, before)  # vérification du planning réellement enregistré : tout est annulé en cas de violation nouvelle

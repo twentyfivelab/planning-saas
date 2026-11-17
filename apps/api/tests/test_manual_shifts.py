@@ -95,10 +95,15 @@ def test_free_shift_can_be_assigned_after_removal_and_second_shift_same_day_is_b
     assert free["status"] == "available" and free["assigned_to"] is None
     near = {x["employee_id"] for x in sched(t) if abs(int(x["day"][8:]) - int(a["day"][8:])) <= 1}  # ni repos ni série en jeu
     code = next(c for c, e in t["emps"].items() if e["id"] not in near and all(b in e["brands"] for b in a["allocations"]) and c != "sabrina" and not e.get("time_pref"))
-    other = next(x for x in sched(t) if x["day"] == a["day"])
+    used: dict = {}
+    for x in sched(t):
+        used[x["employee_id"]] = used.get(x["employee_id"], 0) + x["effective_minutes"]
+    other = next(x for x in sched(t) if x["day"] == a["day"] and used[x["employee_id"]] + a["effective_minutes"] <= 10560)  # sous le plafond
     twice = assign(t, next(c for c, e in t["emps"].items() if e["id"] == other["employee_id"]), a["shift_id"])
-    assert twice.status_code == 409 and twice.json()["detail"]["code"] == "blocked"  # un seul shift par jour : jamais dérogeable
-    assert twice.json()["detail"]["issues"][0]["code"] == "SAME_DAY"
+    # deuxième shift le même jour : confirmation explicite exigée (enregistrement provisoire + rappel « À régulariser »), rien sans elle
+    assert twice.status_code == 409 and twice.json()["detail"]["code"] == "needs_confirmation"
+    same = next(i for i in twice.json()["detail"]["issues"] if i["code"] == "SAME_DAY")
+    assert same["level"] == "override" and "À régulariser" in same["message"]
     n = len(sched(t))
     r = assign(t, code, a["shift_id"])
     assert r.status_code == 200 and r.json()["kind"] == "assign"
@@ -180,3 +185,34 @@ def test_read_only_role_cannot_modify_and_history_filters_by_employee(t):
     name = t["emps"][code]["name"]
     hist = t["o"].get(f"/periods/{t['pid']}/history?employee_id={eid}").json()
     assert all(name in (h["from"], h["to"]) for h in hist)
+
+
+
+def test_double_affectation_confirmee_rappel_a_regulariser_cycle_complet(t):
+    """Remplacement confirmé malgré une affectation le même jour : enregistré provisoirement, rappel persistant rattaché aux deux
+    affectations, conflit bloquant la validation, puis disparition automatique dès que l'affectation initiale est retirée."""
+    o, pid = t["o"], t["pid"]
+    rows = sched(t)
+    a = next(x for x in rows if not x["locked"] and x["day"] > "2026-11-09")
+    used: dict = {}
+    for x in rows:
+        used[x["employee_id"]] = used.get(x["employee_id"], 0) + x["effective_minutes"]
+    holder = next(x for x in rows if x["day"] == a["day"] and x["employee_id"] != a["employee_id"] and not x["locked"]
+                  and used[x["employee_id"]] + a["effective_minutes"] <= 10560
+                  and all(b in next(e for e in t["emps"].values() if e["id"] == x["employee_id"])["brands"] for b in a["allocations"]))
+    code = next(c for c, e in t["emps"].items() if e["id"] == holder["employee_id"])
+    r = assign(t, code, a["shift_id"], force=True)
+    assert r.status_code == 200, r.text
+    assert r.json()["regularizations"] == 1
+    items = o.get(f"/periods/{pid}/regularizations").json()
+    it = next(x for x in items if x["employee_id"] == holder["employee_id"])
+    assert it["new"]["shift_id"] == a["shift_id"] and it["initial"]["assignment_id"] == holder["assignment_id"] and it["day"] == a["day"]
+    assert assign(t, code, a["shift_id"], force=True).status_code == 409  # même shift déjà à lui : aucun rappel en double
+    assert len([x for x in o.get(f"/periods/{pid}/regularizations").json() if x["employee_id"] == holder["employee_id"]]) == 1
+    assert any("OVERLAP" in c or "REST" in c for c in o.get(f"/periods/{pid}/conflicts").json()["hard_violations"])  # conflit à corriger
+    v = o.post(f"/periods/{pid}/versions").json()
+    assert o.post(f"/versions/{v['id']}/validate").status_code == 409  # validation refusée tant que la double affectation existe
+    # traitement : retrait de l'affectation initiale -> le rappel disparaît, le poste libéré reste dans les besoins non couverts
+    assert o.delete(f"/assignments/{holder['assignment_id']}").status_code == 204
+    assert not [x for x in o.get(f"/periods/{pid}/regularizations").json() if x["employee_id"] == holder["employee_id"]]
+    assert any(u["shift_id"] == holder["shift_id"] for u in o.get(f"/periods/{pid}/schedule").json()["uncovered"])

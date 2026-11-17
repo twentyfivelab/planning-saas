@@ -12,6 +12,7 @@ import { SundayStrip } from "@/components/planning/SundayCounter";
 import { CompatBanner } from "@/components/planning/CompatBanner";
 import { AddShiftModal } from "@/components/planning/AddShiftModal";
 import { DayShiftsModal, RemoveDialog } from "@/components/planning/DayShiftsModal";
+import { EmployeeMonthModal } from "@/components/planning/EmployeeMonth";
 import { HistoryPanel } from "@/components/planning/HistoryPanel";
 import { ReplacementsModal, type ReplaceTarget } from "@/components/planning/ReplacementsModal";
 import { ExplainModal } from "@/components/planning/ExplainModal";
@@ -31,6 +32,8 @@ import {
 } from "@/lib/schedule";
 
 type Schedule = { assignments: Assignment[]; uncovered: { shift_id: string; slot_key: string; day: string; site: string; start: string; end: string }[] };
+type RegShift = { assignment_id: string; shift_id: string; site: string; site_name: string; brands: string[]; start: string; end: string; locked: boolean };
+type Reg = { id: string; employee_id: string; employee: string; day: string; new: RegShift; initial: RegShift; created_at: string };
 type Emp = { id: string; code: string; name: string; brands?: Record<string, string>; sunday_quota?: number | null; sunday_mode?: "max" | "exact"; deleted_at?: string | null };
 const VIEWS = [["month", "Mois"], ["general", "Planning général"], ["day", "Jour"], ["employee", "Collaborateur"], ["brand", "Marque / site"]] as const;
 type View = (typeof VIEWS)[number][0];
@@ -73,7 +76,10 @@ export default function PlanningPage() {
   const brands = useMemo(() => [...new Set(all.flatMap((a) => Object.keys(a.allocations)))].sort(), [all]);
     const filtersActive = !!(text || site || brand || empF);
   const inPeriod = (d: string) => days.includes(d);
-  const refresh = () => { sched.reload(); confl.reload(); sunday.reload(); invalidate(); };
+  const regsApi = useApi<Reg[]>(period ? `/periods/${period.id}/regularizations` : null);
+  const regs = regsApi.data ?? [];
+  const [empMonth, setEmpMonth] = useState<{ id: string; name: string } | null>(null);
+  const refresh = () => { sched.reload(); confl.reload(); sunday.reload(); regsApi.reload(); invalidate(); };
   const [adding, setAdding] = useState<{ emp: Emp; day: string } | null>(null);
   const [picking, setPicking] = useState<{ emp: Emp; day: string } | null>(null);
   const [removing, setRemoving] = useState<Assignment | null>(null);
@@ -192,20 +198,49 @@ export default function PlanningPage() {
       {!pLoading && !period && cal.data && (
         <MonthNeeds cal={cal.data} actions={canEdit ? <a className="btn btn-primary" href="/generate"><Icon name="sparkles" size={16} />Générer automatiquement le planning</a> : undefined} />
       )}
+      <div className="plan-layout" data-aside={regs.length > 0}>
+      {regs.length > 0 && (
+        <aside className="plan-aside glass card" aria-label="À régulariser" data-testid="regularizations">
+          <div className="spread"><h2 className="h2" style={{ margin: 0 }}>À régulariser</h2><Badge tone="warn" icon="alert">{regs.length}</Badge></div>
+          <p className="help" style={{ margin: 0 }}>Doubles affectations confirmées provisoirement : conflits à corriger avant validation ou publication.</p>
+          {regs.map((r) => {
+            const initial = all.find((a) => a.assignment_id === r.initial.assignment_id);
+            const label = new Date(`${r.day}T12:00:00`).toLocaleDateString("fr-CH", { day: "numeric", month: "long", year: "numeric" });
+            const fmt = (x: RegShift) => `${x.brands.join(" / ") || x.site_name}${x.brands.length ? ` (${x.site_name})` : ""}, ${x.start.replace(":", " h ").replace(" h 00", " h")}–${x.end.replace(":", " h ").replace(" h 00", " h")}`;
+            return (
+              <article key={r.id} className="reg-note" data-testid="regularization">
+                <p><strong>{r.employee} — {label}</strong></p>
+                <p>Nouvelle affectation : {fmt(r.new)}.</p>
+                <p>Affectation initiale à traiter : {fmt(r.initial)}.</p>
+                <p className="help">Retirez {r.employee} de l&apos;affectation initiale et réattribuez ce poste à un autre collaborateur.</p>
+                <div className="row">
+                  <Button size="sm" onClick={() => initial && setSel(initial)} disabled={!initial}>Voir le shift initial</Button>
+                  {canEdit && <Button size="sm" onClick={() => initial && setSel(initial)} disabled={!initial}>Réattribuer</Button>}
+                  {canEdit && <Button size="sm" variant="danger" onClick={() => initial && setRemoving(initial)} disabled={!initial}>Retirer l&apos;affectation</Button>}
+                </div>
+              </article>
+            );
+          })}
+        </aside>
+      )}
+      <div style={{ minWidth: 0 }}>
       {!pLoading && !period ? null : err ? <ErrorState message={err} onRetry={() => { sched.reload(); emps.reload(); }} /> : loading ? <SkeletonCard lines={6} /> : !all.length ? (
         <Card><EmptyState icon="calendar" title="Aucun planning pour cette période" action={<a className="btn btn-primary" href="/generate"><Icon name="sparkles" size={16} />Générer le planning</a>}>Lancez une génération (simulation exploratoire tant que les données sont incomplètes) ou saisissez des affectations.</EmptyState></Card>
       ) : (
         <Card>
           {view === "month" && <MonthView days={days} list={list} alertMap={alertMap} onPickDay={(d) => { setFocus(d); setView("day"); }} />}
-          {view === "general" && <GeneralGrid periodId={period!.id} days={days} inPeriod={inPeriod} list={list} emps={histEmps.filter((e) => !empF || e.id === empF)} cardProps={cardProps} cellDnD={cellDnD} dragging={!!drag} canEdit={canEdit} onAdd={(emp, day) => setPicking({ emp, day })} />}
+          {view === "general" && <GeneralGrid onOpenEmployee={(e) => setEmpMonth({ id: e.id, name: e.name.replace(" (supprimé·e)", "") })} periodId={period!.id} days={days} inPeriod={inPeriod} list={list} emps={histEmps.filter((e) => !empF || e.id === empF)} cardProps={cardProps} cellDnD={cellDnD} dragging={!!drag} canEdit={canEdit} onAdd={(emp, day) => setPicking({ emp, day })} />}
           {view === "day" && <DayView day={focus} list={list.filter((a) => a.day === focus)} uncovered={(sched.data?.uncovered ?? []).filter((u) => u.day === focus).length} cardProps={cardProps} emps={histEmps} canEdit={canEdit} onChange={reassign.request} />}
           {view === "employee" && <EmployeeView days={days} list={list} emps={histEmps} cardProps={cardProps} canEdit={canEdit} onAdd={(emp, day) => setPicking({ emp, day })} />}
           {view === "brand" && <BrandView days={days} list={list} budgets={(budgets.data ?? []).filter((x) => (x as { month?: string }).month === period?.start_date)} />}
         </Card>
       )}
+      </div>
+      </div>
 
       {reassign.dialog}
       <DayShiftsModal target={picking} periodId={period?.id ?? ""} onClose={() => setPicking(null)} onChanged={() => { setPicking(null); refresh(); }} onCreateNew={() => { setAdding(picking); setPicking(null); }} />
+      {empMonth && <EmployeeMonthModal employee={empMonth} initialMonth={month} emps={emps.data ?? []} onClose={() => { setEmpMonth(null); refresh(); }} />}
       <RemoveDialog a={removing} onClose={() => setRemoving(null)} onDone={() => { setRemoving(null); refresh(); }} />
       <HistoryPanel open={historyOpen} periodId={period?.id ?? ""} employeeId={empF || undefined} onClose={() => setHistoryOpen(false)} />
       <AddShiftModal target={adding} periodId={period?.id ?? ""} onClose={() => setAdding(null)} onAdded={() => { setAdding(null); refresh(); }} />
@@ -275,7 +310,7 @@ const COL_REM = 8.75;
  * (trackpad, souris, tactile, clavier) + flèches. Les lignes sont rendues par le navigateur à la demande (content-visibility) pour
  * rester fluides avec des centaines de collaborateurs ; la position est conservée entre les vues et réinitialisée au changement de mois.
  */
-function GeneralGrid({ periodId, days, inPeriod, list, emps, cardProps, cellDnD, dragging, canEdit, onAdd }: { periodId: string; days: string[]; inPeriod: (d: string) => boolean; list: Assignment[]; emps: Emp[]; cardProps: CardProps; cellDnD: (e: string, d: string) => any; dragging: boolean; canEdit: boolean; onAdd: (e: Emp, d: string) => void }) {
+function GeneralGrid({ onOpenEmployee, periodId, days, inPeriod, list, emps, cardProps, cellDnD, dragging, canEdit, onAdd }: { onOpenEmployee: (e: Emp) => void; periodId: string; days: string[]; inPeriod: (d: string) => boolean; list: Assignment[]; emps: Emp[]; cardProps: CardProps; cellDnD: (e: string, d: string) => any; dragging: boolean; canEdit: boolean; onAdd: (e: Emp, d: string) => void }) {
   const scroller = useRef<HTMLDivElement>(null);
   const [nav, setNav] = useState({ first: 0, last: 0, left: false, right: true });
   const today = new Date().toISOString().slice(0, 10);
@@ -324,7 +359,7 @@ function GeneralGrid({ periodId, days, inPeriod, list, emps, cardProps, cellDnD,
             let mins = 0; mine?.forEach((l) => l.forEach((a) => { mins += a.effective_minutes; }));
             return (
               <div key={e.id} className="hgrid-row" role="row">
-                <div className="cal-name" role="rowheader">{e.name}</div>
+                <div className="cal-name" role="rowheader"><button type="button" className="name-link" onClick={() => onOpenEmployee(e)} title={`Ouvrir le planning mensuel de ${e.name}`}>{e.name}</button></div>
                 {days.map((d) => (
                   <div key={d} className="cal-cell" role="cell" data-off={!inPeriod(d) || undefined} data-weekend={weekdayIdx(d) >= 5 || undefined} {...cellDnD(e.id, d)} aria-label={`${e.name}, ${dayLabel(d)}`}>
                     {(mine?.get(d) ?? []).map((a) => <ShiftCard key={a.assignment_id} {...cardProps(a)} />)}

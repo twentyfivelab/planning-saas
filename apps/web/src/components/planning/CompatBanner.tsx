@@ -61,9 +61,10 @@ export function CompatBanner({ periodId, periodName }: { periodId: string; perio
   return (
     <>
       {c && c.has_plan && !c.compatible && (
-        <Callout kind="warn" title={`${periodName ? `${periodName} · ` : ""}${c.items.length} incompatibilité${c.items.length > 1 ? "s" : ""} avec les paramètres de ce planning`}>
+        <Callout kind="warn" title={`${c.official && hard.length ? "Révision proposée · " : ""}${periodName ? `${periodName} · ` : ""}${c.items.length} incompatibilité${c.items.length > 1 ? "s" : ""} avec les paramètres de ce planning`}>
           <div className="stack" style={{ gap: "var(--sp-2)" }} data-testid="compat-banner">
             <p className="row" style={{ margin: 0 }}>{hard.length > 0 && <Badge tone="bad" icon="alert">{hard.length} contrainte(s) obligatoire(s) non respectée(s)</Badge>} {soft.length > 0 && <Badge tone="warn">{soft.length} préférence(s) non respectée(s)</Badge>} <span className="muted">Rien n&apos;a été modifié automatiquement.</span></p>
+            {c.official && hard.length > 0 && <p style={{ margin: 0 }} data-testid="revision-proposed">Ce planning a une version validée ou publiée : elle reste inchangée. Remplacez les shifts concernés (bouton « Remplaçants » sur chaque shift, ou « Déclarer une absence »), puis créez, validez et publiez une nouvelle version.</p>}
             <ul style={{ margin: 0, paddingLeft: "1.1rem" }}>{c.items.slice(0, 3).map((t, i) => <li key={i}><strong>{t.employee}</strong> · {t.rule} — {t.reason}</li>)}</ul>
             <div className="row"><Button icon="search" onClick={() => setDetail("plan")}>Voir le détail</Button><Button variant="primary" icon="sparkles" onClick={() => setAsk(true)}>Réoptimiser…</Button></div>
           </div>

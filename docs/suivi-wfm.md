@@ -11,13 +11,15 @@ Une fonctionnalité n'est classée « terminée et vérifiée » que si une vér
 
 | Suite | Résultat | Environnement |
 |---|---|---|
-| Moteur (`packages/solver`) | **124 / 124** | local |
-| API (`apps/api`) | **134 / 134** | base PostgreSQL jetable par session (`planning_test_<pid>`) |
+| Moteur (`packages/solver`) | **125 / 125** | local (deux tests chronométrés échouent si la suite e2e tourne en même temps ; seuls : 2 / 2) |
+| API (`apps/api`) | **140 / 140** | base PostgreSQL jetable par session (`planning_test_<pid>`) |
 | Interface, unitaires, dont contrastes WCAG AA | **119 / 119** | Vitest |
-| Navigateur e2e | **60 / 60** | pile Docker isolée (`infra/compose.e2e.yaml`, base `planning_e2e`) |
+| Navigateur e2e | **63 / 63** | pile Docker isolée (`infra/compose.e2e.yaml`, base `planning_e2e`) |
 | ruff, TypeScript, ESLint | sans erreur | |
 
-Intermittences connues : deux tests e2e dépendent du moment de mesure (« mouvement réduit », alignement après animation). Le second est corrigé ; le premier passe 3 fois sur 3 lorsqu'il est lancé seul.
+Intermittences corrigées à la source :
+- **« mouvement réduit »** : la lecture se faisait en deux allers-retours, et le tableau de bord, rechargé par un événement temps réel, pouvait remplacer la carte entre les deux. Un élément détaché donne une durée vide, d'où NaN. Le test lit désormais toutes les cartes en une seule exécution dans la page : 20 passages sur 20, plus les suites complètes.
+- **Alignement** : la mesure se fait désormais après l'animation d'ouverture.
 
 ## Vérifications ciblées
 
@@ -27,6 +29,8 @@ Intermittences connues : deux tests e2e dépendent du moment de mesure (« mouve
 | **Minimum et maximum de jours par mois** (indépendants, « Pas de préférence », une journée comptée une fois) | Moteur : maximum strict avec deux shifts le même jour ; minimum obligatoire ; minimum impossible bloqué avec la raison (jours possibles, plafond, jours consécutifs, minimums incompatibles entre eux). API : incohérences refusées (minimum supérieur au maximum, minimum incompatible avec le plafond) ; exception du mois sans effet sur les autres mois ; blocage signalé avant génération. Unitaires et e2e : formulaires. |
 | **Indépendance des plannings et paramètres conservés** | API : une fiche modifiée ne crée aucune incompatibilité dans un planning existant. Générer un autre mois ne touche pas le premier. « Appliquer les paramètres actuels » est explicite et ne déplace aucune affectation. Pondérations de la génération conservées. Collaborateur ajouté ou supprimé après coup : aucun effet rétroactif. E2E : fiche modifiée, novembre inchangé, détail « si appliqués ». Démo : novembre identique à la sauvegarde du 17/11 à 8 h 22. |
 | **Vérificateur indépendant** (Python, sans CP-SAT) | Exécuté après le calcul, sur les données relues et sur le planning enregistré. Plan rejeté si une contrainte est violée (test de solveur volontairement faussé). Donnée modifiée pendant le calcul : plan rejeté. Également après un ajout, un transfert, une restauration ou une simulation appliquée. |
+| **Planning mensuel individuel** | API : lecture seule (aucune période créée, aucune donnée modifiée), compteurs exacts (travail effectif, jours, dimanches, présence, pauses), congés et indisponibilités distingués. E2E : ouverture depuis la liste (mois en cours) et depuis le planning général (mois consulté), décembre → janvier, mois sans planning (« Aucun planning pour … »), « Aujourd'hui », compteurs comparés au planning, filtres conservés au retour, réaffectation par la même confirmation que le planning général. |
+| **Rappel « À régulariser »** (double affectation confirmée) | API : enregistrement provisoire, rappel unique (pas de doublon), chevauchement toujours en conflit, validation refusée tant qu'il subsiste, rappel supprimé automatiquement après retrait ou réattribution de l'affectation initiale, besoin initial dans la couverture non assurée. E2E : rappel affiché, conservé après actualisation, « Voir le shift initial », « Retirer l'affectation » avec confirmation, disparition. |
 | **Explication des incompatibilités** | Moteur : chaque incompatibilité indique le collaborateur, la date, les horaires, le site, la marque, la règle, la limite et la valeur atteinte, la raison, et sa nature (obligatoire ou préférence). E2E : bandeau « N incompatibilités », puis « Voir le détail » liste chaque problème. |
 
 ---
@@ -71,6 +75,10 @@ Intermittences connues : deux tests e2e dépendent du moment de mesure (« mouve
 
 **Indépendance**
 - Paramètres conservés par planning : fiches, effectif, règles, pondérations, plafond, calcul d'origine.
+- Vérificateur indépendant du générateur. Pause exigée, horaires par boutique et catégorie horaire sont réécrits dans le vérificateur, avec un test d'équivalence sur 2 000 cas. Seul le calcul horaire de base (`timecalc`), qui est la référence commune, reste partagé.
+- Absence sur un planning validé ou publié : notification « Révision proposée » aux gestionnaires (shifts concernés, sans doublon), bandeau dédié, aucune modification automatique (test API).
+- Exports PDF et Excel dans l'identité rose et blanc : en-têtes roses, lignes alternées, volets figés, filtres (test API).
+- Contexte de génération figé et immuable dans chaque version ; conformité aux règles de création et aux règles actuelles (datée, informative).
 - Action explicite avec aperçu ; choix obligatoire des paramètres lors d'une régénération quand ils ont changé.
 - Mois voisin lu sans être modifié.
 - Statuts et versions restaurables, comparaison des versions, journal d'audit.
@@ -98,41 +106,64 @@ Intermittences connues : deux tests e2e dépendent du moment de mesure (« mouve
 - Recherche, filtres, annuler et rétablir, compteurs.
 - Exports PDF, Excel, CSV et ICS.
 
+**Planning individuel et régularisations**
+- Planning mensuel de chaque collaborateur, ouvert depuis son nom (liste des collaborateurs ou planning général) : calendrier, horaires, pauses, sites, marques, congés et indisponibilités, totaux du mois et plafond applicable ; navigation entre les mois et les années ; rien n'est créé en consultant.
+- Rappels « À régulariser » persistants (table `regularizations`, migration 0012) après une double affectation confirmée ; rien n'est retiré ni réattribué automatiquement.
+
 **SaaS**
 - Rôles, cloisonnement RLS testé, périmètre d'un responsable de marque.
 - Journal d'audit, export et effacement RGPD.
 
-## B. Partiellement réalisé
+## Contexte conservé : planning et versions
 
-| Élément | Ce qui manque |
-|---|---|
-| Solutions multiples | Simulations comparées ; diversité des solutions non mesurée. |
-| Performances | Mesurées jusqu'à 150 collaborateurs. À 150, le niveau « engagements » manque de temps : ses critères sont reportés au niveau suivant, jamais perdus. |
-| Relations entre collaborateurs | Portée « même jour, même site » seulement ; « horaires qui se chevauchent » et « même jour, tous sites » manquent. |
-| Contexte de génération | Conservé dans le planning et dans le rapport du calcul ; pas encore recopié dans chaque version, ni la version du moteur. |
-| Absence sur un planning publié | Impact et remplaçants disponibles ; pas de proposition de révision automatique ni de notification dédiée. |
-| Vérificateur | Indépendant du solveur, mais partage deux petites fonctions avec le générateur (pause exigée, catégorie horaire). |
-| Notifications | Dans l'application seulement, sans e-mail ni push. |
-| Comptes | Créés par l'administrateur, sans invitation par e-mail. |
-| Espace collaborateur | Consultation du planning publié seulement. |
-| API | OpenAPI générée ; documentation métier à écrire. |
-| Environnements | Développement et tests séparés ; aucune production. |
-| Exports PDF et Excel | Fonctionnels, sans la nouvelle identité visuelle (en-têtes gris). |
-| Temps rémunéré | Pauses payées non distinguées dans les compteurs. |
+| Donnée de génération | Au niveau du planning (`planning_periods.frozen_params`) | Dans **chaque version** (`schedule_versions.context`, depuis la migration 0011) |
+|---|---|---|
+| Collaborateurs et paramètres de fiche | ✅ (remplaçables par « Appliquer les paramètres actuels ») | ✅ figés |
+| Effectif du mois (exclusions, contrats terminés, suppressions) | ✅ | ✅ figé |
+| Disponibilités récurrentes | ✅ | ✅ figées |
+| Absences datées et congés | lus en direct (données du mois) | ✅ figés à la date de la version |
+| Besoins, horaires, shifts | lus en direct | ✅ figés |
+| Budgets | lus en direct (par mois) | ✅ figés |
+| Règles (repos, jours consécutifs, pauses, plafond) | ✅ | ✅ figées |
+| Pondérations | ✅ (celles de la génération) | ✅ figées |
+| Verrous | — | ✅ (ceux de la version) |
+| Version du moteur | — | ✅ (`engine_version`) |
+| Réglages du calcul (choix des paramètres, durée, pondérations exceptionnelles) | rapport du calcul | ✅ (calcul d'origine) |
 
-## C. Restant
+- **Immuabilité** : un contexte n'est écrit qu'à la création de la version. Un déclencheur PostgreSQL interdit toute modification ultérieure du contexte et des affectations d'une version. Seule exception : l'effacement RGPD, marqué explicitement dans sa transaction.
+- **Versions plus anciennes** : sans contexte figé, elles sont affichées « Contexte incomplet ». Aucune conformité n'est supposée.
+- **Conformité**, colonne de la page Versions et détail consultable :
+  - aux règles de création, évaluée sur le contexte figé de la version ;
+  - aux règles actuelles, avec la date et l'heure de vérification.
 
-1. Badge de conformité aux règles actuelles dans la liste des versions ; contexte de génération dans chaque version.
-2. Échange réciproque et duplication de shifts, modifications groupées, tous vérifiés par le même contrôle.
-3. Absences partielles, temps de déplacement entre sites, couverture pendant les pauses, horaires obligatoires par collaborateur.
-4. Vue semaine, vue client.
-5. Suivi de l'équité sur plusieurs mois.
-6. Moteur : recherche à large voisinage (LNS), temps par niveau selon la taille, mesures au-delà de 150 collaborateurs et sur plusieurs mois, diversité des solutions.
-7. Espace collaborateur : disponibilités, congés, propositions d'échange, réponses aux remplacements, avec circuit d'approbation.
-8. Droits par agence ou équipe, invitations, prise en main guidée.
-9. Import de plannings ; synchronisation calendrier bidirectionnelle ; paie et RH ; prévisions de charge.
-10. Exploitation : reprise d'un calcul interrompu par l'arrêt du worker, surveillance, gestion des secrets, sauvegardes planifiées, infrastructure de production hors du Mac.
-11. Restauration de sauvegarde en intégration continue, tests aléatoires (fuzzing), objectifs de performance chiffrés.
+  Les deux sont informatives : ni les affectations, ni le statut, ni les paramètres enregistrés ne sont modifiés. C'est vérifié par un test API.
+
+## B. Partiellement réalisé (9 points, par priorité)
+
+| Priorité | Élément | Ce qui manque |
+|---|---|---|
+| 1 | Relations entre collaborateurs | Portées « horaires qui se chevauchent » et « même jour, tous sites ». |
+| 2 | Performances | Au-delà de 150 collaborateurs : à 150, le niveau « engagements » manque de temps (ses critères sont reportés, jamais perdus). |
+| 3 | Solutions multiples | Diversité mesurée et affichée entre simulations. |
+| 4 | Temps rémunéré | Pauses payées distinguées dans les compteurs. |
+| 5 | Espace collaborateur | Consultation du planning publié seulement. |
+| 6 | API | Documentation métier (OpenAPI générée). |
+| 7 | Notifications | Dans l'application seulement ; l'e-mail dépend de la décision D2. |
+| 8 | Comptes | Créés par l'administrateur ; les invitations dépendent de D2. |
+| 9 | Environnements | Développement et tests séparés ; production à décider (D1). |
+
+## C. Restant (10 chantiers, par priorité)
+
+1. Échange réciproque et duplication de shifts, modifications groupées, tous vérifiés par le même contrôle.
+2. Absences partielles, horaires obligatoires par collaborateur, couverture pendant les pauses, temps de déplacement entre sites.
+3. Espace collaborateur : disponibilités, congés, propositions d'échange, réponses aux remplacements, avec circuit d'approbation.
+4. Suivi de l'équité sur plusieurs mois.
+5. Vue semaine et vue client.
+6. Moteur : recherche à large voisinage (LNS), temps par niveau selon la taille, mesures au-delà de 150 collaborateurs et sur plusieurs mois.
+7. Exploitation : reprise d'un calcul interrompu, surveillance, sauvegardes planifiées, secrets, production hors du Mac (dépend de D1).
+8. Qualité : restauration de sauvegarde en intégration continue, tests aléatoires, objectifs de performance chiffrés.
+9. Droits par agence ou équipe, prise en main guidée.
+10. Import de plannings, synchronisation calendrier bidirectionnelle, paie et RH, prévisions de charge.
 
 ## D. Décisions qui vous reviennent
 
@@ -146,9 +177,7 @@ Intermittences connues : deux tests e2e dépendent du moment de mesure (« mouve
 
 ## Prochaines étapes (ordre de priorité)
 
-1. Versions : contexte de génération et badge de conformité aux règles actuelles.
-2. Échange réciproque et duplication de shifts.
-3. Absences partielles et portée des relations.
-4. Moteur : LNS, temps par niveau selon la taille, mesures plus larges.
-5. Espace collaborateur et circuit d'approbation.
-6. Production, une fois les décisions 1 et 2 prises.
+1. Échange réciproque et duplication de shifts.
+2. Portée des relations et absences partielles.
+3. Moteur : LNS et mesures plus larges.
+4. Espace collaborateur et circuit d'approbation.

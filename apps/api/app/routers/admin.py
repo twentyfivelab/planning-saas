@@ -132,7 +132,10 @@ def data_subject_erase(employee_id: str, ctx: Ctx = Depends(require("tenant.mana
         ctx.db.delete(r)
     for t in ctx.db.scalars(select(m.TimeEntry).where(m.TimeEntry.employee_id == e.id)):  # les heures restent pour les agrégats, pas les remarques libres
         t.note, t.absence_reason = None, None
+    ctx.db.execute(text("SELECT set_config('app.gdpr_erasure', 'on', true)"))  # seule dérogation à l'immuabilité des versions
     for v in ctx.db.scalars(select(m.ScheduleVersion)):  # le nom ne reste pas dans les copies de planning
+        if v.context and any(x.get("id") == e.code for x in v.context.get("employees", [])):
+            v.context = {**v.context, "employees": [{**x, "name": e.name} if x.get("id") == e.code else x for x in v.context["employees"]]}
         if any(x.get("employee_id") == str(e.id) or x.get("employee") == before for x in v.snapshot or []):
             v.snapshot = [{**x, "employee": e.name} if x.get("employee_id") == str(e.id) or x.get("employee") == before else x for x in v.snapshot]
     audit(ctx, "gdpr.erasure", "employee", e.id)

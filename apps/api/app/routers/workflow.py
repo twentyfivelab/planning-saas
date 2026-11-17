@@ -14,7 +14,8 @@ from ..deps import Ctx, audit, get_or_404, require
 from ..limits import guard_monthly_cap, month_minutes
 from ..optimize import ensure_frozen
 from ..period_state import ensure_editable
-from ..versioning import AUTOMATIC_KINDS, apply_retention, current_map, make_version, retention_candidates, snapshot_map
+from ..services_bridge import build_input
+from ..versioning import AUTOMATIC_KINDS, apply_retention, current_map, make_version, retention_candidates, snapshot_map, version_conformity
 from .planning import _conflicts
 
 router = APIRouter(tags=["versions et publication"])
@@ -48,10 +49,26 @@ def versions(pid: str, ctx: Ctx = Depends(require("planning.read"))):
     p = get_or_404(ctx, m.PlanningPeriod, pid)
     names = {u.id: u.name for u in ctx.db.scalars(select(m.User))}
     current = current_map(ctx.db, p.id)
+    now_inp = build_input(ctx.db, p, {"params": "current", "cap": "current"})  # règles actuelles (lecture seule)
     rows = []
     for v in ctx.db.scalars(select(m.ScheduleVersion).where(m.ScheduleVersion.period_id == p.id).order_by(m.ScheduleVersion.number)):
-        rows.append({**_view(v, names), "same_as_current": snapshot_map(v.snapshot or []) == current})
+        conf = version_conformity(v, now_inp)
+        for side in conf.values():
+            if side:
+                side.pop("items", None)
+        rows.append({**_view(v, names), "same_as_current": snapshot_map(v.snapshot or []) == current, "conformity": conf,
+                     "engine_version": v.engine_version, "has_context": bool(v.context)})
     return rows
+
+
+@router.get("/versions/{vid}/conformity")
+def conformity(vid: str, ctx: Ctx = Depends(require("planning.read"))):
+    """Détail de la conformité d'une version : aux règles de sa création et aux règles actuelles (datée). Informatif : rien n'est modifié."""
+    v = get_or_404(ctx, m.ScheduleVersion, vid)
+    p = ctx.db.get(m.PlanningPeriod, v.period_id)
+    out = version_conformity(v, build_input(ctx.db, p, {"params": "current", "cap": "current"}))
+    ctx_info = (v.context or {})
+    return {"version": v.number, "engine_version": v.engine_version, "params": ctx_info.get("params"), "run": ctx_info.get("run"), **out}
 
 
 def _ensure_same(ctx: Ctx, v: m.ScheduleVersion, action: str) -> None:
@@ -240,7 +257,9 @@ def restore(vid: str, ctx: Ctx = Depends(require("planning.edit"))):
             a.employee_id, a.locked = e.id, bool(x.get("locked"))
             changed += 1
     ctx.db.flush()
-    guard_monthly_cap(ctx.db, ctx.tenant_id, before_minutes, involved, months)  # une version qui ferait dépasser le plafond n'est pas restaurée
+    guard_monthly_cap(ctx.db, ctx.tenant_id, before_minutes, involved, months)
+    from .. import regularize
+    regularize.resolve(ctx.db, v.period_id)  # une version qui ferait dépasser le plafond n'est pas restaurée
     ensure_frozen(ctx.db, period)
     audit(ctx, "version.restore", "version", v.id, {"number": v.number, "changed": changed, "skipped": skipped[:50], "safety_version": safety.number})
     return {"restored": v.number, "changed": changed, "skipped": len(skipped), "safety_version": safety.number, "conflicts": _conflicts(ctx, v.period_id)}

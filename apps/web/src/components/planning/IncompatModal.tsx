@@ -16,6 +16,7 @@ export type CompatReport = {
   locked: number; unlocked: number; has_plan: boolean; compatible: boolean;
   params: { mode: "frozen" | "current"; requested: "plan" | "current"; frozen_at: string | null; source: string | null; monthly_cap_minutes: number | null };
   cap_notice?: CapNotice;
+  official?: boolean;
   removed_notice?: { employee: string; removed_on: string; assignments: number }[];
 };
 

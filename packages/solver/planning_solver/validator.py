@@ -9,8 +9,7 @@ from dataclasses import dataclass, field
 from datetime import date, timedelta
 from typing import Dict, List, Optional
 
-from .context import required_break
-from .model import Assignment, SolverInput, fmt_minutes, month_label, slot_category, site_start_times
+from .model import Assignment, Slot, SolverInput, fmt_minutes, month_label
 from .sundays import sundays_in
 from .timecalc import shift_bounds, shift_hours
 
@@ -24,6 +23,33 @@ class Violation:
     limit: Optional[str] = None  # valeur autorisée, lisible
     reached: Optional[str] = None  # valeur atteinte, lisible
     days: List[date] = field(default_factory=list)  # jours concernés quand aucun shift précis ne l'est (ex. jours hors période)
+
+
+# --- règles réécrites ici, SANS réutiliser le code du générateur (context.py, model.py) : une erreur commune aux deux ne passerait
+#     pas inaperçue. Un test compare ces fonctions à celles du générateur sur de nombreux cas. ---
+def _break_needed(rules, effective_minutes: int) -> int:
+    need = 0
+    for over, brk in rules or []:
+        if effective_minutes > over and brk > need:
+            need = brk
+    return need
+
+
+def _starts_by_site(inp: SolverInput) -> Dict[str, set]:
+    out: Dict[str, set] = {}
+    for site, starts in (inp.site_starts or {}).items():
+        out.setdefault(site, set()).update(starts)
+    for sl in inp.slots:
+        if sl.site not in (inp.site_starts or {}):
+            out.setdefault(sl.site, set()).add(sl.start)
+    return out
+
+
+def _category(sl: Slot, starts: Dict[str, set]):
+    if len(starts.get(sl.site, {sl.start})) < 2:
+        return None  # boutique à horaire unique : aucune préférence n'a de sens
+    minutes = sl.start.hour * 60 + sl.start.minute
+    return "matin" if minutes < 9 * 60 else ("middle" if minutes < 12 * 60 else "soir")
 
 
 def validate(inp: SolverInput, assignments: List[Assignment]) -> List[str]:
@@ -95,7 +121,7 @@ def violations(inp: SolverInput, assignments: List[Assignment]) -> List[Violatio
                 add("HOURS_MISMATCH", f"HOURS_MISMATCH: {a.slot_id} {a.effective_minutes} min enregistrées, {h.effective_minutes} recalculées", eid, one)
             if a.allocations and sum(a.allocations.values()) != a.effective_minutes:
                 add("ALLOCATION_MISMATCH", f"ALLOCATION_MISMATCH: {a.slot_id} imputations {sum(a.allocations.values())} min pour {a.effective_minutes} min effectives", eid, one)
-            need = required_break(cfg.break_rules, s)
+            need = _break_needed(cfg.break_rules, h.effective_minutes)
             if s.break_minutes < need:
                 add("BREAK_TOO_SHORT", f"BREAK_TOO_SHORT: {a.slot_id} pause de {s.break_minutes} min pour {need} min exigées", eid, one,
                     limit=f"{need} min", reached=f"{s.break_minutes} min")
@@ -177,9 +203,9 @@ def violations(inp: SolverInput, assignments: List[Assignment]) -> List[Violatio
                 add("SUNDAY_QUOTA", f"SUNDAY_QUOTA: {e.name} {n_sun}>{e.sunday_quota} dimanche(s)", eid, [a.slot_id for a in lst if a.day.weekday() == 6],
                     limit=f"{e.sunday_quota} dimanche(s)", reached=f"{n_sun} dimanche(s)")
         if e.time_pref and e.time_pref_strict:
-            starts = site_start_times(inp)
+            starts = _starts_by_site(inp)
             for a in lst:
-                cat = slot_category(slots[a.slot_id], starts)
+                cat = _category(slots[a.slot_id], starts)
                 if cat is not None and cat != e.time_pref:
                     add("TIME_PREF_STRICT", f"TIME_PREF_STRICT: {e.name} sur {a.slot_id} ({cat}, préférence {e.time_pref} obligatoire)", eid, [a.slot_id],
                         limit=e.time_pref, reached=cat)

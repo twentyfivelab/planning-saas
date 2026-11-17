@@ -88,12 +88,77 @@ def apply_retention(db, tenant_id, period_id, user_id=None) -> List[int]:
     return numbers
 
 
+def version_context(db, period_id, snapshot: List[dict], run_id=None) -> dict:
+    """Contexte de génération figé avec la version : l'entrée complète du moteur telle qu'elle s'applique à CE planning au moment de la
+    version (paramètres conservés par le planning, données du mois, verrous de la version). Pour une version issue d'un calcul : les
+    réglages de ce calcul (choix des paramètres, plafond actuel, pondérations exceptionnelles)."""
+    from planning_solver.serialize import ENGINE_VERSION, input_to_dict
+    from .services_bridge import build_input
+    period = db.get(m.PlanningPeriod, period_id)
+    flags: dict = {}
+    run = db.get(m.OptimizationRun, run_id) if run_id else None
+    if run is not None:
+        flags = {**(run.config or {}), "cap": "current", "generation": True}
+    inp = build_input(db, period, flags)
+    inp.locked = {x["slot_key"]: x["employee_code"] for x in snapshot if x.get("locked") and x.get("employee_code")}
+    return {"format": 1, "engine_version": ENGINE_VERSION, "created_at": datetime.now(timezone.utc).isoformat(),
+            "params": {"mode": "current" if flags.get("params") == "current" or not period.frozen_params else "frozen",
+                       "frozen_at": period.frozen_at.isoformat() if period.frozen_at else None, "source": period.frozen_source},
+            "run": {"id": str(run.id), "kind": run.kind, "config": run.config} if run is not None else None,
+            "input": input_to_dict(inp)}
+
+
 def make_version(db, tenant_id, period_id, label: Optional[str], kind: str = "manual", user_id=None, run_id=None, note: Optional[str] = None) -> m.ScheduleVersion:
     n = (db.scalar(select(func.max(m.ScheduleVersion.number)).where(m.ScheduleVersion.period_id == period_id)) or 0) + 1
-    v = m.ScheduleVersion(tenant_id=tenant_id, period_id=period_id, number=n, label=label, snapshot=snapshot_of(db, period_id), exploratory=is_exploratory(db, period_id),
-                          created_by=user_id, kind=kind, run_id=run_id, note=note, state="snapshot")
+    snap = snapshot_of(db, period_id)
+    ctx = version_context(db, period_id, snap, run_id)
+    v = m.ScheduleVersion(tenant_id=tenant_id, period_id=period_id, number=n, label=label, snapshot=snap, exploratory=is_exploratory(db, period_id),
+                          created_by=user_id, kind=kind, run_id=run_id, note=note, state="snapshot", context=ctx,
+                          context_hash=hashlib.sha256(json.dumps(ctx["input"], sort_keys=True).encode()).hexdigest(), engine_version=ctx["engine_version"])
     db.add(v)
     db.flush()
     if kind in AUTOMATIC_KINDS:
         apply_retention(db, tenant_id, period_id, user_id)
     return v
+
+
+def _check(inp, snapshot: List[dict]) -> dict:
+    """Vérificateur indépendant sur les affectations de la version, avec les horaires de la version (jamais ceux d'aujourd'hui)."""
+    import dataclasses
+    from datetime import date, time
+    from planning_solver.compat import compatibility
+    from planning_solver.model import Assignment as SAssign
+    slots = {s.id: s for s in inp.slots}
+    emps = {e.id for e in inp.employees}
+    assigns, unchecked = [], 0
+    for x in snapshot:
+        s, code = slots.get(x["slot_key"]), x.get("employee_code")
+        if s is None or code not in emps:
+            unchecked += 1
+            continue
+        s2 = dataclasses.replace(s, start=time.fromisoformat(x["start"]), end=time.fromisoformat(x["end"]), break_minutes=x["break_minutes"])
+        slots[s.id] = s2
+        assigns.append(SAssign(s.id, code, date.fromisoformat(x["day"]), s2.start, s2.end, x["presence_minutes"], x["break_minutes"],
+                               x["effective_minutes"], dict(x.get("allocations") or s2.allocations), bool(x.get("locked"))))
+    inp.slots = list(slots.values())
+    rep = compatibility(inp, assigns)
+    hard = [i for i in rep["items"] if i["kind"] == "obligatoire"]
+    return {"status": "non_conforme" if hard else "conforme", "violations": len(hard), "preferences": len(rep["items"]) - len(hard),
+            "checked": len(assigns), "unchecked": unchecked, "items": [{k: i[k] for k in ("code", "rule", "employee", "reason")} for i in hard[:30]]}
+
+
+def version_conformity(v: m.ScheduleVersion, current_inp=None) -> dict:
+    """Conformité INFORMATIVE (rien n'est modifié) : 1) aux règles de sa création (contexte figé) ; 2) aux règles actuelles, datée.
+    Sans contexte figé : « contexte incomplet » (aucune conformité supposée)."""
+    from copy import deepcopy
+    from planning_solver.serialize import input_from_dict
+    snap = v.snapshot or []
+    if v.context and v.context.get("input"):
+        creation = {**_check(input_from_dict(v.context["input"]), snap), "engine_version": v.engine_version}
+    else:
+        creation = {"status": "contexte_incomplet", "violations": None, "checked": 0, "unchecked": len(snap), "items": [],
+                    "message": "Version antérieure à la conservation du contexte : conformité à ses règles de création non vérifiable."}
+    current = None
+    if current_inp is not None:
+        current = {**_check(deepcopy(current_inp), snap), "checked_at": datetime.now(timezone.utc).isoformat()}
+    return {"creation": creation, "current": current}

@@ -96,6 +96,12 @@ test("mouvement réduit : aucune animation longue", async ({ page }) => {
   await page.emulateMedia({ reducedMotion: "reduce" });
   await login(page);
   await expect(page.locator(".rise").first()).toBeVisible(); // attendre la fin du chargement (squelettes)
-  const d = await page.locator(".rise").first().evaluate((el) => getComputedStyle(el).animationDuration);
-  expect(parseFloat(d)).toBeLessThan(0.01);
+  // Lecture ATOMIQUE dans la page : un rafraîchissement temps réel (événement « change » émis par une autre opération) peut remplacer
+  // les cartes entre deux allers-retours ; un élément détaché renvoie une durée vide (NaN). Ici, aucun intervalle n'est possible.
+  const durations = await page.evaluate(() => [...document.querySelectorAll(".rise")].map((el) => getComputedStyle(el).animationDuration));
+  expect(durations.length).toBeGreaterThan(0);
+  for (const d of durations) {
+    const seconds = d.split(",").map((x) => (x.trim().endsWith("ms") ? parseFloat(x) / 1000 : parseFloat(x)));
+    for (const v of seconds) { expect(Number.isFinite(v), `durée lue : « ${d} »`).toBe(true); expect(v).toBeLessThan(0.01); }
+  }
 });

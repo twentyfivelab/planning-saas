@@ -8,6 +8,7 @@ from sqlalchemy import select
 
 from .. import models as m
 from ..deps import Ctx, audit, get_or_404, require
+from .. import regularize
 from ..limits import guard_monthly_cap, month_minutes
 from ..optimize import enqueue
 from ..period_state import ensure_editable, has_official_version, statuses
@@ -224,6 +225,8 @@ def reassign(aid: str, body: MoveIn, ctx: Ctx = Depends(require("planning.edit")
     a.employee_id, a.source = body.employee_id, "manual"
     ctx.db.flush()
     guard_monthly_cap(ctx.db, ctx.tenant_id, before_minutes, [new.id], month)
+    regularize.resolve(ctx.db, a.period_id)
+    regularize.register_doubles(ctx.db, ctx.tenant_id, a.period_id, new.id, a.id, ctx.user.id)  # double affectation : rappel
     from ..history import assignment_detail
     audit(ctx, "assignment.reassign", "assignment", a.id, assignment_detail(ctx.db, ctx.db.get(m.Shift, a.shift_id), old, new))
     return {"id": str(a.id), "conflicts": _conflicts(ctx, a.period_id)}
