@@ -182,9 +182,11 @@ def test_7_editing_a_generated_month_keeps_everything_else(t):
     before = {x["assignment_id"]: x["employee"] for x in sched(o, dec)}
     rows = sched(o, dec)
     ok = {x["employee_id"] for x in o.get(f"/periods/{dec}/roster").json()["employees"] if x["included"]}
-    # un shift et un remplaçant autorisé, libre la veille, le jour même et le lendemain : indépendant de la solution trouvée par le moteur
-    a, to = next((x, e) for x in rows if not x["locked"] and "2026-12-08" <= x["day"] <= "2026-12-30" for e in t["emps"].values()
-                 if e["id"] in ok and e["code"] != "sabrina" and e["name"] != x["employee"] and all(b in e["brands"] for b in x["allocations"])
+    # un shift et un remplaçant autorisé, libre la veille, le jour même et le lendemain : indépendant de la solution trouvée par le moteur.
+    # Ni Cartier ni Zaki : test_10 désactive Cartier et exclut Zaki en décembre, et ce shift reste verrouillé (sinon régénération refusée)
+    a, to = next((x, e) for x in rows if not x["locked"] and "2026-12-08" <= x["day"] <= "2026-12-30" and "Cartier" not in x["allocations"]
+                 and x["employee"] != "Zaki" for e in t["emps"].values()
+                 if e["id"] in ok and e["code"] not in ("sabrina", "zaki") and e["name"] != x["employee"] and all(b in e["brands"] for b in x["allocations"])
                  and not any(y["employee"] == e["name"] and abs(int(y["day"][8:]) - int(x["day"][8:])) <= 1 for y in rows))
     holder = next(e for e in t["emps"].values() if e["name"] == a["employee"])
     o.put(f"/employees/{holder['id']}/unavailable-dates", json={"dates": [a["day"]]})

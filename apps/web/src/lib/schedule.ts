@@ -24,12 +24,12 @@ export function weekStart(iso: string): string {
   return d.toISOString().slice(0, 10);
 }
 
-export function filterAssignments(a: Assignment[], q: { text?: string; employee?: string; site?: string; brand?: string }) {
+export function filterAssignments(a: Assignment[], q: { text?: string; employee?: string; site?: string; brand?: string; brands?: string[] }) {
   const t = q.text?.trim().toLowerCase();
   return a.filter((x) =>
     (!t || x.employee.toLowerCase().includes(t) || x.site.toLowerCase().includes(t) || x.slot_key.toLowerCase().includes(t)) &&
     (!q.employee || x.employee_id === q.employee) && (!q.site || x.site === q.site) &&
-    (!q.brand || q.brand in x.allocations));
+    (!q.brand || q.brand in x.allocations) && (!q.brands || Object.keys(x.allocations).some((b) => q.brands!.includes(b))));
 }
 
 /** Pile annuler/rétablir pour les réaffectations manuelles. */

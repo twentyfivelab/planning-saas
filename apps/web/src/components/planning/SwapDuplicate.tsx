@@ -14,7 +14,7 @@ const label = (a: Assignment) => `${dayLabel(a.day)} · ${a.site_name ?? a.site}
 
 /** Envoi d'une opération composée avec le MÊME parcours de confirmation qu'une affectation manuelle : alertes listées, rien n'est
  *  enregistré sans confirmation, dérogation réservée aux rôles autorisés, règles non dérogeables jamais contournées. */
-function useConfirmed() {
+export function useConfirmed() {
   const [refused, setRefused] = useState<Refused | null>(null);
   const [busy, setBusy] = useState(false); const [err, setErr] = useState("");
   async function send<T>(url: string, body: Record<string, unknown>, force: boolean): Promise<T | null> {
@@ -30,7 +30,7 @@ function useConfirmed() {
   return { refused, busy, err, send, reset };
 }
 
-function Refusal({ r, reason, setReason }: { r: Refused; reason: string; setReason: (v: string) => void }) {
+export function Refusal({ r, reason, setReason }: { r: Refused; reason: string; setReason: (v: string) => void }) {
   const blocked = r.code === "blocked";
   return (
     <Callout kind={blocked ? "bad" : "warn"} title={blocked ? "Opération impossible" : `${r.issues.length} alerte${r.issues.length > 1 ? "s" : ""} avant enregistrement`}>

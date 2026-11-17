@@ -6,7 +6,7 @@ test.skip(!process.env.E2E_EMAIL, "E2E_EMAIL non défini");
 test.describe.configure({ mode: "serial" });
 
 type Row = { assignment_id: string; shift_id: string; employee_id: string; employee: string; day: string; start: string; end: string; locked: boolean; effective_minutes: number; allocations: Record<string, number> };
-type Emp = { id: string; code: string; name: string; brands: Record<string, string> };
+type Emp = { id: string; code: string; name: string; brands: Record<string, string>; deleted_at?: string | null };
 const csrf = async (page: Page) => (await j(page, "/auth/me")).csrf_token as string;
 const hm = (m: number) => `${Math.floor(m / 60)} h${m % 60 ? ` ${String(m % 60).padStart(2, "0")}` : ""}`;
 let novId = "";
@@ -114,4 +114,48 @@ test("rappel « À régulariser » : double affectation confirmée, rappel persi
   await expect(note).toBeHidden(); // disparaît après enregistrement réussi
   const after = await j(page, `/periods/${novId}/schedule`);
   expect((after.uncovered as { shift_id: string }[]).some((u) => u.shift_id === holder.shift_id)).toBe(true); // besoin conservé dans la couverture
+});
+
+test("planning individuel : transfert groupé de plusieurs shifts, une seule confirmation, tout ou rien", async ({ page }) => {
+  const pid = ((await j(page, "/periods")) as { id: string; start_date: string }[]).find((p) => p.start_date === "2026-11-01")!.id;
+  const rows = (await j(page, `/periods/${pid}/schedule`)).assignments as Row[];
+  const emps = ((await j(page, "/employees")) as Emp[]).filter((e) => !e.deleted_at);
+  const used: Record<string, number> = {};
+  for (const a of rows) used[a.employee_id] = (used[a.employee_id] ?? 0) + a.effective_minutes;
+  // source : deux shifts non verrouillés ; cible : autorisée sur leurs marques, libre ces jours-là, avec de la marge sous le plafond
+  let pick: { src: Emp; to: Emp; shifts: Row[] } | null = null;
+  for (const src of emps) {
+    const mine = rows.filter((r) => r.employee_id === src.id && !r.locked);
+    for (const to of emps) {
+      if (to.id === src.id) continue;
+      const busy = new Set(rows.filter((r) => r.employee_id === to.id).map((r) => r.day));
+      const ok = mine.filter((r) => !busy.has(r.day) && Object.keys(r.allocations).every((b) => b in (to.brands ?? {}))).slice(0, 2);
+      if (ok.length === 2 && used[to.id] + ok[0].effective_minutes + ok[1].effective_minutes <= 176 * 60) { pick = { src, to, shifts: ok }; break; }
+    }
+    if (pick) break;
+  }
+  expect(pick, "un transfert groupé possible").toBeTruthy();
+  const { src, to, shifts } = pick!;
+  await page.goto("/employees"); await page.waitForLoadState("networkidle");
+  await page.getByRole("row", { name: new RegExp(`^${src.name} `) }).getByRole("button", { name: src.name, exact: true }).click();
+  const dlg = page.getByTestId("employee-month");
+  await dlg.getByRole("button", { name: "Transférer plusieurs shifts…" }).click();
+  const bulk = dlg.getByTestId("bulk-transfer");
+  for (const r of shifts) await bulk.getByRole("checkbox", { name: new RegExp(`${r.day.slice(8)}/${r.day.slice(5, 7)} · ${r.start.slice(0, 5)}`) }).check();
+  await bulk.getByLabel("Transférer à").selectOption(to.id);
+  const resp = page.waitForResponse((r) => r.url().includes("/bulk-transfer") && r.request().method() === "POST");
+  await bulk.getByRole("button", { name: "Transférer 2 shifts" }).click();
+  await resp;
+  const confirm = bulk.getByRole("button", { name: "Confirmer le transfert" });
+  if (await confirm.isVisible().catch(() => false)) { await expect(bulk.getByTestId("op-issues")).toBeVisible(); await confirm.click(); }
+  await expect.poll(async () => {
+    const now = new Map(((await j(page, `/periods/${pid}/schedule`)).assignments as Row[]).map((r) => [r.assignment_id, r.employee_id]));
+    return shifts.map((r) => now.get(r.assignment_id));
+  }).toEqual([to.id, to.id]);
+  // remise en l'état : retour groupé vers le titulaire d'origine, puis déverrouillage
+  const token = await csrf(page);
+  const back = await page.request.post(`${API}/periods/${pid}/bulk-transfer`, { headers: { "X-CSRF-Token": token },
+    data: { operations: shifts.map((r) => ({ assignment_id: r.assignment_id, to_employee_id: src.id })), force: true, reason: "remise en l'état e2e" } });
+  expect(back.status(), await back.text()).toBe(200);
+  for (const r of shifts) await page.request.post(`${API}/assignments/${r.assignment_id}/unlock`, { headers: { "X-CSRF-Token": token } });
 });

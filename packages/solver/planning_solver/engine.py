@@ -15,7 +15,7 @@ from typing import Callable, Dict, List, Optional
 from ortools.sat.python import cp_model
 
 from .context import (cost_units, coverage_cost, hours_units, individual_penalty, ineligibility, min_days_need, period_of, prepare,
-                      preference_checks, relation_pairs, scoped_avoid_pairs)
+                      preference_checks, relation_pairs, scoped_avoid_pairs, history_excess)
 from .diagnostics import diagnose_uncovered, min_days_blockers, min_days_core_issue, min_days_group_conflicts, missing_data, core_issue
 from .metrics import plan_metrics
 from .model import (Assignment, DEFAULT_WEIGHTS, Issue, LEVELS, REINFORCE, SECONDARY, Slot, SolverInput, SolverResult)
@@ -458,6 +458,13 @@ def solve(inp: SolverInput, cancel: Optional[threading.Event] = None, progress: 
                 for s in by_emp[e.id]:
                     terms["individual"].append(W["individual"] * pen * hours_units(s) * x[e.id, s.id])
 
+    # Équité sur plusieurs mois : un shift de week-end (ou de dimanche) coûte davantage à qui en a eu plus que la moyenne auparavant
+    if W.get("history"):
+        for (eid, key), ex in history_excess(prep).items():
+            for s in by_emp.get(eid, ()):
+                if (key == "weekends" and s.day.weekday() >= 5) or (key == "sundays" and s.day.weekday() == 6):
+                    terms["history"].append(W["history"] * ex * x[eid, s.id])
+
     # Équilibrage des dimanches (collaborateurs sans quota) et des jours travaillés : minimiser le maximum individuel
     suns_all = prep.suns
     mx_sun = m.NewIntVar(0, len(suns_all), "max_sundays")
@@ -585,7 +592,9 @@ def solve(inp: SolverInput, cancel: Optional[threading.Event] = None, progress: 
                            "bound": 0 if value == 0 else int(sv.BestObjectiveBound()), "seconds": round(sv.WallTime(), 3)})
             if last or (cancel is not None and cancel.is_set()):
                 break
-            carry = []
+            # niveau non prouvé (temps écoulé) : sa valeur n'est PAS une limite définitive ; ses critères restent optimisés au niveau
+            # suivant (avec leur poids, donc toujours en priorité), sinon une couverture médiocre trouvée sous charge resterait figée
+            carry = [] if level_proved else list(keys)
             m.Add(expr <= value)  # le niveau suivant ne peut pas dégrader celui-ci
             # solution complète (variables auxiliaires comprises) : le niveau suivant repart immédiatement de ce planning
             m.ClearHints()
@@ -642,6 +651,15 @@ def solve(inp: SolverInput, cancel: Optional[threading.Event] = None, progress: 
             assigns.append(Assignment(sid, eid, s.day, s.start, s.end, h.presence_minutes, h.break_minutes,
                                       h.effective_minutes, dict(s.allocations), locked=inp.locked.get(sid) == eid))
     assigns.sort(key=lambda a: (a.day, a.start, a.slot_id))
+    if not assigns and status != cp_model.OPTIMAL and prep.eligible and not (cancel is not None and cancel.is_set()):
+        # aucune affectation et aucune preuve alors que des affectations sont possibles : le temps a manqué (machine chargée ou délai
+        # trop court). Un planning vide n'est jamais présenté comme « partiellement couvert ».
+        diag = [Issue("TIME_LIMIT", "warning", "Temps de calcul insuffisant : aucune affectation n'a pu être trouvée dans le délai accordé. "
+                      "Relancez la génération (délai plus long, ou machine moins chargée). Rien n'a été enregistré.",
+                      suggestions=["Relancer avec un délai de calcul plus long."])]
+        return SolverResult(status="interrompu", mode=mode, validable=False, assignments=[], uncovered_slots=[],
+                            budgets=[], objective={}, preferences={}, avoided_violations={},
+                            hard_violations=[], employee_hours={}, diagnostics=diag, sunday=sunday_summary(inp), **base)
     filled = {a.slot_id for a in assigns}
     uncovered = [s.id for s in inp.slots if s.mandatory and s.id not in filled]
 

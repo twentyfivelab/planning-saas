@@ -274,3 +274,48 @@ def coverage_csv(month: str = Query(...), ctx: Ctx = Depends(require("export.run
     return _csv(f"couverture-{month}.csv", ["Date", "Site", "Début", "Fin", "Heures", "État", "Collaborateur"], rows)
 
 
+
+
+@router.get("/reports/fairness")
+def fairness(to: str, months: int = Query(6, ge=1, le=12), ctx: Ctx = Depends(require("reports.read"))):
+    """Équité sur plusieurs mois (plannings existants, lus en direct) : par collaborateur et par mois, travail effectif, jours travaillés,
+    jours de week-end et dimanches ; totaux sur la fenêtre et écart à la moyenne de l'équipe. Une journée compte une fois."""
+    from .months import MONTHS_FR
+    last = parse_month(to)
+    keys = []
+    d = last
+    for _k in range(months):
+        keys.append((d.year, d.month))
+        d = (d - timedelta(days=1)).replace(day=1)
+    keys.reverse()
+    lo = date(*keys[0], 1)
+    hi = (last.replace(day=28) + timedelta(days=4)).replace(day=1)
+    per: Dict = defaultdict(lambda: defaultdict(lambda: {"minutes": 0, "days": set()}))
+    for eid, day, mins in ctx.db.execute(select(m.Assignment.employee_id, m.Shift.day, m.Shift.effective_minutes).join(m.Shift, m.Shift.id == m.Assignment.shift_id)
+                                         .where(m.Shift.day >= lo, m.Shift.day < hi)).all():
+        cell = per[eid][(day.year, day.month)]
+        cell["minutes"] += mins
+        cell["days"].add(day)
+    emps = {e.id: e for e in ctx.db.scalars(select(m.Employee))}
+    rows = []
+    for eid, cells in per.items():
+        e = emps.get(eid)
+        if e is None:
+            continue
+        by_month = []
+        tot = {"minutes": 0, "days": 0, "weekends": 0, "sundays": 0}
+        for k in keys:
+            c = cells.get(k, {"minutes": 0, "days": set()})
+            v = {"minutes": c["minutes"], "days": len(c["days"]), "weekends": sum(1 for x in c["days"] if x.weekday() >= 5),
+                 "sundays": sum(1 for x in c["days"] if x.weekday() == 6)}
+            by_month.append(v)
+            for f in tot:
+                tot[f] += v[f]
+        rows.append({"employee_id": str(eid), "employee": e.name, "deleted": e.deleted_at is not None, "months": by_month, "total": tot})
+    rows.sort(key=lambda r: r["employee"].lower())
+    n = len(rows) or 1
+    mean = {f: round(sum(r["total"][f] for r in rows) / n, 1) for f in ("minutes", "days", "weekends", "sundays")}
+    for r in rows:
+        r["delta"] = {f: round(r["total"][f] - mean[f], 1) for f in mean}
+    return {"months": [{"key": f"{y}-{mo:02d}", "label": f"{MONTHS_FR[mo - 1]} {y}"} for y, mo in keys], "mean": mean, "employees": rows,
+            "note": "Une journée compte une fois. Les mois sans planning comptent zéro. Le moteur tient compte des week-ends et dimanches des 3 mois précédents."}

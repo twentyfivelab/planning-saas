@@ -406,6 +406,76 @@ def perform_swap(ctx: Ctx, p: m.PlanningPeriod, A: m.Assignment, B: m.Assignment
     return {"swapped": [str(A.id), str(B.id)], "forced": bool(issues), "conflicts": _conflicts(ctx, p.id), "regularizations": reminders}
 
 
+class BulkOp(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    assignment_id: uuid.UUID
+    to_employee_id: uuid.UUID
+
+
+class BulkIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    operations: list[BulkOp] = Field(min_length=1, max_length=62)
+    force: bool = False
+    reason: Optional[str] = Field(None, max_length=300)
+
+
+@router.post("/periods/{pid}/bulk-transfer")
+def bulk_transfer(pid: str, body: BulkIn, ctx: Ctx = Depends(require("planning.edit"))):
+    """Modification groupée : plusieurs shifts changent de titulaire en UNE opération (tout ou rien). Chaque transfert est contrôlé par
+    le même contrôle qu'une affectation manuelle, sur le planning qui résulte de l'ensemble des transferts ; une seule confirmation."""
+    p = get_or_404(ctx, m.PlanningPeriod, pid)
+    ensure_editable(ctx.db, p.id)
+    ids = [o.assignment_id for o in body.operations]
+    if len(set(ids)) != len(ids):
+        raise HTTPException(422, "Un même shift apparaît deux fois dans la modification groupée")
+    rows = {a.id: a for a in ctx.db.execute(select(m.Assignment).where(m.Assignment.id.in_(ids), m.Assignment.period_id == p.id).with_for_update()).scalars()}
+    if len(rows) != len(ids):
+        raise HTTPException(404, "Certaines affectations n'appartiennent pas à ce planning")
+    emps = {e.id: e for e in ctx.db.scalars(select(m.Employee).where(m.Employee.id.in_({o.to_employee_id for o in body.operations} | {a.employee_id for a in rows.values()})))}
+    if any(o.to_employee_id not in emps for o in body.operations):
+        raise HTTPException(422, "Collaborateur inconnu")
+    shifts = {a.id: ctx.db.get(m.Shift, a.shift_id) for a in rows.values()}
+    plan = [(rows[o.assignment_id], shifts[o.assignment_id], emps[o.to_employee_id]) for o in body.operations if rows[o.assignment_id].employee_id != o.to_employee_id]
+    if not plan:
+        raise HTTPException(422, "Aucun changement : ces shifts appartiennent déjà à ces collaborateurs")
+    pre = Pre(ctx, p)
+    issues: list = []
+    seen: set = set()
+    for i, (a, sh, to) in enumerate(plan):
+        # référence = planning où les AUTRES transferts sont déjà appliqués : chaque transfert ne signale que ce qu'il provoque
+        # (effets combinés compris), daté au bon jour
+        moves = {osh.slot_key: oto.code for j, (_oa, osh, oto) in enumerate(plan) if j != i}
+        ref = copy.copy(pre)
+        ref.base = [dataclasses.replace(x, employee_id=moves[x.slot_id]) if x.slot_id in moves else x for x in pre.base]
+        ref.before = set(validate(pre.inp, ref.base))
+        ref.minutes_before = {}
+        for x in ref.base:
+            ref.minutes_before[x.employee_id] = ref.minutes_before.get(x.employee_id, 0) + x.effective_minutes
+        released = tuple(osh.id for _oa, osh, _t in plan if _oa.employee_id == to.id)
+        for it in _issues(ctx, p, to, sh, a, ref, released=released):
+            key = (it["code"], it["message"])
+            if key not in seen:
+                seen.add(key)
+                issues.append({**it, "day": sh.day.isoformat()})
+    people = tuple({a.employee_id for a, _s, _t in plan} | {t.id for _a, _s, t in plan})
+    _decide(ctx, issues, people, body.force, "Cette modification groupée est")
+    months = sorted({(sh.day.year, sh.day.month) for _a, sh, _t in plan})
+    before_minutes = month_minutes(ctx.db, list(people), months)
+    previous = {a.id: a.employee_id for a, _s, _t in plan}
+    for a, _sh, to in plan:
+        a.employee_id = to.id
+        _lock_manual(ctx, a, "modification groupée")
+    ctx.db.flush()
+    guard_monthly_cap(ctx.db, ctx.tenant_id, before_minutes, list(people), months)  # filet de sécurité : tout ou rien
+    ensure_frozen(ctx.db, p)
+    regularize.resolve(ctx.db, p.id)
+    reminders = sum((regularize.register_doubles(ctx.db, ctx.tenant_id, p.id, to.id, a.id, ctx.user.id) for a, _s, to in plan), 0)
+    for a, sh, to in plan:
+        audit(ctx, "assignment.bulk_transfer", "assignment", a.id, assignment_detail(ctx.db, sh, emps.get(previous[a.id]), to, forced=bool(issues), reason=body.reason,
+                                                                                    issues=[i["message"] for i in issues if i["day"] == sh.day.isoformat()]))
+    return {"changed": len(plan), "forced": bool(issues), "conflicts": _conflicts(ctx, p.id), "regularizations": reminders}
+
+
 class DuplicateIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
     days: list[date] = Field(min_length=1, max_length=31)

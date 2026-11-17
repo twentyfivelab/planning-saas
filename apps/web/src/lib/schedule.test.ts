@@ -39,6 +39,13 @@ describe("schedule helpers", () => {
     expect(filterAssignments(a, { site: "Cartier" })[0].employee).toBe("Zaki");
     expect(filterAssignments(a, { brand: "Cartier" })).toHaveLength(1);
   });
+  it("filtre par client : shifts dont au moins une marque appartient au client (co-branding compris)", () => {
+    const a = [mk("a", "Jane", { allocations: { Nuxe: 240, Cellcosmet: 240 } }), mk("b", "Zaki", { allocations: { Cartier: 480 } }), mk("c", "Ana", { allocations: { Lindt: 480 } })];
+    expect(filterAssignments(a, { brands: ["Cellcosmet"] }).map((x) => x.employee)).toEqual(["Jane"]);
+    expect(filterAssignments(a, { brands: ["Cartier", "Lindt"] }).map((x) => x.employee)).toEqual(["Zaki", "Ana"]);
+    expect(filterAssignments(a, { brands: [] })).toHaveLength(0); // client sans marque : aucun shift
+    expect(filterAssignments(a, {})).toHaveLength(3);
+  });
   it("annuler / rétablir", () => {
     const h = new History(); h.push({ assignmentId: "1", from: "a", to: "b" });
     expect(h.undo()?.to).toBe("b"); expect(h.canUndo).toBe(false); expect(h.redo()?.from).toBe("a");

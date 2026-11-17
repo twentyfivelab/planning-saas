@@ -199,3 +199,70 @@ def test_duplication_controlee_jour_par_jour_et_retirable(t):
     assert all((x["start"], x["end"], x["site"], x["employee_id"], x["allocations"]) == (src["start"], src["end"], src["site"], eid, src["allocations"]) for x in copies)
     assert o.delete(f"/assignments/{created[0]['assignment_id']}?force=true").status_code == 204  # copie retirable, son shift disparaît
     assert len(rows(o, pid)) == len(a) + 1
+
+
+def test_rapport_equite_plusieurs_mois_exact_et_historique_transmis_au_moteur(t):
+    o, pids = t["o"], t["pids"]
+    run(o, pids[OCT])
+    run(o, pids[NOV])
+    rep = o.get("/reports/fairness?to=2026-11&months=3").json()
+    assert [m_["key"] for m_ in rep["months"]] == ["2026-09", "2026-10", "2026-11"]
+    for ym, idx in ((OCT, 1), (NOV, 2)):
+        a = rows(o, pids[ym])
+        for r in rep["employees"]:
+            mine = [x for x in a if x["employee_id"] == r["employee_id"]]
+            days = {x["day"] for x in mine}
+            assert r["months"][idx] == {"minutes": sum(x["effective_minutes"] for x in mine), "days": len(days),
+                                        "weekends": sum(1 for d in days if __import__("datetime").date.fromisoformat(d).weekday() >= 5),
+                                        "sundays": sum(1 for d in days if __import__("datetime").date.fromisoformat(d).weekday() == 6)}
+        assert all(r["months"][0] == {"minutes": 0, "days": 0, "weekends": 0, "sundays": 0} for r in rep["employees"])  # septembre : aucun planning
+    n = len(rep["employees"])
+    assert rep["mean"]["weekends"] == round(sum(r["total"]["weekends"] for r in rep["employees"]) / n, 1)
+    # le moteur reçoit, pour décembre, les week-ends des 3 mois précédents (ici octobre et novembre)
+    from app.db import tenant_session
+    from app import models as m
+    from app.services_bridge import build_input
+    tid = o.get("/auth/me").json()["tenant_id"]
+    dec = o.post("/periods/ensure", json={"year": 2026, "month": 12}).json()["id"]
+    with tenant_session(tid) as db:
+        inp = build_input(db, db.get(m.PlanningPeriod, __import__("uuid").UUID(dec)))
+    codes = {e["id"]: e["code"] for e in o.get("/employees").json()}
+    got = {e.id: e.history.get("weekends", 0) for e in inp.employees}
+    for r in rep["employees"]:
+        assert got[codes[r["employee_id"]]] == r["months"][1]["weekends"] + r["months"][2]["weekends"]
+    assert o.get(f"/periods/{pids[OCT]}/params").json()["differences"] == []  # nouveau critère : aucune fausse différence
+
+
+def test_modification_groupee_tout_ou_rien_meme_controle(t):
+    o, emps, pid = t["o"], t["emps"], t["pids"][NOV]
+    run(o, pid)
+    a = rows(o, pid)
+    ana, cleo = emps["ana"]["id"], emps["cleo"]["id"]
+    cleo_days = {x["day"] for x in a if x["employee_id"] == cleo}
+    mine = [x for x in a if x["employee_id"] == ana and x["day"] not in cleo_days][:3]
+    assert len(mine) == 3
+    ops = [{"assignment_id": x["assignment_id"], "to_employee_id": cleo} for x in mine]
+    assert o.post(f"/periods/{pid}/bulk-transfer", json={"operations": ops + ops[:1]}).status_code == 422  # doublon
+    assert o.post(f"/periods/{pid}/bulk-transfer", json={"operations": [{"assignment_id": mine[0]["assignment_id"], "to_employee_id": ana}]}).status_code == 422
+    # une absence partielle de Cléo le 2e jour : une alerte datée, rien n'est appliqué sans confirmation
+    assert o.post("/partial-absences", json={"employee_id": cleo, "on_date": mine[1]["day"], "start_time": "10:00", "end_time": "11:00"}).status_code == 201
+    r = o.post(f"/periods/{pid}/bulk-transfer", json={"operations": ops})
+    assert r.status_code == 409 and r.json()["detail"]["code"] == "needs_confirmation"
+    hit = [i for i in r.json()["detail"]["issues"] if i["code"] == "UNAVAILABLE_PARTIAL"]
+    assert [i["day"] for i in hit] == [mine[1]["day"]]
+    assert {x["assignment_id"]: x["employee_id"] for x in rows(o, pid)} == {x["assignment_id"]: x["employee_id"] for x in a}  # tout ou rien
+    # plafond mensuel : jamais dérogeable, même avec confirmation
+    used = sum(x["effective_minutes"] for x in a if x["employee_id"] == cleo)
+    before = o.get("/settings/monthly-cap").json()["minutes"]
+    try:
+        o.put("/settings/monthly-cap", json={"hours": (used + mine[0]["effective_minutes"]) / 60})  # place pour UN shift, pas pour trois
+        r = o.post(f"/periods/{pid}/bulk-transfer", json={"operations": ops, "force": True})
+        assert r.status_code == 409 and r.json()["detail"]["code"] == "blocked"
+        assert any(i["code"] == "MONTHLY_CAP" for i in r.json()["detail"]["issues"])
+    finally:
+        o.put("/settings/monthly-cap", json={"hours": before / 60 if before is not None else None})
+    r = o.post(f"/periods/{pid}/bulk-transfer", json={"operations": ops, "force": True, "reason": "renfort"})
+    assert r.status_code == 200 and r.json()["changed"] == 3
+    now = {x["assignment_id"]: x for x in rows(o, pid)}
+    assert all(now[x["assignment_id"]]["employee_id"] == cleo and now[x["assignment_id"]]["locked"] for x in mine)
+    assert len(now) == len(a)

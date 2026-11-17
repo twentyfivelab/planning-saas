@@ -11,6 +11,7 @@ import { invalidate } from "@/lib/invalidate";
 import { type Assignment } from "@/lib/schedule";
 import { errText } from "@/lib/wfm";
 import { useReassign } from "./useReassign";
+import { BulkTransfer } from "./BulkTransfer";
 
 type Item = { assignment_id: string; shift_id: string; period_id: string; start: string; end: string; break_minutes: number; presence_minutes: number;
   effective_minutes: number; site: string; site_name: string; brands: string[]; locked: boolean; source: string };
@@ -33,9 +34,9 @@ export function EmployeeMonthModal({ employee, initialMonth, onClose, emps }: { 
   const me = useMe(); const toast = useToast();
   const [month, setMonth] = useState(initialMonth ?? todayKey());
   const [sel, setSel] = useState<{ day: Day; item: Item } | null>(null);
-  const [confirmRemove, setConfirmRemove] = useState(false); const [to, setTo] = useState(""); const [busy, setBusy] = useState(false);
+  const [confirmRemove, setConfirmRemove] = useState(false); const [to, setTo] = useState(""); const [busy, setBusy] = useState(false); const [bulk, setBulk] = useState(false);
   useEffect(() => { setMonth(initialMonth ?? todayKey()); setSel(null); }, [employee?.id, initialMonth]);
-  useEffect(() => { setSel(null); setConfirmRemove(false); }, [month]);
+  useEffect(() => { setSel(null); setConfirmRemove(false); setBulk(false); }, [month]);
   const data = useApi<MonthData>(employee ? `/employees/${employee.id}/month?month=${month}` : null);
   const d = data.data;
   const canEdit = me.permissions.includes("planning.edit") && !!d?.period && !d.period.archived;
@@ -106,6 +107,10 @@ export function EmployeeMonthModal({ employee, initialMonth, onClose, emps }: { 
               {Array.from({ length: lead }, (_, i) => <div key={`b${i}`} className="emonth-blank" aria-hidden="true" />)}
               {d.days.map(cell)}
             </div>
+            {canEdit && d.has_plan && !sel && (bulk
+              ? <BulkTransfer periodId={d.period!.id} owner={employee.id} emps={everyone} onDone={() => { setBulk(false); data.reload(); }}
+                  shifts={d.days.flatMap((x) => x.assignments.filter((a) => a.period_id === d.period!.id).map((a) => ({ date: x.date, item: a })))} />
+              : <div className="row"><Button onClick={() => setBulk(true)}>Transférer plusieurs shifts…</Button></div>)}
             {sel && (
               <section className="glass-raised card stack" aria-label="Détail de l'affectation" data-testid="employee-month-detail">
                 <h3 className="h2" style={{ margin: 0 }}>{dayLong(sel.day.date)}</h3>

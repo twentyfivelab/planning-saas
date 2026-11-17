@@ -7,7 +7,7 @@ from collections import defaultdict
 from typing import Dict, Iterable, List, Optional, Tuple
 
 from .context import (Prepared, cost_units, coverage_cost, hours_units, individual_penalty, period_of, prepare,
-                      preference_checks, relation_pairs, overlaps)
+                      preference_checks, relation_pairs, overlaps, history_excess)
 from .model import Assignment, DEFAULT_WEIGHTS, REINFORCE, SECONDARY, Slot, SolverInput
 
 
@@ -30,6 +30,7 @@ class Evaluator:
         self.weeks: Dict[tuple, list] = defaultdict(list)
         for d in self.prep.days:
             self.weeks[d.isocalendar()[:2]].append(d)
+        self.hist = history_excess(self.prep)  # équité sur plusieurs mois (même calcul que le moteur)
         self.rel_entries = self._relation_entries()
         self._emp_cache = {e.id: self.employee_terms(e.id, self.mine.get(e.id, [])) for e in inp.employees}
         self._rel_cache = [self._relation_cost(ent, self.mine) for ent in self.rel_entries]
@@ -43,6 +44,11 @@ class Evaluator:
             return out
         worked = {s.day for s in lst}
         tot = sum(s.effective_minutes for s in lst)
+        if W.get("history"):
+            we, su = self.hist.get((eid, "weekends"), 0), self.hist.get((eid, "sundays"), 0)
+            h = sum(W["history"] * (we * (s.day.weekday() >= 5) + su * (s.day.weekday() == 6)) for s in lst)
+            if h:
+                out["history"] += h
         options = prep.by_emp.get(eid, [])
         option_days = {s.day for s in options}
         if e.weekly_rest_days_pref is not None and not e.weekly_rest_days_hard:

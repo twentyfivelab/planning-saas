@@ -213,6 +213,22 @@ def relation_pairs(prep: Prepared) -> List[Tuple[str, Employee, List[str], bool,
     return out
 
 
+def history_excess(prep: Prepared) -> Dict[Tuple[str, str], int]:
+    """Excédent de chaque collaborateur sur la moyenne de l'équipe (week-ends et dimanches des mois précédents), arrondi à l'entier inférieur.
+    Seuls les collaborateurs de l'effectif du mois comptent dans la moyenne ; sans historique fourni, aucun excédent."""
+    team = [e for e in prep.inp.employees if not e.excluded and e.left_on is None]
+    out: Dict[Tuple[str, str], int] = {}
+    if not team or not any(e.history for e in team):
+        return out
+    for key in ("weekends", "sundays"):
+        mean = sum(e.history.get(key, 0) for e in team) / len(team)
+        for e in team:
+            ex = int(e.history.get(key, 0) - mean)
+            if ex > 0:
+                out[e.id, key] = ex
+    return out
+
+
 def overlaps(a: Slot, b: Slot) -> bool:
     """Horaires qui se chevauchent (passage de minuit et changement d'heure compris)."""
     (s1, e1), (s2, e2) = a.bounds, b.bounds

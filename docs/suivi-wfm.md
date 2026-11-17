@@ -11,19 +11,21 @@ Une fonctionnalité n'est classée « terminée et vérifiée » que si une vér
 
 | Suite | Résultat | Environnement |
 |---|---|---|
-| Moteur, tests de correction (`packages/solver`) | **135 / 135** | local ; aussi **127 / 127 sous forte charge** (charge moyenne 44 sur 10 cœurs) et pendant la suite e2e |
+| Moteur, tests de correction (`packages/solver`) | **136 / 136** | local ; aussi **127 / 127 sous forte charge** (charge moyenne 44 sur 10 cœurs) et pendant la suite e2e |
 | Moteur, mesures de performance (marqueur `perf`) | à part : `scripts/ops/perf_engine.sh` | conditions consignées dans `docs/mesures-moteur.md` |
-| API (`apps/api`) | **153 / 153** | base PostgreSQL jetable par session (`planning_test_<pid>`) |
-| Interface, unitaires, dont contrastes WCAG AA | **119 / 119** | Vitest |
-| Navigateur e2e | **69 / 69** | pile Docker isolée (`infra/compose.e2e.yaml`, base `planning_e2e`) |
+| API (`apps/api`) | **155 / 155** | base PostgreSQL jetable par session (`planning_test_<pid>`) |
+| Interface, unitaires, dont contrastes WCAG AA | **120 / 120** | Vitest |
+| Navigateur e2e | **72 / 72** | pile Docker isolée (`infra/compose.e2e.yaml`, base `planning_e2e`) |
 | ruff, TypeScript, ESLint | sans erreur | |
 
 Fiabilité du moteur (deux échecs observés sous charge, corrigés à la source, sans relance ni délai allongé) :
 - **Premier niveau abandonné trop tôt** : sans solution ni preuve dans sa part du temps, le niveau « couverture » s'arrêtait et annonçait « interrompu » alors que le budget n'était pas épuisé. Il reçoit désormais tout le temps restant.
 - **Conflit de minimums de jours dépendant du temps de calcul** : quand plusieurs collaborateurs se partagent les mêmes shifts, le conflit est un simple dénombrement. Il est maintenant signalé avant tout calcul (majorant exact, jour par jour), donc identique quelle que soit la charge. Les conflits plus subtils restent identifiés par le noyau du solveur (test dédié).
+- **Couverture médiocre figée sous forte charge** (trouvé par le test d'invariant, reproduit 5 fois sur 6 avec six calculs simultanés) : un niveau non prouvé dans sa part du temps voyait sa valeur figée comme limite, si bien qu'une couverture obtenue à la hâte ne pouvait plus être améliorée. Désormais, les critères d'un niveau non prouvé restent optimisés aux niveaux suivants (toujours en priorité, par leur poids). Et un planning vide, sans preuve, alors que des affectations sont possibles, est annoncé « interrompu » (temps insuffisant) au lieu de « partiellement couvert ». Après correction : 6 sur 6 dans les mêmes conditions.
 - **Correction et performance séparées** : le test du grand effectif est scindé. La partie « correction » vérifie un invariant valable quel que soit le temps (planning entièrement vérifié, ou « interrompu » sans affectation ; jamais d'optimum annoncé sans preuve). La partie « performance » (marqueur `perf`) est exclue des suites par défaut et de l'intégration continue ; elle s'exécute par `scripts/ops/perf_engine.sh`, qui refuse de mesurer sur une machine chargée et consigne les conditions.
 
 Intermittences corrigées à la source :
+- **Régénération de décembre parfois refusée (test API)** : un test précédent verrouillait un shift choisi dans la solution du moteur ; quand c'était un shift Cartier ou un shift donné à Zaki, le test suivant (Cartier désactivé, Zaki exclu) obtenait à juste titre « affectation verrouillée impossible ». Le premier test ne choisit plus ce que le second désactive.
 - **« mouvement réduit »** : la lecture se faisait en deux allers-retours, et le tableau de bord, rechargé par un événement temps réel, pouvait remplacer la carte entre les deux. Un élément détaché donne une durée vide, d'où NaN. Le test lit désormais toutes les cartes en une seule exécution dans la page : 20 passages sur 20, plus les suites complètes.
 - **Alignement** : la mesure se fait désormais après l'animation d'ouverture.
 
@@ -108,7 +110,8 @@ Intermittences corrigées à la source :
 - Contrastes vérifiés ; 19 écrans contrôlés sur ordinateur et sur mobile : thème clair, aucun débordement horizontal, aucun fond sombre, aucune erreur JavaScript.
 
 **Parcours**
-- Vues mois, planning général, jour, collaborateur, marque/site.
+- Vues mois, planning général, **semaine** (du lundi au dimanche, shifts regroupés par site, nombre exact vérifié jour par jour), jour, collaborateur, marque/site.
+- Filtre **client** dans toutes les vues du planning (shifts dont une marque appartient au client, co-branding compris).
 - Recherche, filtres, annuler et rétablir, compteurs.
 - Exports PDF, Excel, CSV et ICS.
 
@@ -122,8 +125,14 @@ Intermittences corrigées à la source :
 - Horaires obligatoires par collaborateur (contrainte stricte).
 - Temps de déplacement entre sites (écart exigé = le plus grand du repos quotidien et du déplacement).
 - Pauses sans relève sur les sites à présence continue : alerte de couverture (jamais un blocage).
+- Modification groupée (planning individuel, « Transférer plusieurs shifts… ») : plusieurs shifts changent de titulaire en une opération, tout ou rien ; chaque transfert est contrôlé sur le planning où les autres sont déjà appliqués (alertes datées au bon jour, effets combinés compris), une seule confirmation, plafond jamais dérogeable.
 - Échange réciproque de deux shifts et duplication d'un shift sur d'autres jours : même contrôle et même confirmation qu'une affectation manuelle, tout ou rien, dérogations tracées, plafond mensuel jamais dérogeable.
 - Indépendance des plannings : horaires obligatoires et temps de déplacement sont conservés par chaque planning ; un planning antérieur à ces règles n'en hérite pas (différence seulement signalée, « Appliquer les paramètres actuels » reste explicite).
+
+**Équité sur plusieurs mois**
+- Le moteur reçoit, pour chaque collaborateur, les jours de week-end et les dimanches travaillés dans les 3 mois civils précédents. Un shift de week-end ou de dimanche coûte davantage à qui en a eu plus que la moyenne de l'équipe ; à heures égales, les week-ends vont d'abord à ceux qui en ont eu le moins (test : la décision suit l'historique dans les deux sens). Coût identique entre le solveur et l'évaluateur indépendant.
+- Page « Équité » (3, 6 ou 12 mois) : travail effectif, jours, week-ends et dimanches de chacun, écart à la moyenne de l'équipe, détail des week-ends par mois (valeurs vérifiées contre les plannings).
+- Plannings existants : ce nouveau critère ne s'applique pas à une régénération avec les paramètres conservés et n'apparaît pas comme une « différence ».
 
 **Espace collaborateur et circuit d'approbation** (migration 0014)
 - Depuis « Mon planning », un collaborateur relié à sa fiche demande un congé, une absence (journée ou partie de journée) ou un échange de shifts avec un collègue ; il suit le statut et peut annuler tant que rien n'est décidé.
@@ -172,18 +181,16 @@ Intermittences corrigées à la source :
 | 8 | Comptes | Créés par l'administrateur ; les invitations dépendent de D2. |
 | 9 | Environnements | Développement et tests séparés ; production à décider (D1). |
 
-## C. Restant (10 chantiers, par priorité)
+## C. Restant (8 chantiers, par priorité)
 
-1. Modifications groupées (plusieurs shifts en une opération), vérifiées par le même contrôle.
-2. Tuteur et binôme avec portée « horaires qui se chevauchent » (la portée élargie s'applique aujourd'hui aux collaborateurs à séparer).
-3. Espace collaborateur : modification des disponibilités récurrentes et réponse aux propositions de remplacement (congés, absences et échanges : faits).
-4. Suivi de l'équité sur plusieurs mois.
-5. Vue semaine et vue client.
-6. Moteur : recherche à large voisinage (LNS), temps par niveau selon la taille, mesures au-delà de 150 collaborateurs et sur plusieurs mois.
-7. Exploitation : reprise d'un calcul interrompu, surveillance, sauvegardes planifiées, secrets, production hors du Mac (dépend de D1).
-8. Qualité : restauration de sauvegarde en intégration continue, tests aléatoires, objectifs de performance chiffrés.
-9. Droits par agence ou équipe, prise en main guidée.
-10. Import de plannings, synchronisation calendrier bidirectionnelle, paie et RH, prévisions de charge.
+1. Tuteur et binôme avec portée « horaires qui se chevauchent » (la portée élargie s'applique aujourd'hui aux collaborateurs à séparer).
+2. Espace collaborateur : modification des disponibilités récurrentes et réponse aux propositions de remplacement (congés, absences et échanges : faits).
+3. Équité sur plusieurs mois pour les ouvertures et fermetures (week-ends et dimanches : faits).
+4. Moteur : recherche à large voisinage (LNS), temps par niveau selon la taille, mesures au-delà de 150 collaborateurs et sur plusieurs mois.
+5. Exploitation : reprise d'un calcul interrompu, surveillance, sauvegardes planifiées, secrets, production hors du Mac (dépend de D1).
+6. Qualité : restauration de sauvegarde en intégration continue, tests aléatoires, objectifs de performance chiffrés.
+7. Droits par agence ou équipe, prise en main guidée.
+8. Import de plannings, synchronisation calendrier bidirectionnelle, paie et RH, prévisions de charge.
 
 ## D. Décisions qui vous reviennent
 
@@ -197,7 +204,5 @@ Intermittences corrigées à la source :
 
 ## Prochaines étapes (ordre de priorité)
 
-1. Équité sur plusieurs mois.
-2. Vues restantes (semaine, client).
-3. Moteur : LNS et mesures plus larges.
-4. Modifications groupées.
+1. Moteur : LNS et mesures plus larges.
+2. Disponibilités récurrentes modifiables par le collaborateur (avec approbation).

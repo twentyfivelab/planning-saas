@@ -24,6 +24,7 @@ FICHE_FIELDS = ("brands", "skills", "weight", "contract", "legal_weekly_max_minu
 # actuelle, qui créerait un effet rétroactif) ; une différence est signalée et ne s'applique qu'avec « Appliquer les paramètres actuels »
 LATE_FICHE = {"work_window": None}
 LATE_CONFIG = {"travel_minutes": []}
+LATE_WEIGHTS = ("history",)
 RELATION_SCOPES = {"day": "même jour, tous sites", "overlap": "horaires qui se chevauchent"}
 # règles de l'entreprise et pondérations UTILISÉES lors de la génération : les conditions de génération restent retrouvables
 CONFIG_FIELDS = ("rest_hours", "max_consecutive_days", "weights", "hierarchical", "break_rules", "monthly_cap_minutes")
@@ -111,7 +112,8 @@ def apply_config(cfg: SolverConfig, d: dict) -> None:
         if f == "break_rules":
             v = [tuple(x) for x in v or []]
         elif f == "weights":
-            v = {**cfg.weights, **(v or {})}
+            # critère apparu après la conservation (équité sur plusieurs mois) : absent du planning conservé = sans effet
+            v = {**cfg.weights, **{k: 0 for k in LATE_WEIGHTS}, **(v or {})}
         setattr(cfg, f, v)
 
 
@@ -171,7 +173,11 @@ def differences(frozen: Optional[dict], fiches: Dict[str, dict], cfg: dict, name
     for f in CONFIG_FIELDS:
         if f in old_cfg and old_cfg.get(f) != cfg.get(f):
             if f == "weights":
-                changed = sorted(k for k in set(old_cfg[f] or {}) | set(cfg[f] or {}) if (old_cfg[f] or {}).get(k) != (cfg[f] or {}).get(k))
+                # critère apparu après la conservation : ce n'est pas une modification de l'utilisateur, il n'est pas signalé
+                changed = sorted(k for k in set(old_cfg[f] or {}) | set(cfg[f] or {}) if (old_cfg[f] or {}).get(k) != (cfg[f] or {}).get(k)
+                                 and not (k in LATE_WEIGHTS and k not in (old_cfg[f] or {})))
+                if not changed:
+                    continue
                 out.append({"employee": None, "field": f, "label": LABELS[f], "planning": f"{len(changed)} pondération(s) différente(s)",
                             "current": ", ".join(changed)})
                 continue

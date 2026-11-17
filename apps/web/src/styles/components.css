@@ -483,3 +483,14 @@ dialog.modal:has(.emonth) { width: min(70rem, calc(100vw - 1.5rem)); }
 .reg-note { display: flex; flex-direction: column; gap: var(--sp-2); padding: var(--sp-3) var(--sp-4); border-radius: var(--radius-md);
   background: var(--glass-pink); border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--line)); border-left: 4px solid var(--warn); }
 .reg-note p { margin: 0; }
+
+/* Vue semaine : du lundi au dimanche, shifts regroupés par site */
+.week-grid { display: grid; grid-template-columns: repeat(7, minmax(9.5rem, 1fr)); gap: var(--sp-2); min-width: 70rem; }
+.week-col { display: flex; flex-direction: column; gap: var(--sp-2); padding: var(--sp-2); border-radius: var(--radius-md);
+  background: var(--glass-2); border: 1px solid var(--line); min-height: 8rem; }
+.week-col[data-outside] { opacity: .55; }
+.week-head { display: flex; gap: var(--sp-2); align-items: baseline; font-weight: 650; }
+.week-head .faint { margin-left: auto; font-weight: 500; }
+.week-site { display: flex; flex-direction: column; gap: 4px; }
+.week-site-name { margin: 0; font-size: var(--text-xs); font-weight: 650; color: var(--accent); text-transform: uppercase; letter-spacing: .04em; }
+@media (max-width: 640px) { .week-grid { min-width: 63rem; } }

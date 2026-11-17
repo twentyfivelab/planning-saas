@@ -125,6 +125,8 @@ class Employee:
     unavailable_windows: Set[Tuple[date, time, time]] = field(default_factory=set)
     # horaires obligatoires (contrainte dure) : chaque shift commence au plus tôt à [0] et se termine au plus tard à [1], le même jour
     work_window: Optional[Tuple[time, time]] = None
+    # historique des mois précédents (équité sur plusieurs mois) : {"weekends": jours de week-end travaillés, "sundays": dimanches travaillés}
+    history: Dict[str, int] = field(default_factory=dict)
 
     def blocked(self, d: date) -> bool:
         wd = d.weekday()
@@ -175,6 +177,9 @@ DEFAULT_WEIGHTS: Dict[str, int] = {
     "alternation": 3,  # par passage matin -> soir (ou soir -> matin) sur deux jours consécutifs
     "days_balance": 3,  # par jour travaillé du collaborateur le plus chargé en jours
     "cost": 1,  # par franc de coût horaire estimé (uniquement si le coût horaire du contrat est renseigné)
+    # équité sur plusieurs mois : par shift de week-end (ou de dimanche) et par unité d'excédent du collaborateur sur la moyenne de
+    # l'équipe dans les mois précédents ; les week-ends vont d'abord à ceux qui en ont eu le moins
+    "history": 5,
 }
 
 # Optimisation hiérarchisée : chaque niveau est optimisé puis figé avant le suivant (les contraintes dures, niveau 1, priment toujours).

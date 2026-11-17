@@ -112,6 +112,18 @@ def build_input(db: Session, period: m.PlanningPeriod, cfg_overrides: Optional[d
     partial: Dict[uuid.UUID, set] = defaultdict(set)  # absences sur une partie de la journée (données du mois, lues en direct)
     for pa in db.scalars(select(m.PartialAbsence).where(m.PartialAbsence.on_date >= start - timedelta(days=1), m.PartialAbsence.on_date <= end)):
         partial[pa.employee_id].add((pa.on_date, pa.start_time, pa.end_time))
+    # équité sur plusieurs mois : week-ends et dimanches travaillés dans les 3 mois civils précédents (plannings existants, lus en direct)
+    h_start = (start.replace(day=1) - timedelta(days=1)).replace(day=1)
+    for _k in range(2):
+        h_start = (h_start - timedelta(days=1)).replace(day=1)
+    history: Dict[uuid.UUID, Dict[str, int]] = defaultdict(lambda: {"weekends": 0, "sundays": 0})
+    seen_days: set = set()
+    for eid_, day_ in db.execute(select(m.Assignment.employee_id, m.Shift.day).join(m.Shift, m.Shift.id == m.Assignment.shift_id)
+                                 .where(m.Shift.day >= h_start, m.Shift.day < start.replace(day=1))).all():
+        if day_.weekday() >= 5 and (eid_, day_) not in seen_days:  # une journée compte une fois
+            seen_days.add((eid_, day_))
+            history[eid_]["weekends"] += 1
+            history[eid_]["sundays"] += day_.weekday() == 6
     leaves = list(db.scalars(select(m.LeaveRequest).where(m.LeaveRequest.status == "approved")))
     for lv in leaves:
         x = lv.start_date
@@ -212,6 +224,7 @@ def build_input(db: Session, period: m.PlanningPeriod, cfg_overrides: Optional[d
         se.excluded = e.id in roster_out or ended or added_later
         se.unavailable_dates = set(unav_dt[e.id])
         se.unavailable_windows = set(partial[e.id])
+        se.history = history.get(e.id, {}) if history else {}
         se.sunday_quota, se.sunday_mode = quota, qmode
         if mp is not None and mp.max_days_set:
             se.max_days_count, se.max_days_period = mp.max_days_count, mp.max_days_period

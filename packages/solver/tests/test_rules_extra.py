@@ -78,3 +78,30 @@ def test_serialisation_aller_retour_des_nouvelles_regles():
     assert e.relations[0].scope == "overlap" and e.relations[0].strict
     assert back.travel_minutes == {("S1", "S2"): 30}
     assert input_to_dict(back) == input_to_dict(inp)
+
+
+def test_equite_sur_plusieurs_mois_week_ends_a_ceux_qui_en_ont_eu_moins():
+    """Ana a travaillé plus de week-ends que Ben les mois précédents. Quatre shifts de semaine et quatre de week-end : l'équité des heures
+    du mois donne quatre shifts à chacun ; l'historique décide QUI prend les week-ends. Le coût recalculé sans CP-SAT est celui du solveur."""
+    from planning_solver.objective import evaluate
+    weekend = [date(2026, 11, 7), date(2026, 11, 8), date(2026, 11, 14), date(2026, 11, 15)]
+    weekdays = [date(2026, 11, 3), date(2026, 11, 5), date(2026, 11, 10), date(2026, 11, 12)]
+    slots = [slot(f"X|{d}", d, (9, 0), (17, 0)) for d in weekend + weekdays]
+
+    def run(history, other=None):
+        inp = SolverInput(date(2026, 11, 1), date(2026, 11, 30), slots, [emp("ana", history=history), emp("ben", history=other or {"weekends": 0})], [],
+                          cfg(hierarchical=False))
+        res = solve(inp)
+        assert res.proved_optimal and not res.uncovered_slots and not res.hard_violations
+        terms = evaluate(inp, res.assignments)
+        assert sum(terms.values()) == res.levels[0]["value"] and terms.get("history", 0) == res.objective.get("history", 0)
+        return [a for a in res.assignments if a.employee_id == "ana" and a.day.weekday() >= 5], res
+    with_hist, res = run({"weekends": 6, "sundays": 3})
+    assert with_hist == [] and len([a for a in res.assignments if a.employee_id == "ana"]) == 4  # mêmes heures, aucun week-end
+    assert res.objective.get("history", 0) == 0
+    # historique inversé : c'est Ben qui n'a plus de week-end -> la décision suit bien l'historique, pas le hasard
+    ana_we, res_inv = run({"weekends": 0}, {"weekends": 6, "sundays": 3})
+    assert len(ana_we) == 4 and not [a for a in res_inv.assignments if a.employee_id == "ben" and a.day.weekday() >= 5]
+    # sans historique : aucun coût d'historique (le choix est laissé aux autres critères)
+    _none, res0 = run({})
+    assert res0.objective.get("history", 0) == 0

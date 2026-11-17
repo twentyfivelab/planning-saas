@@ -14,6 +14,7 @@ import { AddShiftModal } from "@/components/planning/AddShiftModal";
 import { DayShiftsModal, RemoveDialog } from "@/components/planning/DayShiftsModal";
 import { DuplicateModal, SwapModal } from "@/components/planning/SwapDuplicate";
 import { EmployeeMonthModal } from "@/components/planning/EmployeeMonth";
+import { WeekView } from "@/components/planning/WeekView";
 import { HistoryPanel } from "@/components/planning/HistoryPanel";
 import { ReplacementsModal, type ReplaceTarget } from "@/components/planning/ReplacementsModal";
 import { ExplainModal } from "@/components/planning/ExplainModal";
@@ -36,7 +37,7 @@ type Schedule = { assignments: Assignment[]; uncovered: { shift_id: string; slot
 type RegShift = { assignment_id: string; shift_id: string; site: string; site_name: string; brands: string[]; start: string; end: string; locked: boolean };
 type Reg = { id: string; employee_id: string; employee: string; day: string; new: RegShift; initial: RegShift; created_at: string };
 type Emp = { id: string; code: string; name: string; brands?: Record<string, string>; sunday_quota?: number | null; sunday_mode?: "max" | "exact"; deleted_at?: string | null };
-const VIEWS = [["month", "Mois"], ["general", "Planning général"], ["day", "Jour"], ["employee", "Collaborateur"], ["brand", "Marque / site"]] as const;
+const VIEWS = [["month", "Mois"], ["general", "Planning général"], ["week", "Semaine"], ["day", "Jour"], ["employee", "Collaborateur"], ["brand", "Marque / site"]] as const;
 type View = (typeof VIEWS)[number][0];
 const KIND_ICON = { open: "sunrise", day: "briefcase", close: "sunset" } as const;
 type Drag = { id: string; day: string; from: string } | null;
@@ -61,7 +62,10 @@ export default function PlanningPage() {
 
   const [view, setView] = useState<View>("general");
   const [focusState, setFocus] = useState("");
-  const [text, setText] = useState(""); const [site, setSite] = useState(""); const [brand, setBrand] = useState(""); const [empF, setEmpF] = useState("");
+  const [text, setText] = useState(""); const [site, setSite] = useState(""); const [brand, setBrand] = useState(""); const [empF, setEmpF] = useState(""); const [client, setClient] = useState("");
+  const clients = useApi<{ id: string; name: string }[]>(me.permissions.includes("referential.read") ? "/clients" : null);
+  const brandRows = useApi<{ code: string; client_id: string | null }[]>(me.permissions.includes("referential.read") ? "/brands" : null);
+  const clientBrands = useMemo(() => (client ? (brandRows.data ?? []).filter((b) => b.client_id === client).map((b) => b.code) : undefined), [client, brandRows.data]);
   const [sel, setSel] = useState<Assignment | null>(null);
   const [drag, setDrag] = useState<Drag>(null); const [target, setTarget] = useState<Target>(null);
 
@@ -69,13 +73,13 @@ export default function PlanningPage() {
   useEffect(() => { if (days.length) setFocus(defaultWeek(days)); }, [days]);
   const focus = focusState || defaultWeek(days);
   const all = useMemo(() => sched.data?.assignments ?? [], [sched.data]);
-  const list = useMemo(() => filterAssignments(all, { text, site, brand, employee: empF }), [all, text, site, brand, empF]);
+  const list = useMemo(() => filterAssignments(all, { text, site, brand, employee: empF, brands: clientBrands }), [all, text, site, brand, empF, clientBrands]);
   const histEmps = useMemo(() => (empsAll.data ?? []).filter((e) => !e.deleted_at || all.some((a) => a.employee_id === e.id))
     .map((e) => (e.deleted_at ? { ...e, name: `${e.name} (supprimé·e)` } : e)), [empsAll.data, all]);
   const alertMap = useMemo(() => conflictsBySlot(confl.data?.hard_violations ?? [], all), [confl.data, all]);
   const sites = useMemo(() => [...new Set(all.map((a) => a.site))].sort(), [all]);
   const brands = useMemo(() => [...new Set(all.flatMap((a) => Object.keys(a.allocations)))].sort(), [all]);
-    const filtersActive = !!(text || site || brand || empF);
+    const filtersActive = !!(text || site || brand || empF || client);
   const inPeriod = (d: string) => days.includes(d);
   const regsApi = useApi<Reg[]>(period ? `/periods/${period.id}/regularizations` : null);
   const regs = regsApi.data ?? [];
@@ -155,6 +159,7 @@ export default function PlanningPage() {
           <Field label="Site">{(p) => <Select {...p} value={site} onChange={(e) => setSite(e.target.value)}><option value="">Tous les sites</option>{sites.map((s) => <option key={s}>{s}</option>)}</Select>}</Field>
           <Field label="Marque">{(p) => <Select {...p} value={brand} onChange={(e) => setBrand(e.target.value)}><option value="">Toutes les marques</option>{brands.map((s) => <option key={s}>{s}</option>)}</Select>}</Field>
           <Field label="Collaborateur">{(p) => <Select {...p} value={empF} onChange={(e) => setEmpF(e.target.value)}><option value="">Tous les collaborateurs</option>{emps.data?.map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}</Select>}</Field>
+          {!!clients.data?.length && <Field label="Client" help="Shifts des marques de ce client">{(p) => <Select {...p} value={client} onChange={(e) => setClient(e.target.value)}><option value="">Tous les clients</option>{clients.data!.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</Select>}</Field>}
         </div>
         <div className="spread" style={{ marginTop: "var(--sp-4)" }}>
           <div className="seg" role="tablist" aria-label="Vues du planning">
@@ -233,6 +238,7 @@ export default function PlanningPage() {
         <Card>
           {view === "month" && <MonthView days={days} list={list} alertMap={alertMap} onPickDay={(d) => { setFocus(d); setView("day"); }} />}
           {view === "general" && <GeneralGrid onOpenEmployee={(e) => setEmpMonth({ id: e.id, name: e.name.replace(" (supprimé·e)", "") })} periodId={period!.id} days={days} inPeriod={inPeriod} list={list} emps={histEmps.filter((e) => !empF || e.id === empF)} cardProps={cardProps} cellDnD={cellDnD} dragging={!!drag} canEdit={canEdit} onAdd={(emp, day) => setPicking({ emp, day })} />}
+          {view === "week" && <WeekView anchor={focus} days={days} list={list} cardProps={cardProps} onAnchor={setFocus} />}
           {view === "day" && <DayView day={focus} list={list.filter((a) => a.day === focus)} uncovered={(sched.data?.uncovered ?? []).filter((u) => u.day === focus).length} cardProps={cardProps} emps={histEmps} canEdit={canEdit} onChange={reassign.request} />}
           {view === "employee" && <EmployeeView days={days} list={list} emps={histEmps} cardProps={cardProps} canEdit={canEdit} onAdd={(emp, day) => setPicking({ emp, day })} />}
           {view === "brand" && <BrandView days={days} list={list} budgets={(budgets.data ?? []).filter((x) => (x as { month?: string }).month === period?.start_date)} />}
