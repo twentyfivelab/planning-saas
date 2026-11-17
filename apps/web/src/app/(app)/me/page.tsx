@@ -1,5 +1,6 @@
 "use client";
 import { useApi } from "@/components/hooks";
+import { MyRequests } from "@/components/MyRequests";
 import { Badge, Button, Card, EmptyState, ErrorState, PageHead, SkeletonCard } from "@/components/ui/primitives";
 import { api } from "@/lib/api";
 import { invalidate } from "@/lib/invalidate";
@@ -23,6 +24,7 @@ export default function MyPlanning() {
             {n.data.items.map((x) => <li key={x.id} className="surface" style={{ padding: "var(--sp-3)" }}><div className="spread"><div><strong>{x.title}</strong>{!x.read && <> <Badge tone="accent">Nouveau</Badge></>}<p className="muted" style={{ margin: 0 }}>{x.body}</p></div>{!x.read && <Button size="sm" variant="ghost" onClick={() => read(x.id)}>Marquer comme lu</Button>}</div></li>)}
           </ul>)}
       </Card>
+      {q.data?.linked && <MyRequests />}
       {q.error ? <ErrorState message={q.error} onRetry={q.reload} /> : q.loading && !q.data ? <SkeletonCard lines={4} /> : !q.data?.linked ? (
         <Card><EmptyState icon="users" title="Compte non relié à une fiche">Demandez à votre responsable de relier votre compte à votre fiche collaborateur.</EmptyState></Card>
       ) : !q.data.periods.length ? <Card><EmptyState icon="calendar" title="Aucun planning publié">Votre planning apparaîtra ici dès qu&apos;il sera publié.</EmptyState></Card> : q.data.periods.map((p) => (

@@ -107,7 +107,8 @@ def data_subject_export(employee_id: str, ctx: Ctx = Depends(require("tenant.man
     out = {"employee": serialize(e)}
     for name, model in (("contracts", m.EmploymentContract), ("availabilities", m.Availability),
                         ("unavailabilities", m.Unavailability), ("partial_absences", m.PartialAbsence), ("leaves", m.LeaveRequest),
-                        ("preferences", m.EmployeePreference), ("assignments", m.Assignment), ("skills", m.EmployeeSkill), ("time_entries", m.TimeEntry)):
+                        ("preferences", m.EmployeePreference), ("assignments", m.Assignment), ("skills", m.EmployeeSkill), ("time_entries", m.TimeEntry),
+                        ("requests", m.EmployeeRequest)):
         out[name] = [serialize(o) for o in ctx.db.scalars(select(model).where(model.employee_id == e.id))]
     audit(ctx, "gdpr.access_export", "employee", e.id)
     return out
@@ -125,11 +126,14 @@ def data_subject_erase(employee_id: str, ctx: Ctx = Depends(require("tenant.mana
         fp = pr.frozen_params or {}
         if e.code in (fp.get("employees") or {}):
             pr.frozen_params = {**fp, "employees": {k: v for k, v in fp["employees"].items() if k != e.code}}
-    for model in (m.EmploymentContract, m.Availability, m.Unavailability, m.PartialAbsence, m.LeaveRequest, m.EmployeePreference, m.EmployeeSkill):
+    for model in (m.EmploymentContract, m.Availability, m.Unavailability, m.PartialAbsence, m.LeaveRequest, m.EmployeePreference, m.EmployeeSkill,
+                  m.EmployeeRequest):
         for o in ctx.db.scalars(select(model).where(model.employee_id == e.id)):
             ctx.db.delete(o)
     for r in ctx.db.scalars(select(m.RelationshipPreference).where((m.RelationshipPreference.employee_id == e.id) | (m.RelationshipPreference.other_employee_id == e.id))):
         ctx.db.delete(r)
+    for rq in ctx.db.scalars(select(m.EmployeeRequest).where(m.EmployeeRequest.colleague_employee_id == e.id)):  # demandes d'un collègue : sans texte libre
+        rq.note, rq.decision_note = None, None
     for t in ctx.db.scalars(select(m.TimeEntry).where(m.TimeEntry.employee_id == e.id)):  # les heures restent pour les agrégats, pas les remarques libres
         t.note, t.absence_reason = None, None
     ctx.db.execute(text("SELECT set_config('app.gdpr_erasure', 'on', true)"))  # seule dérogation à l'immuabilité des versions

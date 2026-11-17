@@ -13,9 +13,9 @@ Une fonctionnalité n'est classée « terminée et vérifiée » que si une vér
 |---|---|---|
 | Moteur, tests de correction (`packages/solver`) | **135 / 135** | local ; aussi **127 / 127 sous forte charge** (charge moyenne 44 sur 10 cœurs) et pendant la suite e2e |
 | Moteur, mesures de performance (marqueur `perf`) | à part : `scripts/ops/perf_engine.sh` | conditions consignées dans `docs/mesures-moteur.md` |
-| API (`apps/api`) | **148 / 148** | base PostgreSQL jetable par session (`planning_test_<pid>`) |
+| API (`apps/api`) | **153 / 153** | base PostgreSQL jetable par session (`planning_test_<pid>`) |
 | Interface, unitaires, dont contrastes WCAG AA | **119 / 119** | Vitest |
-| Navigateur e2e | **66 / 66** | pile Docker isolée (`infra/compose.e2e.yaml`, base `planning_e2e`) |
+| Navigateur e2e | **69 / 69** | pile Docker isolée (`infra/compose.e2e.yaml`, base `planning_e2e`) |
 | ruff, TypeScript, ESLint | sans erreur | |
 
 Fiabilité du moteur (deux échecs observés sous charge, corrigés à la source, sans relance ni délai allongé) :
@@ -125,6 +125,12 @@ Intermittences corrigées à la source :
 - Échange réciproque de deux shifts et duplication d'un shift sur d'autres jours : même contrôle et même confirmation qu'une affectation manuelle, tout ou rien, dérogations tracées, plafond mensuel jamais dérogeable.
 - Indépendance des plannings : horaires obligatoires et temps de déplacement sont conservés par chaque planning ; un planning antérieur à ces règles n'en hérite pas (différence seulement signalée, « Appliquer les paramètres actuels » reste explicite).
 
+**Espace collaborateur et circuit d'approbation** (migration 0014)
+- Depuis « Mon planning », un collaborateur relié à sa fiche demande un congé, une absence (journée ou partie de journée) ou un échange de shifts avec un collègue ; il suit le statut et peut annuler tant que rien n'est décidé.
+- Échange : accord du collègue d'abord, puis décision du responsable ; l'approbation passe par le même contrôle qu'un échange fait à l'écran (alertes, dérogation réservée, plafond jamais dérogeable). Échange devenu impossible (planning modifié) : signalé, jamais appliqué.
+- Page « Demandes » des responsables : shifts concernés affichés avant la décision ; un congé ou une absence approuvés ne retirent aucun shift (révision proposée si le planning est officiel). Un responsable ne traite jamais une demande qui le concerne.
+- Notifications à chaque étape ; demandes incluses dans l'export et l'effacement RGPD.
+
 **SaaS**
 - Rôles, cloisonnement RLS testé, périmètre d'un responsable de marque.
 - Journal d'audit, export et effacement RGPD.
@@ -160,7 +166,7 @@ Intermittences corrigées à la source :
 | 2 | Performances | Au-delà de 150 collaborateurs : à 150, le niveau « engagements » manque de temps (ses critères sont reportés, jamais perdus). |
 | 3 | Solutions multiples | Diversité mesurée et affichée entre simulations. |
 | 4 | Temps rémunéré | Pauses payées distinguées dans les compteurs. |
-| 5 | Espace collaborateur | Consultation du planning publié seulement. |
+| 5 | Espace collaborateur | Disponibilités récurrentes non modifiables par le collaborateur lui-même (demande à son responsable). |
 | 6 | API | Documentation métier (OpenAPI générée). |
 | 7 | Notifications | Dans l'application seulement ; l'e-mail dépend de la décision D2. |
 | 8 | Comptes | Créés par l'administrateur ; les invitations dépendent de D2. |
@@ -170,7 +176,7 @@ Intermittences corrigées à la source :
 
 1. Modifications groupées (plusieurs shifts en une opération), vérifiées par le même contrôle.
 2. Tuteur et binôme avec portée « horaires qui se chevauchent » (la portée élargie s'applique aujourd'hui aux collaborateurs à séparer).
-3. Espace collaborateur : disponibilités, congés, propositions d'échange, réponses aux remplacements, avec circuit d'approbation.
+3. Espace collaborateur : modification des disponibilités récurrentes et réponse aux propositions de remplacement (congés, absences et échanges : faits).
 4. Suivi de l'équité sur plusieurs mois.
 5. Vue semaine et vue client.
 6. Moteur : recherche à large voisinage (LNS), temps par niveau selon la taille, mesures au-delà de 150 collaborateurs et sur plusieurs mois.
@@ -191,7 +197,7 @@ Intermittences corrigées à la source :
 
 ## Prochaines étapes (ordre de priorité)
 
-1. Espace collaborateur et circuit d'approbation.
-2. Équité sur plusieurs mois, vues restantes.
+1. Équité sur plusieurs mois.
+2. Vues restantes (semaine, client).
 3. Moteur : LNS et mesures plus larges.
 4. Modifications groupées.

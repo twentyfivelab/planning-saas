@@ -601,6 +601,25 @@ class TimeEntry(TenantOwned, Base):
                       CheckConstraint("worked_minutes >= 0", name="ck_time_worked"))
 
 
+class EmployeeRequest(TenantOwned, Base):
+    """Demande d'un collaborateur (congé, absence d'une journée ou d'une partie de journée, échange de shifts avec un collègue).
+    Rien n'est appliqué sans décision d'un responsable ; un échange demande d'abord l'accord du collègue."""
+    __tablename__ = "employee_requests"
+    employee_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("employees.id", ondelete="CASCADE"), index=True)
+    kind: Mapped[str] = mapped_column(String(16))  # leave | absence | swap
+    payload: Mapped[Any] = mapped_column(JSONB, default=dict)
+    note: Mapped[Optional[str]] = mapped_column(String(500))
+    # pending (responsable) | awaiting_colleague (échange) | approved | refused | declined (collègue) | cancelled
+    status: Mapped[str] = mapped_column(String(24), default="pending")
+    colleague_employee_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("employees.id", ondelete="CASCADE"))
+    colleague_answered_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    created_by: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    decided_by: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    decided_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    decision_note: Mapped[Optional[str]] = mapped_column(String(500))
+    result: Mapped[Any] = mapped_column(JSONB, default=dict)  # ce qui a été appliqué (traçabilité)
+
+
 class Notification(TenantOwned, Base):
     """Notification interne : regroupée par publication (une seule par collaborateur, jamais une par modification)."""
     __tablename__ = "notifications"

@@ -19,7 +19,7 @@ export const useMe = () => useContext(MeCtx)!;
 
 // [adresse, libellé, icône, permission requise]
 const GROUPS: { title: string; items: [string, string, IconName, string][] }[] = [
-  { title: "Planifier", items: [["/", "nav.dashboard", "dashboard", "planning.read"], ["/planning", "nav.planning", "calendar", "planning.read"], ["/generate", "nav.generate", "sparkles", "planning.read"], ["/simulations", "nav.simulations", "swap", "planning.read"], ["/alerts", "nav.alerts", "bell", "planning.read"], ["/versions", "nav.versions", "history", "planning.read"]] },
+  { title: "Planifier", items: [["/", "nav.dashboard", "dashboard", "planning.read"], ["/planning", "nav.planning", "calendar", "planning.read"], ["/generate", "nav.generate", "sparkles", "planning.read"], ["/simulations", "nav.simulations", "swap", "planning.read"], ["/alerts", "nav.alerts", "bell", "planning.read"], ["/requests", "nav.requests", "check", "availability.write"], ["/versions", "nav.versions", "history", "planning.read"]] },
   { title: "Clients et équipes", items: [["/clients", "nav.clients", "briefcase", "referential.read"], ["/catalog", "nav.catalog", "briefcase", "planning.read"], ["/employees", "nav.employees", "users", "employees.read"]] },
   { title: "Suivi", items: [["/brand", "nav.brand", "calendar", "planning.brand-only"], ["/time", "nav.time", "clock", "planning.brand"], ["/budgets", "nav.budgets", "wallet", "planning.read"], ["/finance", "nav.finance", "wallet", "reports.read"]] },
   { title: "Paramètres", items: [["/rules", "nav.rules", "shield", "planning.read"], ["/settings", "nav.settings", "sparkles", "planning.read"], ["/import-export", "nav.io", "swap", "planning.read"]] },

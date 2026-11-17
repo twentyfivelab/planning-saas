@@ -376,7 +376,11 @@ def swap(pid: str, body: SwapIn, ctx: Ctx = Depends(require("planning.edit"))):
                                             .with_for_update()).scalars()}
     if body.a == body.b or len(rows) != 2:
         raise HTTPException(404, "Deux affectations distinctes de ce planning sont attendues")
-    A, B = rows[body.a], rows[body.b]
+    return perform_swap(ctx, p, rows[body.a], rows[body.b], body.force, body.reason)
+
+
+def perform_swap(ctx: Ctx, p: m.PlanningPeriod, A: m.Assignment, B: m.Assignment, force: bool, reason: Optional[str], origin: str = "échange réciproque") -> dict:
+    """Échange contrôlé et appliqué (utilisé par le bouton « Échanger » et par l'approbation d'une demande d'échange)."""
     if A.employee_id == B.employee_id:
         raise HTTPException(422, "Les deux affectations appartiennent au même collaborateur : rien à échanger")
     sa, sb = ctx.db.get(m.Shift, A.shift_id), ctx.db.get(m.Shift, B.shift_id)
@@ -385,20 +389,20 @@ def swap(pid: str, body: SwapIn, ctx: Ctx = Depends(require("planning.edit"))):
     issues = _issues(ctx, p, e2, sa, A, pre, moves={sb.slot_key: e1.code}, released=(sb.id,))
     issues += [i for i in _issues(ctx, p, e1, sb, B, pre, moves={sa.slot_key: e2.code}, released=(sa.id,))
                if (i["code"], i["message"]) not in {(x["code"], x["message"]) for x in issues}]
-    _decide(ctx, issues, (e1.id, e2.id), body.force, "Cet échange est")
+    _decide(ctx, issues, (e1.id, e2.id), force, "Cet échange est")
     months = sorted({(sa.day.year, sa.day.month), (sb.day.year, sb.day.month)})
     before_minutes = month_minutes(ctx.db, [e1.id, e2.id], months)
     A.employee_id, B.employee_id = e2.id, e1.id
-    _lock_manual(ctx, A, "échange réciproque")
-    _lock_manual(ctx, B, "échange réciproque")
+    _lock_manual(ctx, A, origin)
+    _lock_manual(ctx, B, origin)
     ctx.db.flush()
     guard_monthly_cap(ctx.db, ctx.tenant_id, before_minutes, [e1.id, e2.id], months)  # filet de sécurité : tout ou rien
     ensure_frozen(ctx.db, p)
     regularize.resolve(ctx.db, p.id)
     reminders = regularize.register_doubles(ctx.db, ctx.tenant_id, p.id, e2.id, A.id, ctx.user.id)
     reminders += regularize.register_doubles(ctx.db, ctx.tenant_id, p.id, e1.id, B.id, ctx.user.id)
-    extra = {"forced": bool(issues), "approved_by_role": ctx.user.role if issues else None, "reason": body.reason, "issues": [i["message"] for i in issues]}
-    audit(ctx, "assignment.swap", "assignment", A.id, {"a": assignment_detail(ctx.db, sa, e1, e2, **extra), "b": assignment_detail(ctx.db, sb, e2, e1)})
+    extra = {"forced": bool(issues), "approved_by_role": ctx.user.role if issues else None, "reason": reason, "issues": [i["message"] for i in issues]}
+    audit(ctx, "assignment.swap", "assignment", A.id, {"a": assignment_detail(ctx.db, sa, e1, e2, **extra), "b": assignment_detail(ctx.db, sb, e2, e1), "origin": origin})
     return {"swapped": [str(A.id), str(B.id)], "forced": bool(issues), "conflicts": _conflicts(ctx, p.id), "regularizations": reminders}
 
 
