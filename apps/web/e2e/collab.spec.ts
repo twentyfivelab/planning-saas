@@ -146,7 +146,7 @@ test("Kristina → Sahra : transfert depuis le calendrier de Sahra, deux plannin
   expect([days("Kristina", after), mins("Kristina", after)]).toEqual([before.k[0] - 1, before.k[1] - shift.effective_minutes]);
   // 5) historique puis persistance après actualisation
   await page.getByRole("button", { name: "Historique" }).click();
-  await expect(page.getByRole("dialog", { name: "Historique des modifications" }).getByRole("list", { name: "Modifications manuelles" }).locator("li").first()).toContainText("Kristina remplacé·e par Sahra");
+  await expect(page.getByRole("dialog", { name: "Historique des modifications" }).getByRole("list", { name: "Historique des modifications" }).locator("li").first()).toContainText("Kristina → Sahra");
   await page.keyboard.press("Escape");
   await page.reload(); await page.waitForLoadState("networkidle");
   await expect(cellOf("Sahra").locator(".shift")).toHaveCount(1);

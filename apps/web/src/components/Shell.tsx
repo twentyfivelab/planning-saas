@@ -19,15 +19,17 @@ export const useMe = () => useContext(MeCtx)!;
 
 // [adresse, libellé, icône, permission requise]
 const GROUPS: { title: string; items: [string, string, IconName, string][] }[] = [
-  { title: "Planifier", items: [["/", "nav.dashboard", "dashboard", "planning.read"], ["/planning", "nav.planning", "calendar", "planning.read"], ["/generate", "nav.generate", "sparkles", "planning.read"], ["/simulations", "nav.simulations", "swap", "planning.read"], ["/alerts", "nav.alerts", "bell", "planning.read"], ["/requests", "nav.requests", "check", "availability.write"], ["/versions", "nav.versions", "history", "planning.read"]] },
-  { title: "Clients et équipes", items: [["/clients", "nav.clients", "briefcase", "referential.read"], ["/catalog", "nav.catalog", "briefcase", "planning.read"], ["/employees", "nav.employees", "users", "employees.read"]] },
-  { title: "Suivi", items: [["/brand", "nav.brand", "calendar", "planning.brand-only"], ["/time", "nav.time", "clock", "planning.brand"], ["/budgets", "nav.budgets", "wallet", "planning.read"], ["/fairness", "nav.fairness", "users", "reports.read"], ["/finance", "nav.finance", "wallet", "reports.read"]] },
-  { title: "Paramètres", items: [["/rules", "nav.rules", "shield", "planning.read"], ["/settings", "nav.settings", "sparkles", "planning.read"], ["/import-export", "nav.io", "swap", "planning.read"]] },
+  // l'essentiel : consulter le planning, générer, modifier, traiter les alertes, consulter l'historique
+  { title: "Planning", items: [["/", "nav.dashboard", "dashboard", "planning.read"], ["/planning", "nav.planning", "calendar", "planning.read"], ["/brand", "nav.brand", "calendar", "planning.brand-only"], ["/generate", "nav.generate", "sparkles", "planning.read"], ["/alerts", "nav.alerts", "bell", "planning.read"], ["/history", "nav.history", "history", "planning.history"], ["/versions", "nav.versions", "history", "planning.read"]] },
+  // les collaborateurs, leurs disponibilités et leurs demandes
+  { title: "Équipe", items: [["/employees", "nav.employees", "users", "employees.read"], ["/requests", "nav.requests", "check", "availability.write"], ["/time", "nav.time", "clock", "planning.brand"]] },
+  { title: "Configuration", items: [["/catalog", "nav.catalog", "briefcase", "planning.read"], ["/clients", "nav.clients", "briefcase", "referential.read"], ["/budgets", "nav.budgets", "wallet", "planning.read"], ["/rules", "nav.rules", "shield", "planning.read"], ["/settings", "nav.settings", "sparkles", "planning.read"], ["/import-export", "nav.io", "swap", "planning.read"]] },
   { title: "Mon espace", items: [["/me", "nav.me", "calendar", "self.read"]] },
 ];
 const ROLE_LABEL: Record<string, string> = { owner: "Propriétaire", admin: "Administrateur", manager: "Manager", planner: "Planificateur", brand_manager: "Responsable de marque", employee: "Collaborateur", auditor: "Auditeur" };
 const allowed = (me: Me, href: string, perm: string) => {
   if (href === "/me") return me.role === "employee" || !!me.employee_id; // espace personnel : uniquement un compte relié à une fiche
+  if (perm === "planning.history") return me.permissions.includes("planning.read") || me.permissions.includes("planning.brand");
   return perm === "planning.brand-only" ? me.permissions.includes("planning.brand") && !me.permissions.includes("planning.read") : me.permissions.includes(perm);
 };
 

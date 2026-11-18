@@ -26,7 +26,16 @@ test.beforeAll(async ({ browser }) => {
   const rows = (await j(page, `/periods/${pid}/schedule`)).assignments as Row[];
   const emps = ((await j(page, "/employees")) as { id: string; name: string; deleted_at: string | null }[]).filter((e) => !e.deleted_at && rows.some((r) => r.employee_id === e.id));
   const tag = Date.now().toString(36);
-  for (const e of emps.slice(0, 2)) {
+  // deux collaborateurs qui ont chacun un shift un jour où l'autre ne travaille pas (nécessaire au test d'échange)
+  const days = (id: string) => new Set(rows.filter((r) => r.employee_id === id).map((r) => r.day));
+  let pair = emps.slice(0, 2);
+  outer: for (const x of emps) for (const y of emps) {
+    if (x.id === y.id) continue;
+    const dx = days(x.id), dy = days(y.id);
+    const onlyX = [...dx].filter((d) => !dy.has(d)), onlyY = [...dy].filter((d) => !dx.has(d));
+    if (onlyX.length && onlyY.some((d) => d !== onlyX[0])) { pair = [x, y]; break outer; }
+  }
+  for (const e of pair) {
     const email = `collab-${tag}-${users.length}@e2e.example`;
     const r = await page.request.post(`${API}/users`, { headers: { "X-CSRF-Token": token }, data: { email, name: e.name, role: "employee", password: PW, employee_id: e.id } });
     expect(r.status(), await r.text()).toBe(201);

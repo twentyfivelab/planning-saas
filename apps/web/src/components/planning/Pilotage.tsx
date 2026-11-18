@@ -1,10 +1,9 @@
 "use client";
-import Link from "next/link";
 import { useApi } from "@/components/hooks";
 import { Badge, Card, EmptyState } from "@/components/ui/primitives";
 import { BarList } from "@/components/ui/Charts";
 import { brandColor } from "@/lib/brand";
-import { SOFT_LABEL, fmtCHF, fmtH } from "@/lib/wfm";
+import { SOFT_LABEL, fmtH } from "@/lib/wfm";
 
 type EmpRow = { id: string; name: string; minutes: number; target_minutes: number; contract_target: boolean; gap_minutes: number; attainment: number | null; days: number; sundays: number; opens: number; closes: number; max_consecutive: number; sites: number };
 export type Pilot = {
@@ -17,12 +16,11 @@ export type Pilot = {
   finance: { planned_minutes: number; actual_minutes: number; validated_minutes: number; cost_planned_cents?: number | null; cost_actual_cents?: number | null; billable_planned_cents?: number | null; margin_planned_cents?: number | null; complete?: boolean } | null;
 };
 
-/** Pilotage du mois : collaborateurs, remplacements, équité, sites et finances, à partir des données enregistrées. */
+/** Pilotage du mois : collaborateurs, remplacements, sites, budgets et répartition, à partir des données enregistrées. */
 export function Pilotage({ periodId }: { periodId: string }) {
   const q = useApi<Pilot>(`/periods/${periodId}/dashboard`);
   const d = q.data;
   if (!d) return null;
-  const f = d.finance;
   const rows = [...d.equity.employees].sort((a, b) => (a.attainment ?? 0) - (b.attainment ?? 0));
   const maxSite = Math.max(1, ...d.sites.map((s) => s.minutes));
   return (
@@ -36,16 +34,6 @@ export function Pilotage({ periodId }: { periodId: string }) {
           <p className="kpi-value num">{d.planning.pending_replacements + d.planning.uncovered}</p>
           <p className="kpi-sub">{d.planning.pending_replacements} titulaire(s) indisponible(s) · {d.planning.uncovered} shift(s) non couvert(s), {fmtH(d.planning.uncovered_minutes)}</p>
         </Card>
-        <Card eyebrow="Équité" title="Écart aux objectifs" lift>
-          <p className="kpi-value num">{fmtH(d.equity.gap_to_targets_minutes)}</p>
-          <p className="kpi-sub">{d.people.under_target.length} sous leur objectif · {d.people.near_limits.length} proche(s) d&apos;une limite · dimanches {d.equity.sundays_min}–{d.equity.sundays_max} · jusqu&apos;à {d.equity.max_consecutive} jours d&apos;affilée</p>
-        </Card>
-        {f && <Card eyebrow="Finances" title="Coût et marge" lift>
-          {f.cost_planned_cents === undefined ? <><p className="kpi-value num">{fmtH(f.planned_minutes)}</p><p className="kpi-sub">planifiées · {fmtH(f.actual_minutes)} saisies · {fmtH(f.validated_minutes)} validées</p></> : (
-            <><p className="kpi-value num" style={{ fontSize: "var(--text-lg)" }}>{fmtCHF(f.margin_planned_cents) ?? "Non renseigné"}</p>
-              <p className="kpi-sub">Marge estimée · coût prévu {fmtCHF(f.cost_planned_cents) ?? "non renseigné"} · facturable {fmtCHF(f.billable_planned_cents) ?? "non renseigné"}{f.complete === false ? " · données partielles" : ""}</p></>)}
-          <div style={{ marginTop: "var(--sp-2)" }}><Link href="/finance" className="btn btn-sm">Voir le détail</Link></div>
-        </Card>}
       </div>
       <div className="grid-2">
         <Card title="Heures par site" eyebrow="Travail effectif">

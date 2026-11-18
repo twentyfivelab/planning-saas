@@ -352,6 +352,6 @@ def apply_simulation(rid: str, body: Optional[ApplyIn] = None, ctx: Ctx = Depend
         freeze_period(ctx.db, p, "generation", cap_used=inp.config.monthly_cap_minutes)
     else:
         ensure_frozen(ctx.db, p, "generation")
-    audit(ctx, "simulation.applied", "run", run.id, {"strategy": (run.config or {}).get("strategy"), "label": label, "safety_version": safety.number, "version": v.number,
+    audit(ctx, "simulation.applied", "run", run.id, {"period_id": str(p.id), "period": p.name, "strategy": (run.config or {}).get("strategy"), "label": label, "safety_version": safety.number, "version": v.number,
                                                      "changes": (rep.get("metrics") or {}).get("changes")})
     return {"applied": True, "version": v.number, "safety_version": safety.number, "conflicts": _conflicts(ctx, p.id)}

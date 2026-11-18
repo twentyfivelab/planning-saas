@@ -147,23 +147,6 @@ test("échange réciproque et duplication depuis le détail d'un shift : même c
   expect(((await j(page, `/periods/${pid}/schedule`)).assignments as Row[]).length).toBe(before);
 });
 
-test("équité sur plusieurs mois : compteurs affichés identiques au calcul, sans débordement sur mobile", async ({ page }) => {
-  await page.goto("/fairness"); await page.waitForLoadState("networkidle");
-  const month = await page.evaluate(() => { try { return localStorage.getItem("planning:month"); } catch { return null; } });
-  const rep = await j(page, `/reports/fairness?to=${month ?? "2026-11"}&months=6`) as { employees: { employee: string; total: { weekends: number; sundays: number; days: number } }[] };
-  const table = page.getByTestId("fairness");
-  await expect(table).toBeVisible();
-  const first = rep.employees[0];
-  const row = table.getByRole("row").filter({ hasText: first.employee }).first();
-  await expect(row.locator('td[data-label="Week-ends"]')).toContainText(String(first.total.weekends));
-  await expect(row.locator('td[data-label="Dimanches"]')).toContainText(String(first.total.sundays));
-  const rep3 = await j(page, `/reports/fairness?to=${month ?? "2026-11"}&months=3`) as { months: { label: string }[] };
-  await page.getByLabel("Période").selectOption("3");
-  await expect(page.getByRole("heading", { name: `${rep3.months[0].label} – ${rep3.months[2].label}` })).toBeVisible();
-  await page.setViewportSize({ width: 390, height: 844 });
-  expect(await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth)).toBe(false);
-});
-
 test("vue semaine : du lundi au dimanche, shifts exacts jour par jour, navigation entre les semaines, mobile sans débordement", async ({ page }) => {
   const pid = ((await j(page, "/periods")) as { id: string; start_date: string }[]).find((p) => p.start_date === "2026-11-01")!.id;
   const rows = (await j(page, `/periods/${pid}/schedule`)).assignments as Row[];

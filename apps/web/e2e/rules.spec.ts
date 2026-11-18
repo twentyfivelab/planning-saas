@@ -75,7 +75,8 @@ test("fiche : minimum et maximum de jours par mois côte à côte (1–30), jour
   const dlg = await openSheet(page, "Zaki");
   const min = dlg.getByLabel("Minimum de jours par mois"), max = dlg.getByLabel("Maximum de jours par mois");
   await expect(min).toHaveValue(""); await expect(max).toHaveValue("");
-  await dlg.evaluate((el) => Promise.all(el.getAnimations({ subtree: true }).map((x) => x.finished))); // mesure après l'animation d'ouverture
+  // mesure après l'animation d'ouverture (les animations continues, comme un squelette de chargement, et celles interrompues sont ignorées)
+  await dlg.evaluate((el) => Promise.all(el.getAnimations({ subtree: true }).filter((x) => x.effect?.getComputedTiming().iterations !== Infinity).map((x) => x.finished.catch(() => null))));
   const [a, b] = [await min.boundingBox(), await max.boundingBox()];
   expect(Math.abs(a!.y - b!.y)).toBeLessThan(4); expect(b!.x).toBeGreaterThan(a!.x + a!.width - 2);
   for (const sel of [min, max]) { const opts = await sel.locator("option").allTextContents(); expect(opts[0]).toBe("Pas de préférence"); expect(opts).toHaveLength(31); expect(opts.at(-1)).toBe("30"); }
@@ -314,7 +315,7 @@ test("calendrier d'un collaborateur : transfert d'un shift occupé, planning gé
   await expect(page.locator(".month-cell").nth(6 + Number(a.day.slice(8)) - 1)).toContainText(a.site); // 1er nov. 2026 = dimanche
   await page.getByRole("button", { name: "Historique" }).click();
   const hist = page.getByRole("dialog", { name: "Historique des modifications" });
-  await expect(hist.getByRole("list", { name: "Modifications manuelles" }).locator("li").first()).toContainText(`${a.employee} remplacé·e par ${to.name}`);
+  await expect(hist.getByRole("list", { name: "Historique des modifications" }).locator("li").first()).toContainText(`${a.employee} → ${to.name}`);
 });
 
 test("contrainte détectée : alerte claire, « Annuler » laisse le planning inchangé, « Accepter quand même » enregistre la dérogation", async ({ page }) => {
@@ -338,7 +339,7 @@ test("contrainte détectée : alerte claire, « Annuler » laisse le planning in
   await expect(page.getByText(new RegExp(`transféré à ${to.name}`))).toBeVisible();
   expect((await sched(page)).some((x) => x.employee === to.name && x.day === a.day)).toBe(true);
   await page.getByRole("button", { name: "Historique" }).click();
-  const first = page.getByRole("dialog", { name: "Historique des modifications" }).getByRole("list", { name: "Modifications manuelles" }).locator("li").first();
+  const first = page.getByRole("dialog", { name: "Historique des modifications" }).getByRole("list", { name: "Historique des modifications" }).locator("li").first();
   await expect(first).toContainText("Dérogation");
   await expect(first).toContainText("Remplacement de dernière minute");
 });

@@ -1,6 +1,6 @@
 # Suivi du programme WFM : état réel
 
-Mise à jour : 17 novembre 2026.
+Mise à jour : 18 novembre 2026.
 
 Une fonctionnalité n'est classée « terminée et vérifiée » que si une vérification exécutée la couvre. Les autres sont « partielles » (utilisables, avec des limites) ou « restantes ». Documents liés :
 - `docs/moteur-evaluation.md` (choix du moteur, mesures) ;
@@ -13,9 +13,9 @@ Une fonctionnalité n'est classée « terminée et vérifiée » que si une vér
 |---|---|---|
 | Moteur, tests de correction (`packages/solver`) | **136 / 136** | local ; aussi **127 / 127 sous forte charge** (charge moyenne 44 sur 10 cœurs) et pendant la suite e2e |
 | Moteur, mesures de performance (marqueur `perf`) | à part : `scripts/ops/perf_engine.sh` | conditions consignées dans `docs/mesures-moteur.md` |
-| API (`apps/api`) | **156 / 156** | base PostgreSQL jetable par session (`planning_test_<pid>`) |
+| API (`apps/api`) | **160 / 160** | base PostgreSQL jetable par session (`planning_test_<pid>`) |
 | Interface, unitaires, dont contrastes WCAG AA | **120 / 120** | Vitest |
-| Navigateur e2e | **73 / 73** | pile Docker isolée (`infra/compose.e2e.yaml`, base `planning_e2e`) |
+| Navigateur e2e | **74 / 74** | pile Docker isolée (`infra/compose.e2e.yaml`, base `planning_e2e`) |
 | ruff, TypeScript, ESLint | sans erreur | |
 
 Fiabilité du moteur (deux échecs observés sous charge, corrigés à la source, sans relance ni délai allongé) :
@@ -131,7 +131,7 @@ Intermittences corrigées à la source :
 
 **Équité sur plusieurs mois**
 - Le moteur reçoit, pour chaque collaborateur, les jours de week-end et les dimanches travaillés dans les 3 mois civils précédents. Un shift de week-end ou de dimanche coûte davantage à qui en a eu plus que la moyenne de l'équipe ; à heures égales, les week-ends vont d'abord à ceux qui en ont eu le moins (test : la décision suit l'historique dans les deux sens). Coût identique entre le solveur et l'évaluateur indépendant.
-- Page « Équité » (3, 6 ou 12 mois) : travail effectif, jours, week-ends et dimanches de chacun, écart à la moyenne de l'équipe, détail des week-ends par mois (valeurs vérifiées contre les plannings).
+- Rapport d'équité sur plusieurs mois disponible par l'API (`/reports/fairness`) ; la page « Équité » a été retirée de l'interface à votre demande.
 - Plannings existants : ce nouveau critère ne s'applique pas à une régénération avec les paramètres conservés et n'apparaît pas comme une « différence ».
 
 **Espace collaborateur et circuit d'approbation** (migration 0014)
@@ -139,6 +139,20 @@ Intermittences corrigées à la source :
 - Échange : accord du collègue d'abord, puis décision du responsable ; l'approbation passe par le même contrôle qu'un échange fait à l'écran (alertes, dérogation réservée, plafond jamais dérogeable). Échange devenu impossible (planning modifié) : signalé, jamais appliqué.
 - Page « Demandes » des responsables : shifts concernés affichés avant la décision ; un congé ou une absence approuvés ne retirent aucun shift (révision proposée si le planning est officiel). Un responsable ne traite jamais une demande qui le concerne.
 - Notifications à chaque étape ; demandes incluses dans l'export et l'effacement RGPD.
+
+**Historique des modifications** (journal d'audit existant, complété ; aucune copie)
+- Page « Historique », fenêtre « Historique » du planning (mois affiché) et section de la fiche collaborateur.
+- Chaque événement, en langage simple : date et heure de la modification (fuseau de l'entreprise), auteur, planning, date du shift (distincte), collaborateurs, site, marque, ancienne et nouvelle valeur.
+- Types : ajouts, suppressions, remplacements, échanges, changements d'horaires, modifications groupées (résumé et détail consultable), verrouillages, générations, propositions appliquées, restaurations et publications de versions.
+- Filtres : période, collaborateur, site, marque, utilisateur, type d'action ; « Afficher plus » pour remonter le temps.
+- Droits : planning complet pour les rôles qui le lisent ; un responsable de marque ne voit que ses marques ; un collaborateur n'y a pas accès.
+- Seules les opérations réussies apparaissent (journal écrit dans la même transaction) ; les noms sont figés au moment de la modification (collaborateur retiré toujours lisible) ; les informations absentes des anciens événements sont indiquées « non enregistré », jamais déduites.
+- Aucune opération ne change le site ou la marque d'un shift existant : ces informations figurent dans chaque événement, mais il n'y a pas d'événement « changement de site ou de marque » à enregistrer.
+
+**Interface simplifiée** (le moteur est inchangé)
+- Retirés de l'interface : « Rentabilité », « Équité », « Simulations », ainsi que leurs cartes (équité et coût/marge du tableau de bord) et raccourcis. Les mécanismes internes restent : optimisation, équilibrage (y compris sur plusieurs mois), contraintes, pondérations, contrôles, aperçus de réoptimisation dans « Déclarer une absence » et pour les missions. Aucune donnée ni règle supprimée.
+- Navigation : Planning (tableau de bord, planning, génération, alertes, historique, versions), Équipe (collaborateurs, demandes, heures réelles), Configuration (sites et marques, clients, budgets, règles, paramètres, import / export).
+- Paramètres : les priorités courantes restent visibles ; la logique d'optimisation, les poids bruts du moteur et l'influence de la dernière génération sont rangés dans « Paramètres avancés ». Aucune valeur n'a été modifiée (vérifié par un test).
 
 **SaaS**
 - Rôles, cloisonnement RLS testé, périmètre d'un responsable de marque.

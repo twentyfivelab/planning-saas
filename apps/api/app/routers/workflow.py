@@ -40,7 +40,7 @@ class VersionIn(BaseModel):
 def create_version(pid: str, body: Optional[VersionIn] = None, label: Optional[str] = None, ctx: Ctx = Depends(require("planning.edit"))):
     p = get_or_404(ctx, m.PlanningPeriod, pid)
     v = make_version(ctx.db, ctx.tenant_id, p.id, (body.label if body else None) or label, "manual", ctx.user.id, note=body.note if body else None)
-    audit(ctx, "version.create", "version", v.id, {"number": v.number, "label": v.label})
+    audit(ctx, "version.create", "version", v.id, {"number": v.number, "label": v.label, "period_id": str(p.id), "period": p.name})
     return _view(v)
 
 
@@ -99,7 +99,7 @@ def validate_version(vid: str, ctx: Ctx = Depends(require("planning.validate")))
     if bad:
         raise HTTPException(409, detail={"code": "hard_violations", "message": f"{len(bad)} contrainte(s) stricte(s) non respectée(s) : validation refusée.", "violations": bad[:20]})
     v.state, v.validated_by, v.validated_at = "validated", ctx.user.id, datetime.now(timezone.utc)
-    audit(ctx, "version.validate", "version", v.id, {"number": v.number})
+    audit(ctx, "version.validate", "version", v.id, {"number": v.number, "period_id": str(v.period_id)})
     ctx.db.flush()
     return _view(v)
 
@@ -180,7 +180,7 @@ def publish(vid: str, body: Optional[PublishIn] = None, ctx: Ctx = Depends(requi
                                       body=_summary(c) if not first else f"{c['added']} shift(s) planifié(s).", payload={"period_id": str(p.id), "version": v.number, **c}))
             sent += 1
     ctx.db.flush()
-    audit(ctx, "version.publish", "version", v.id, {"number": v.number, "period": p.name, "notifications": sent})
+    audit(ctx, "version.publish", "version", v.id, {"number": v.number, "period": p.name, "period_id": str(p.id), "notifications": sent})
     return {**_view(v), "notifications": sent}
 
 
@@ -261,7 +261,7 @@ def restore(vid: str, ctx: Ctx = Depends(require("planning.edit"))):
     from .. import regularize
     regularize.resolve(ctx.db, v.period_id)  # une version qui ferait dépasser le plafond n'est pas restaurée
     ensure_frozen(ctx.db, period)
-    audit(ctx, "version.restore", "version", v.id, {"number": v.number, "changed": changed, "skipped": skipped[:50], "safety_version": safety.number})
+    audit(ctx, "version.restore", "version", v.id, {"number": v.number, "period_id": str(v.period_id), "period": period.name, "changed": changed, "skipped": skipped[:50], "safety_version": safety.number})
     return {"restored": v.number, "changed": changed, "skipped": len(skipped), "safety_version": safety.number, "conflicts": _conflicts(ctx, v.period_id)}
 
 

@@ -6,7 +6,7 @@ import { Badge, Callout, Card, EmptyState, ErrorState, PageHead, SkeletonCard } 
 import { BarList, Ring } from "@/components/ui/Charts";
 import { Icon } from "@/components/ui/Icon";
 import { brandColor } from "@/lib/brand";
-import { budgetProgress, coverageRate, equityIndicator, hoursByEmployee, plannedByBrand, type BudgetRow } from "@/lib/metrics";
+import { budgetProgress, coverageRate, hoursByEmployee, plannedByBrand, type BudgetRow } from "@/lib/metrics";
 import { issueTitle } from "@/lib/issues";
 import { fmtHM, type Assignment } from "@/lib/schedule";
 import { SundayStrip } from "@/components/planning/SundayCounter";
@@ -41,7 +41,6 @@ export default function Dashboard() {
   const unplannableMin = unplannable.reduce((s, b) => s + b.target_minutes, 0);
   const uncovered = sched.data?.uncovered.length ?? 0;
   const cover = coverageRate(a.length, uncovered);
-  const eq = equityIndicator(emp.map((e) => e.minutes));
   const violations = conf.data?.hard_violations.length ?? 0;
   const issues = [...(diag.data?.report.diagnostics ?? []), ...(diag.data?.report.missing_data ?? [])];
   const important = issues.filter((i) => i.severity === "blocking" || i.severity === "warning");
@@ -58,7 +57,7 @@ export default function Dashboard() {
       {sched.error || budgets.error ? <ErrorState message={(sched.error || budgets.error)!} onRetry={() => { sched.reload(); budgets.reload(); }} /> : loading ? (
         <div className="grid-kpi"><SkeletonCard /><SkeletonCard /><SkeletonCard /><SkeletonCard /></div>
       ) : !a.length ? (
-        <Card><EmptyState icon="sparkles" title="Pas encore de planning" action={<Link href="/generate" className="btn btn-primary">Lancer une simulation</Link>}>Aucune affectation pour cette période. Une génération produit une proposition exploratoire tant que contrats et besoins sont incomplets.</EmptyState></Card>
+        <Card><EmptyState icon="sparkles" title="Pas encore de planning" action={<Link href="/generate" className="btn btn-primary">Générer un planning</Link>}>Aucune affectation pour cette période. Une génération produit une proposition exploratoire tant que contrats et besoins sont incomplets.</EmptyState></Card>
       ) : (
         <>
           <div className="grid-kpi">
@@ -107,17 +106,7 @@ export default function Dashboard() {
             </Card>
           </div>
 
-          <div className="grid-2">
-            <Card title="Équité de répartition" eyebrow="Indicateur indicatif">
-              {eq ? (
-                <>
-                  <p className="kpi-value num">{(eq.cv * 100).toFixed(0)} %</p>
-                  <p className="kpi-sub">dispersion des heures (écart-type / moyenne) · de {fmtHM(eq.min)} à {fmtHM(eq.max)} par collaborateur</p>
-                  <Callout kind="info"><span>Indicatif seulement : sans contrats ni disponibilités complètes, l&apos;équité ne peut pas être évaluée relativement aux heures contractuelles. Les poids d&apos;attribution sont des préférences souples.</span></Callout>
-                </>
-              ) : <EmptyState icon="users" title="Pas assez de données">Au moins deux collaborateurs planifiés sont nécessaires.</EmptyState>}
-            </Card>
-            <Card title="Alertes importantes" eyebrow="Dernier diagnostic" actions={<Link href="/alerts" className="btn btn-sm">Tout voir</Link>}>
+          <Card title="Alertes importantes" eyebrow="Dernier diagnostic" actions={<Link href="/alerts" className="btn btn-sm">Tout voir</Link>}>
               {important.length === 0 && !violations ? <EmptyState icon="check" title="Aucune alerte importante">Aucun avertissement dans le dernier diagnostic.</EmptyState> : (
                 <ul className="stack" style={{ listStyle: "none", padding: 0, margin: 0 }}>
                   {violations > 0 && <li><Badge tone="bad" icon="alert">{violations} conflit(s) dur(s)</Badge></li>}
@@ -125,7 +114,7 @@ export default function Dashboard() {
                 </ul>
               )}
             </Card>
-          </div>
+
 
           <Card title="Hypothèses et contraintes non validées" eyebrow="À lire avant toute décision">
             <ul className="stack" style={{ margin: 0, paddingLeft: "1.1rem" }}>

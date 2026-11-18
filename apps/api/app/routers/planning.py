@@ -183,7 +183,9 @@ def _set_lock(ctx: Ctx, aid: str, locked: bool) -> dict:
     else:
         for l in ctx.db.scalars(select(m.LockedAssignment).where(m.LockedAssignment.assignment_id == a.id)):
             ctx.db.delete(l)
-    audit(ctx, "assignment.lock" if locked else "assignment.unlock", "assignment", a.id)
+    from ..history import assignment_detail
+    who = ctx.db.get(m.Employee, a.employee_id)
+    audit(ctx, "assignment.lock" if locked else "assignment.unlock", "assignment", a.id, assignment_detail(ctx.db, ctx.db.get(m.Shift, a.shift_id), who, who))
     return {"id": str(a.id), "locked": a.locked}
 
 
@@ -296,6 +298,8 @@ def edit_shift(sid: str, body: ShiftPatch, ctx: Ctx = Depends(require("planning.
     except ValueError as e:
         raise HTTPException(422, str(e))
     old = sh.effective_minutes or 1
+    from ..history import shift_context
+    before_ctx = {**shift_context(ctx.db, sh), "break_minutes": sh.break_minutes}  # valeurs AVANT la modification (historique)
     month = [(sh.day.year, sh.day.month)]
     before_minutes = month_minutes(ctx.db, [a.employee_id for a in ass], month)
     sh.start_time, sh.end_time, sh.break_minutes = body.start_time, body.end_time, body.break_minutes
@@ -310,7 +314,12 @@ def edit_shift(sid: str, body: ShiftPatch, ctx: Ctx = Depends(require("planning.
             b.minutes = body.break_minutes
     ctx.db.flush()
     guard_monthly_cap(ctx.db, ctx.tenant_id, before_minutes, [a.employee_id for a in ass], month)
-    audit(ctx, "shift.edit", "shift", sh.id, {"start": str(body.start_time), "end": str(body.end_time)})
+    who = [ctx.db.get(m.Employee, a.employee_id) for a in ass]
+    audit(ctx, "shift.edit", "shift", sh.id, {**before_ctx, "start": str(body.start_time), "end": str(body.end_time),
+                                               "before": {"start": before_ctx["start"], "end": before_ctx["end"], "break_minutes": before_ctx["break_minutes"]},
+                                               "after": {"start": body.start_time.isoformat(), "end": body.end_time.isoformat(), "break_minutes": body.break_minutes},
+                                               "employees": [{"id": str(e.id), "name": e.name} for e in who if e], "employee_ids": [str(e.id) for e in who if e],
+                                               "override": bool(allowed) and not any(a_["start"] == body.start_time.isoformat() and a_["end"] == body.end_time.isoformat() for a_ in allowed)})
     return {"id": str(sh.id), "presence_minutes": h.presence_minutes, "effective_minutes": h.effective_minutes,
             "conflicts": _conflicts(ctx, sh.period_id)}
 

@@ -26,10 +26,13 @@ async function cleanup(page: Page) {
   }
 }
 
-test("navigation : les nouveaux espaces sont accessibles et le design reste en place", async ({ page }) => {
+test("navigation : organisée autour des actions essentielles, sans Rentabilité, Équité ni Simulations", async ({ page }) => {
   await page.goto("/"); await page.waitForLoadState("networkidle");
   const nav = page.getByRole("navigation", { name: "Navigation principale" });
-  for (const name of ["Clients et missions", "Simulations", "Heures réelles", "Rentabilité"]) await expect(nav.getByRole("link", { name: new RegExp(name) })).toBeVisible();
+  for (const name of ["Planning", "Génération", "Alertes", "Historique", "Collaborateurs", "Clients et missions", "Heures réelles", "Paramètres"]) await expect(nav.getByRole("link", { name: new RegExp(`^${name}$`) }).first()).toBeVisible();
+  for (const name of ["Simulations", "Rentabilité", "Équité"]) await expect(nav.getByRole("link", { name })).toHaveCount(0);
+  for (const path of ["/simulations", "/finance", "/fairness"]) expect((await page.request.get(path)).status()).toBe(404); // écrans retirés
+  await page.goto("/"); await page.waitForLoadState("networkidle");
   await expect(nav.getByRole("link", { name: "Mon planning" })).toHaveCount(0); // compte sans fiche collaborateur : pas d'espace personnel
   await expect(nav.locator(".history-nav").getByRole("link").first()).toBeInViewport(); // historique des plannings visible sans défiler
   await expect(page.locator(".sidebar.glass")).toBeVisible();
@@ -128,33 +131,7 @@ test("déclarer une absence puis réoptimiser partiellement : seul le shift conc
   }
 });
 
-test("simulations : comparaison mesurable, planning en cours intact", async ({ page }) => {
-  test.setTimeout(150_000);
-  await page.setViewportSize({ width: 1440, height: 1100 });
-  await page.goto("/"); await toNovember(page);
-  const pid = await nov(page);
-  const before = JSON.stringify((await schedule(page, pid)).map((a) => [a.slot_key, a.employee]).sort());
-  await page.goto("/simulations"); await page.waitForLoadState("networkidle");
-  for (const n of ["Préférences des collaborateurs", "Stabilité maximale"]) await page.getByRole("checkbox", { name: new RegExp(n) }).uncheck();
-  await page.getByLabel("Durée maximale par simulation (secondes)").fill("5");
-  await page.getByRole("button", { name: "Lancer la comparaison" }).click();
-  const table = page.getByRole("table", { name: "Comparaison des simulations" });
-  await expect(table.getByRole("row").filter({ hasText: "Planning actuel" })).toBeVisible();
-  const eq = table.getByRole("row").filter({ hasText: "Équité prioritaire" }).first();
-  await expect(eq).toContainText("%", { timeout: 90_000 }); // calculé par le worker ; la page se met à jour seule
-  await expect(page.getByRole("button", { name: "Lancer la comparaison" })).toBeEnabled({ timeout: 90_000 });
-  expect(JSON.stringify((await schedule(page, pid)).map((a) => [a.slot_key, a.employee]).sort())).toBe(before);
-  await eq.getByRole("button", { name: /Voir le détail/ }).click();
-  const dialog = page.getByRole("dialog", { name: "Équité prioritaire" });
-  await expect(dialog.getByText(/modification|Aucune affectation ne changerait/).first()).toBeVisible();
-  await dialog.getByRole("button", { name: "Fermer" }).click();
-  const token = await csrf(page);
-  for (const s of (await getJson(page, `/periods/${pid}/simulations`)) as { run_id: string; applied_at: string | null; label: string | null }[]) {
-    if (!s.applied_at) await page.request.delete(`${API}/simulations/${s.run_id}`, { headers: { "X-CSRF-Token": token } });
-  }
-});
-
-test("versions : statut et publication refusée tant que les contrats manquent, heures réelles et rentabilité", async ({ page }) => {
+test("versions : statut et publication refusée tant que les contrats manquent, heures réelles", async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 1100 });
   await page.goto("/"); await toNovember(page);
   await page.goto("/versions"); await page.waitForLoadState("networkidle");
@@ -189,9 +166,6 @@ test("versions : statut et publication refusée tant que les contrats manquent, 
   await line.getByRole("button", { name: `Retirer la validation de ${a.employee}` }).click();
   await expect(line).toContainText("À valider");
   expect((await page.request.delete(`${API}/shifts/${a.shift_id}/time-entry`, { headers: { "X-CSRF-Token": token } })).status()).toBe(204);
-  await page.goto("/finance"); await page.waitForLoadState("networkidle");
-  await page.getByRole("tab", { name: "Marques" }).click();
-  await expect(page.getByRole("table", { name: "Heures et rentabilité" })).toContainText(/Non renseigné/); // aucun montant inventé
 });
 
 test("le tableau de bord présente le pilotage du mois", async ({ page }) => {
@@ -199,7 +173,8 @@ test("le tableau de bord présente le pilotage du mois", async ({ page }) => {
   await page.reload(); await page.waitForLoadState("networkidle");
   const p = page.getByTestId("pilotage");
   await expect(p).toContainText("Remplacements en attente");
-  await expect(p).toContainText("Écart aux objectifs");
+  await expect(p).not.toContainText("Écart aux objectifs"); // carte d'équité retirée de l'interface
+  await expect(p).not.toContainText("Coût et marge");
   await expect(page.getByRole("table", { name: "Répartition par collaborateur" })).toBeVisible();
 });
 

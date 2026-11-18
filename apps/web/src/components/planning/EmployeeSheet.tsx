@@ -1,9 +1,12 @@
 "use client";
+import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Badge, Button, Callout, Field, Select } from "@/components/ui/primitives";
 import { Modal } from "@/components/ui/Modal";
 import { UnavailabilityCalendar } from "./UnavailabilityCalendar";
 import { EmployeeExtras } from "./EmployeeExtras";
+import { useMe } from "@/components/Shell";
+import { HistoryFeed } from "@/components/HistoryFeed";
 import { SundayCounter } from "./SundayCounter";
 import { useApi } from "@/components/hooks";
 import { api } from "@/lib/api";
@@ -43,6 +46,7 @@ export function EmployeeSheet({ emp, all, summary, periodDays, period, monthLabe
   daysExc?: DaysException; onDaysExc?: (v: DaysException) => Promise<SaveResult>; capLabel?: string | null;
   onClose: () => void; onSave: (e: SheetEmployee, d: FicheDraft) => Promise<SaveResult>;
 }) {
+  const me = useMe();
   const [dexc, setDexc] = useState<DaysException | null>(null);
   const [dexcStatus, setDexcStatus] = useState<Status>("idle");
   const [saveErr, setSaveErr] = useState("");
@@ -259,6 +263,13 @@ export function EmployeeSheet({ emp, all, summary, periodDays, period, monthLabe
         </fieldset>
 
         <EmployeeExtras emp={emp} all={all} />
+
+        {me.permissions.includes("planning.read") && (
+          <fieldset className="sheet-section" data-testid="employee-history">
+            <legend className="h2">Historique des modifications</legend>
+            <HistoryFeed employeeId={emp.id} filters={false} limit={5} />
+            <Link className="btn btn-sm" href={`/history?employee=${emp.id}`}>Tout l&apos;historique de {emp.name}</Link>
+          </fieldset>)}
 
         {summary && projected && <div className="sheet-counter" aria-live="polite" data-testid="sheet-counter">
           <p className="label">Compteur des dimanches (mis à jour en direct)</p>

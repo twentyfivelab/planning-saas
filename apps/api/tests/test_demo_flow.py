@@ -103,10 +103,13 @@ def test_monthly_cap_refuses_a_manual_move_beyond_176_hours(demo):
 def test_manual_move_reports_conflicts_immediately(demo):
     p = demo["planner"]
     s = p.get(f"/periods/{demo['pid']}/schedule").json()
-    a = next(x for x in s["assignments"] if x["slot_key"].startswith("GVA9") and not x["locked"])
     room = _room(s)  # le plafond mensuel de 176 h refuserait un collaborateur déjà au maximum : on en choisit un qui a de la marge
-    other = next(x for x in s["assignments"] if x["day"] == a["day"] and x["employee_id"] != a["employee_id"]
-                 and x["slot_key"].startswith("GVA3") and not x["locked"] and room[x["employee_id"]] >= a["effective_minutes"])
+    brands = {e["id"]: e["brands"] for e in p.get("/employees").json()}
+    # n'importe quel couple (shift GVA9, collègue déjà sur GVA3 ce jour-là, autorisé sur la marque, avec de la marge) : indépendant de la
+    # solution trouvée par le moteur (le premier shift GVA9 n'a pas toujours un tel collègue)
+    a, other = next((a, x) for a in s["assignments"] if a["slot_key"].startswith("GVA9") and not a["locked"]
+                    for x in s["assignments"] if x["day"] == a["day"] and x["employee_id"] != a["employee_id"] and x["slot_key"].startswith("GVA3")
+                    and not x["locked"] and room[x["employee_id"]] >= a["effective_minutes"] and all(b in brands[x["employee_id"]] for b in a["allocations"]))
     r = p.put(f"/assignments/{a['assignment_id']}", json={"employee_id": other["employee_id"]})
     assert r.status_code == 200 and any("OVERLAP" in c or "REST" in c for c in r.json()["conflicts"])
 

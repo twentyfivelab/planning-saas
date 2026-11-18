@@ -78,7 +78,7 @@ export default function Generate() {
           <div className="stack">
             <Callout kind="warn" title="Vérifiez les données avant de générer">Tant que des contrats manquent, le résultat reste une proposition <strong>non validable</strong> et non publiable. Une marque dont le budget n&apos;a ni jours ni horaires définis n&apos;est pas planifiée.</Callout>
             <Callout kind="info" title="Hypothèses et règles légales">Les horaires marqués comme hypothèses restent à confirmer (voir Alertes). Les règles légales exécutées et leur état de validation sont dans <a href="/rules" style={{ textDecoration: "underline" }}>Règles</a>.</Callout>
-            <div className="row"><Button variant="primary" icon="sparkles" onClick={() => setStep(2)}>Continuer</Button><a className="btn" href="/simulations">Comparer des stratégies sans toucher au planning</a></div>
+            <div className="row"><Button variant="primary" icon="sparkles" onClick={() => setStep(2)}>Continuer</Button></div>
           </div>
         </Card>
       )}

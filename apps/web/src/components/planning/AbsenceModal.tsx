@@ -86,8 +86,8 @@ export function AbsenceModal({ open, periodId, period, emps, canOptimize, canEdi
                   {canOptimize && (
                     <section aria-label="Réoptimisation complète" className="stack" style={{ gap: "var(--sp-2)" }}>
                       <h3 className="h2">3. Réoptimisation complète</h3>
-                      <p className="help">Recalcule tout le mois (hors shifts verrouillés). À comparer d&apos;abord dans les simulations.</p>
-                      <div><a className="btn" href="/simulations">Ouvrir les simulations</a></div>
+                      <p className="help">Recalcule tout le mois (hors shifts verrouillés) : à lancer depuis « Générer », qui garde une copie de sécurité du planning actuel.</p>
+                      <div><a className="btn" href="/generate">Régénérer le mois</a></div>
                     </section>
                   )}
                 </>

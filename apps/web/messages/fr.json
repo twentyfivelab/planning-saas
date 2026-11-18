@@ -30,11 +30,9 @@
   "nav.settings": "Paramètres",
   "nav.catalog": "Sites et marques",
   "nav.clients": "Clients et missions",
-  "nav.simulations": "Simulations",
   "nav.time": "Heures réelles",
-  "nav.finance": "Rentabilité",
   "nav.me": "Mon planning",
   "nav.brand": "Mes marques",
   "nav.requests": "Demandes",
-  "nav.fairness": "Équité"
+  "nav.history": "Historique"
 }

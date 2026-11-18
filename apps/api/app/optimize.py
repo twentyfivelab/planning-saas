@@ -310,8 +310,11 @@ def run_optimization(tenant_id: str, run_id: str) -> None:
                                       message=i.message, slots=i.slots))
             run.status = "annule" if cancel.is_set() else "termine"
             run.finished_at = datetime.now(timezone.utc)
-            db.add(m.AuditLog(tenant_id=run.tenant_id, action="optimization.finished", entity="run",
-                              entity_id=str(run.id), detail={"status": res.status, "mode": res.mode}))
+            saved = res.status in ("optimal", "faisable", "partiellement_couvert") or (res.status == "interrompu" and bool(res.assignments))
+            db.add(m.AuditLog(tenant_id=run.tenant_id, user_id=run.requested_by, action="optimization.finished", entity="run",
+                              entity_id=str(run.id), detail={"status": res.status, "mode": res.mode, "kind": run.kind, "saved": saved,
+                                                             "period_id": str(period.id), "period": period.name,
+                                                             "assignments": len(res.assignments), "uncovered": len(res.uncovered_slots)}))
     except Exception as exc:  # noqa: BLE001 — statut d'erreur sans détail sensible
         stop.set()
         with tenant_session(tenant_id) as db:

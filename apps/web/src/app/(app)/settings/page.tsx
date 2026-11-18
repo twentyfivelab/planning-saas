@@ -76,21 +76,16 @@ export default function Settings() {
   const labelOf = (k: string) => w.data?.criteria.find((c) => c.key === k)?.label ?? w.data?.advanced.find((c) => c.key === k)?.label ?? k;
   return (
     <>
-      <PageHead eyebrow="Paramètres" title="Pondération de l'algorithme">
+      <PageHead eyebrow="Réglages courants, options techniques à part" title="Paramètres">
         {canEdit && <Button icon="undo" onClick={() => setConfirming(true)} disabled={!w.data}>Réinitialiser les pondérations par défaut</Button>}
       </PageHead>
-      <Callout kind="info" title="Comment ça marche">
+      <Callout kind="info" title="Priorités du planning">
         Chaque critère va de 0 à 100 et pèse dans la fonction d&apos;optimisation : <strong>+20 points doublent son influence</strong>, −20 la divisent par deux, 0 la supprime.
         Les contraintes strictes (repos, jours consécutifs, indisponibilités, marques autorisées, verrous, budgets stricts…) ne dépendent <strong>jamais</strong> de ces poids. Les réglages s&apos;appliquent à chaque nouvelle génération et réoptimisation.
       </Callout>
       {w.error ? <ErrorState message={w.error} onRetry={w.reload} /> : !w.data ? <SkeletonCard lines={8} /> : (
         <>
-          <Card title="Logique d'optimisation" eyebrow="Les contraintes strictes priment toujours">
-            <label className="row"><input type="checkbox" checked={w.data.hierarchical} disabled={!canEdit} onChange={async (e) => { await api("/settings/weights", { method: "PUT", json: { hierarchical: e.target.checked } }); w.reload(); }} /> <strong>Optimisation hiérarchisée</strong></label>
-            <p className="help">Activée : le moteur maximise d&apos;abord la couverture, puis tient les engagements (objectifs contractuels, quotas exacts, budgets souples), puis optimise l&apos;équité, les préférences et les autres critères. Chaque niveau est figé avant le suivant : un poids élevé sur une préférence ne peut jamais faire perdre un poste couvert. Désactivée : tous les critères sont additionnés.</p>
-          </Card>
-          <VersionRetention />
-          <Card title="Critères" eyebrow={w.data.customised ? "Personnalisé" : "Valeurs par défaut"} actions={<span className="muted" role="status" aria-live="polite">{status === "saving" ? "Enregistrement…" : status === "saved" ? "Enregistré automatiquement" : status === "error" ? "Échec de l'enregistrement" : canEdit ? "Enregistrement automatique" : "Lecture seule"}</span>}>
+          <Card title="Priorités" eyebrow={w.data.customised ? "Personnalisé" : "Valeurs par défaut"} actions={<span className="muted" role="status" aria-live="polite">{status === "saving" ? "Enregistrement…" : status === "saved" ? "Enregistré automatiquement" : status === "error" ? "Échec de l'enregistrement" : canEdit ? "Enregistrement automatique" : "Lecture seule"}</span>}>
             <div className="weights">
               {w.data.criteria.map((c) => (
                 <div key={c.key} className="weight-row" data-testid={`weight-${c.key}`}>
@@ -101,8 +96,15 @@ export default function Settings() {
                 </div>))}
             </div>
           </Card>
-          <details className="card glass" style={{ padding: "var(--sp-4)" }}>
-            <summary style={{ cursor: "pointer", fontWeight: 650 }}>Réglages avancés (poids bruts du moteur)</summary>
+          <VersionRetention />
+          <details className="card glass advanced" data-testid="advanced-settings">
+            <summary>Paramètres avancés</summary>
+            <p className="help">Options techniques du moteur : leurs valeurs actuelles sont conservées telles quelles ; rien n&apos;est modifié en ouvrant cette section.</p>
+            <Card title="Logique d'optimisation" eyebrow="Les contraintes strictes priment toujours">
+            <label className="row"><input type="checkbox" checked={w.data.hierarchical} disabled={!canEdit} onChange={async (e) => { await api("/settings/weights", { method: "PUT", json: { hierarchical: e.target.checked } }); w.reload(); }} /> <strong>Optimisation hiérarchisée</strong></label>
+            <p className="help">Activée : le moteur maximise d&apos;abord la couverture, puis tient les engagements (objectifs contractuels, quotas exacts, budgets souples), puis optimise l&apos;équité, les préférences et les autres critères. Chaque niveau est figé avant le suivant : un poids élevé sur une préférence ne peut jamais faire perdre un poste couvert. Désactivée : tous les critères sont additionnés.</p>
+            </Card>
+            <div className="card" data-testid="raw-weights"><p className="h2" style={{ marginTop: 0 }}>Poids bruts du moteur</p>
             <div className="weights" style={{ marginTop: "var(--sp-3)" }}>
               {w.data.advanced.map((a) => (
                 <div key={a.key} className="weight-row">
@@ -112,8 +114,8 @@ export default function Settings() {
                   <span className="faint nowrap">défaut {a.default}</span>
                 </div>))}
             </div>
-          </details>
-          <Card title="Influence sur la dernière génération" eyebrow={w.data.last_run ? `${w.data.last_run.period} · ${new Date(w.data.last_run.at).toLocaleString("fr-CH", { dateStyle: "short", timeStyle: "short", timeZone: "Europe/Zurich" })}` : undefined}>
+            </div>
+            <Card title="Influence sur la dernière génération" eyebrow={w.data.last_run ? `${w.data.last_run.period} · ${new Date(w.data.last_run.at).toLocaleString("fr-CH", { dateStyle: "short", timeStyle: "short", timeZone: "Europe/Zurich" })}` : undefined}>
             {!w.data.last_run ? <p className="muted">Aucune génération pour l&apos;instant : lancez-en une pour voir quels critères ont influencé le résultat.</p> : (
               <div className="table-wrap"><table className="table">
                 <caption className="sr-only">Coût par critère de la dernière génération</caption>
@@ -122,7 +124,8 @@ export default function Settings() {
               </table></div>
             )}
             <p className="help" style={{ marginTop: "var(--sp-2)" }}><Badge tone="info" icon="info">Lecture</Badge> Un coût élevé signifie que le critère a « coûté » dans la solution retenue (compromis). Le moteur minimise la somme pondérée.</p>
-          </Card>
+            </Card>
+          </details>
         </>
       )}
       <Modal open={confirming} onClose={() => setConfirming(false)} title="Réinitialiser les pondérations ?" description="Toutes les pondérations reviennent aux valeurs par défaut." variant="confirm">

@@ -45,7 +45,7 @@ export default function Budgets() {
                   <td data-label="Avancement" style={{ minWidth: "9rem" }}><div className="row" style={{ flexWrap: "nowrap" }}><div style={{ flex: 1, minWidth: "5rem" }}><Progress value={pct} label={`${x.brand_code} : ${pct} %`} color={brandColor(x.brand_code)} /></div><span className="num">{pct} %</span></div></td>
                   <td data-label="Besoins">{x.requirements_defined ? <Badge tone="ok">Définis</Badge> : <Badge tone="warn" icon="alert">{t("to_fill")}</Badge>}</td></tr>; })}</tbody>
             </table></div>
-            <p className="help" style={{ marginTop: "var(--sp-3)" }}>{rows.some((x) => !x.requirements_defined) && <>{rows.filter((x) => !x.requirements_defined).map((x) => x.brand_code).join(" et ")} : jours et horaires non définis, donc non planifiables. </>}Le co-branding impute les heures aux deux budgets sans doubler les heures du collaborateur. Coûts, tarifs et marges : voir <a href="/finance" style={{ textDecoration: "underline" }}>Rentabilité</a>.</p>
+            <p className="help" style={{ marginTop: "var(--sp-3)" }}>{rows.some((x) => !x.requirements_defined) && <>{rows.filter((x) => !x.requirements_defined).map((x) => x.brand_code).join(" et ")} : jours et horaires non définis, donc non planifiables. </>}Le co-branding impute les heures aux deux budgets sans doubler les heures du collaborateur.</p>
           </Card>
         </>
       )}

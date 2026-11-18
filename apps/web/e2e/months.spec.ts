@@ -183,6 +183,7 @@ test("E. pondérations : curseur + saisie, enregistrement automatique, persistan
   const rep = (await j(page, `/runs/${run.id}/diagnostic`)).report;
   expect(rep.weights_used.family).toBe(eng); expect(rep.weights_used.fairness).toBeGreaterThan(3); expect(rep.criteria_scores).toBeTruthy();
   await page.reload(); await page.waitForLoadState("networkidle");
+  await page.getByTestId("advanced-settings").getByText("Paramètres avancés").click(); // option technique : rangée dans les paramètres avancés
   await expect(page.getByText("Influence sur la dernière génération")).toBeVisible();
   await page.getByRole("button", { name: "Réinitialiser les pondérations par défaut" }).click();
   await page.getByRole("dialog").getByRole("button", { name: "Réinitialiser", exact: true }).click();
