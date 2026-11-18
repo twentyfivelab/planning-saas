@@ -241,9 +241,8 @@ def test_10_engine_uses_only_the_month_configuration(t):
     # échec intermittent observé (1 fois sur 5 suites complètes en parallèle des tests navigateur), cause non confirmée : le message
     # donne le résultat du calcul pour la trancher (planning non remplacé : « interrompu », « infaisable », ou refus du vérificateur)
     rep = o.get(f"/runs/{res['id']}/diagnostic").json().get("report") or {}
-    why = {"result": res.get("result_status"), "diagnostics": [i.get("code") for i in rep.get("diagnostics", [])][:6],
-           "levels": [(lv.get("level"), lv.get("proved_optimal")) for lv in rep.get("levels") or []], "duration_s": rep.get("duration_s"),
-           "rejected": rep.get("blocked_by_verification")}
+    why = {"result": res.get("result_status"), "save": res.get("save"), "timing": res.get("timing"),
+           "diagnostics": [i.get("code") for i in rep.get("diagnostics", [])][:6], "rejected": rep.get("blocked_by_verification")}
     assert not any("Cartier" in x["allocations"] for x in rows) and not any(x["employee"] == "Zaki" for x in rows), why
     assert any("Cartier" in x["allocations"] for x in sched(o, t["nov"]))  # novembre : Cartier toujours planifié
     assert o.put(f"/periods/{dec}/sites/Pilar", json={"active": False}).json()["active"] is False

@@ -15,7 +15,7 @@ import { MonthNeeds, type MonthCalendar } from "@/components/planning/MonthNeeds
 import { copyPreviousBudgets } from "@/lib/budgetCopy";
 import { invalidate } from "@/lib/invalidate";
 import { monthLabel, parseMonthKey } from "@/lib/months";
-import { ParamsChoice, RunFailure, RunProgress, TimeLimitField, type ParamsMode } from "@/components/planning/RunStatus";
+import { ParamsChoice, RunFailure, RunProgress, SaveOutcome, TimeLimitField, type ParamsMode, type RunTiming, type SaveInfo } from "@/components/planning/RunStatus";
 
 const WEIGHT_LABELS: Record<string, string> = { coverage: "Couverture", budget: "Budgets", reinforce: "Renforts", preference: "Préférences", fairness: "Équité", overtime: "Heures supplémentaires", site_change: "Changements de site", balance: "Équilibre ouvertures/fermetures/week-ends", fatigue: "Enchaînements fatigants", family: "Relations entre collaborateurs", stagger: "Décalage cosmétique", rest_days: "Jours de repos", stability: "Stabilité", time_pref: "Préférence matin/middle/soir", secondary: "Marques secondaires", budget_over: "Dépassement de budget souple", sunday_quota: "Objectif exact de dimanches", individual: "Priorité individuelle", sunday_balance: "Équilibrage des dimanches", alternation: "Alternance matin/soir", days_balance: "Équilibrage des jours", cost: "Coût estimé" };
 const STEPS = ["Vérification", "Paramètres", "Calcul", "Résultat"];
@@ -35,7 +35,7 @@ export default function Generate() {
   const compat = useApi<{ has_plan: boolean; locked: number; unlocked: number; hard: string[]; soft: unknown[] }>(period ? `/periods/${period.id}/compatibility` : null);
   const [partial, setPartial] = useState(false); const [limit, setLimit] = useState(30); const [weights, setWeights] = useState<Record<string, number>>({});
   const [run, setRun] = useState<any>(null); const [diag, setDiag] = useState<any>(null);
-  const [paramsMode, setParamsMode] = useState<ParamsMode>(null); const [failed, setFailed] = useState<{ id: string; status: string } | null>(null);
+  const [paramsMode, setParamsMode] = useState<ParamsMode>(null); const [failed, setFailed] = useState<{ id: string; status: string; save?: SaveInfo | null; timing?: RunTiming | null } | null>(null);
   const [diff, setDiff] = useState<ReturnType<typeof diffSchedules> | null>(null);
   const before = useRef<Assignment[]>([]);
   const key = useRef("");
@@ -49,9 +49,9 @@ export default function Generate() {
     if (run?.status === "termine") (async () => {
       setDiag((await api(`/runs/${run.id}/diagnostic`)).report);
       const after = (await api(`/periods/${runPeriod || run.period_id}/schedule`)).assignments; setDiff(diffSchedules(before.current, after)); setStep(4);
-      toast.push("Génération terminée.", "ok");
+      toast.push(run.save?.outcome === "kept_previous" ? "Calcul terminé : le planning précédent est conservé." : "Génération terminée.", run.save?.outcome === "kept_previous" ? "warn" : "ok");
     })();
-    if (run?.status === "annule" || run?.status === "erreur") { toast.push(run.status === "annule" ? "Exécution annulée." : "L'exécution a échoué.", run.status === "annule" ? "warn" : "bad"); setFailed({ id: run.id, status: run.status }); setStep(2); }
+    if (run?.status === "annule" || run?.status === "erreur") { toast.push(run.status === "annule" ? "Exécution annulée." : "L'exécution a échoué.", run.status === "annule" ? "warn" : "bad"); setFailed({ id: run.id, status: run.status, save: run.save, timing: run.timing }); setStep(2); }
   }, [run?.status]); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function start() {
@@ -86,7 +86,7 @@ export default function Generate() {
         <Card title="Paramètres d'optimisation">
           <div className="stack">
             <label className="row"><input type="checkbox" checked={partial} onChange={(e) => setPartial(e.target.checked)} /> Réoptimisation partielle <span className="help">— les affectations verrouillées sont conservées</span></label>
-            {failed && <RunFailure runId={failed.id} status={failed.status} />}
+            {failed && <RunFailure runId={failed.id} status={failed.status} save={failed.save} timing={failed.timing} />}
             <ParamsChoice periodId={period?.id ?? null} value={paramsMode} onChange={setParamsMode} />
             <TimeLimitField value={limit} onChange={setLimit} width="10rem" />
             <fieldset style={{ border: 0, padding: 0, margin: 0 }}>
@@ -117,10 +117,10 @@ export default function Generate() {
       )}
       {step === 4 && diag && (
         <>
-          {(diag.status === "infaisable" || (diag.status === "interrompu" && !diag.verification?.executed)) && (
+          {diag.save ? <SaveOutcome save={diag.save} timing={diag.timing} /> : (diag.status === "infaisable" || (diag.status === "interrompu" && !diag.verification?.executed)) && (
             <Callout kind="bad" title="Aucun planning enregistré">{diag.status === "infaisable" ? "Les contraintes obligatoires ne permettent aucun planning : voir le diagnostic ci-dessous." : "Aucune solution trouvée dans la durée maximale : augmentez-la ou allégez les contraintes."} Le planning existant n&apos;a pas été modifié.</Callout>)}
           {diag.params_used && <p className="help">Paramètres utilisés : {diag.params_used.mode === "frozen" ? "ceux conservés par ce planning" : "paramètres actuels (désormais conservés par ce planning)"}{diag.params_used.monthly_cap_minutes ? ` · plafond mensuel ${Math.round(diag.params_used.monthly_cap_minutes / 60)} h par collaborateur` : ""}.</p>}
-          <Card title={`Résultat : ${String(diag.status).replace(/_/g, " ")}`} eyebrow={`${diag.duration_s} s`} actions={<div className="row">{diag.verification?.executed && <Badge tone={diag.hard_violations?.length ? "bad" : "ok"} icon={diag.hard_violations?.length ? "alert" : "check"} data-testid="verification">{diag.hard_violations?.length ? `Vérificateur : ${diag.hard_violations.length} violation(s), planning refusé` : "Vérificateur indépendant : aucune violation"}</Badge>}<Badge tone={diag.mode === "simulation_exploratoire" ? "warn" : "ok"} icon={diag.mode === "simulation_exploratoire" ? "alert" : "check"}>{diag.mode === "simulation_exploratoire" ? t("exploratory") : "Validable"}</Badge></div>}>
+          <Card title={`Résultat : ${String(diag.status).replace(/_/g, " ")}`} eyebrow={diag.timing?.total_s !== undefined ? `${String(diag.timing.total_s).replace(".", ",")} s au total · ${String(diag.duration_s).replace(".", ",")} s de calcul du moteur` : `${diag.duration_s} s`} actions={<div className="row">{diag.verification?.executed && <Badge tone={diag.hard_violations?.length ? "bad" : "ok"} icon={diag.hard_violations?.length ? "alert" : "check"} data-testid="verification">{diag.hard_violations?.length ? `Vérificateur : ${diag.hard_violations.length} violation(s), planning refusé` : "Vérificateur indépendant : aucune violation"}</Badge>}<Badge tone={diag.mode === "simulation_exploratoire" ? "warn" : "ok"} icon={diag.mode === "simulation_exploratoire" ? "alert" : "check"}>{diag.mode === "simulation_exploratoire" ? t("exploratory") : "Validable"}</Badge></div>}>
             <h3 className="h2" style={{ marginBottom: "var(--sp-2)" }}>Budgets</h3>
             <div className="stack">{diag.budgets.map((b: any) => (
               <div key={b.brand} className="bar-row"><span className="row"><i className="dot" style={{ ["--c" as string]: brandColor(b.brand) }} />{b.brand}</span>

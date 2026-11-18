@@ -140,7 +140,9 @@ def _run_view(ctx: Ctx, run: m.OptimizationRun) -> dict:
             "config": run.config, "started_at": run.started_at, "finished_at": run.finished_at,
             "cancel_requested": run.cancel_requested, "simulation": run.simulation, "applied_at": run.applied_at,
             "result_status": res.status if res else None, "mode": res.mode if res else None,
-            "duration_s": res.duration_s if res else None, "progress": run.progress}
+            "duration_s": res.duration_s if res else None, "progress": run.progress,
+            # résultat d'enregistrement (planning remplacé ou conservé, et pourquoi) et temps mesurés de chaque étape
+            "save": (res.report or {}).get("save") if res else None, "timing": (res.report or {}).get("timing") if res else None}
 
 
 @router.get("/runs")

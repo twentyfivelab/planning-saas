@@ -266,3 +266,31 @@ def test_modification_groupee_tout_ou_rien_meme_controle(t):
     now = {x["assignment_id"]: x for x in rows(o, pid)}
     assert all(now[x["assignment_id"]]["employee_id"] == cleo and now[x["assignment_id"]]["locked"] for x in mine)
     assert len(now) == len(a)
+
+
+def test_resultat_d_enregistrement_et_temps_mesures_de_chaque_etape(t):
+    """Chaque calcul dit s'il a remplacé le planning ou conservé l'ancien, pourquoi, avec les versions avant / après et les temps mesurés."""
+    o, pid, emps = t["o"], t["pids"][NOV], t["emps"]
+    first = run(o, pid)
+    sv = first["save"]
+    assert sv["outcome"] == "replaced" and sv["before"]["assignments"] == 0 and sv["after"]["assignments"] == len(rows(o, pid))
+    assert sv["after"]["version"] is not None and sv["before"]["version"] is None
+    tm = first["timing"]
+    assert set(tm) >= {"preparation_s", "model_s", "search_s", "post_s", "engine_total_s", "solver_call_s", "saving_s", "total_s", "time_limit_s"}
+    assert tm["model_s"] + tm["search_s"] <= tm["time_limit_s"] + 1.0  # construction + recherche : bornées par la durée maximale
+    assert abs(tm["engine_total_s"] - (tm["model_s"] + tm["search_s"] + tm["post_s"])) < 0.05
+    assert tm["total_s"] >= tm["preparation_s"] + tm["solver_call_s"] and tm["saving_s"] >= 0
+    # régénération rendue impossible par un verrou : l'ancien planning est conservé, et la raison est donnée
+    a = next(x for x in rows(o, pid) if not x["locked"])
+    assert o.post(f"/assignments/{a['assignment_id']}/lock").status_code == 200
+    assert o.put(f"/employees/{a['employee_id']}/unavailable-dates", json={"dates": [a["day"]]}).status_code == 200
+    before = sorted((x["assignment_id"], x["employee_id"]) for x in rows(o, pid))
+    r = run(o, pid, params="current")
+    assert r["result_status"] == "infaisable"
+    sv = r["save"]
+    assert sv["outcome"] == "kept_previous" and sv["reason_code"] == "infeasible" and "verrou" in sv["reason"].lower()
+    assert sv["before"] == sv["after"] and sv["before"]["version"] == first["save"]["after"]["version"]
+    assert sorted((x["assignment_id"], x["employee_id"]) for x in rows(o, pid)) == before  # rien n'a changé
+    o.put(f"/employees/{a['employee_id']}/unavailable-dates", json={"dates": []})
+    who = next(e for e in emps.values() if e["id"] == a["employee_id"])
+    assert who

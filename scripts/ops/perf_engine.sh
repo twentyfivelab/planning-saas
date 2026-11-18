@@ -28,6 +28,8 @@ set -e
 cat "$log"
 res=$(grep -E "passed|failed" "$log" | tail -1 | sed -E 's/=+//g' | xargs)
 durs=$(grep -E "^[0-9.]+s call" "$log" | sed -E 's/^([0-9.]+)s call +[^:]+::([a-z_]+).*/\2 \1 s/' | paste -sd ';' - | sed 's/;/ ; /g')
+timing=$(grep -m1 -E "^TIMING " "$log" | sed -E 's/^TIMING //; s/model_s=/modèle /; s/ search_s=/ s, recherche /; s/ post_s=/ s, contrôles /; s/ engine_total_s=/ s, total moteur /; s/ time_limit_s=/ s (durée maximale /; s/$/ s)/')
+[ -n "$timing" ] && durs="$durs — $timing"
 [ -f "$OUT" ] || printf '# Mesures de performance du moteur\n\nProduites par `scripts/ops/perf_engine.sh` (tests marqués « perf »). Les tests de correction, eux, ne dépendent pas de la charge de la machine (vérifié sous charge : voir `docs/suivi-wfm.md`).\n\n| Date | Commit | Machine | Charge avant | Conditions | Versions | Résultat | Durées |\n|---|---|---|---|---|---|---|---|\n' >"$OUT"
 cond=$([ "$ok" = "oui" ] && echo "conformes" || echo "**non conformes (forcé)**")
 echo "| $(date '+%d/%m/%Y %H:%M') | $commit | $cpu, $cores cœurs, $mem Go | $load | $cond | Python $pyv, OR-Tools $ortools | $res | $durs |" >>"$OUT"

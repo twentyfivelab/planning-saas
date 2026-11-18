@@ -1,4 +1,6 @@
 "use client";
+import { SaveQueue } from "@/lib/saveQueue";
+import { SaveStatus } from "@/components/ui/SaveStatus";
 import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useMe } from "@/components/Shell";
@@ -13,7 +15,7 @@ import { Modal } from "@/components/ui/Modal";
 import { Badge, Button, Callout, Card, EmptyState, Input, PageHead, SearchInput, Select } from "@/components/ui/primitives";
 import { useToast } from "@/components/ui/Toast";
 import { api } from "@/lib/api";
-import { ParamsChoice, RunFailure, RunProgress, TimeLimitField, type ParamsMode, type RunView } from "@/components/planning/RunStatus";
+import { ParamsChoice, RunFailure, RunProgress, SaveOutcome, TimeLimitField, type ParamsMode, type RunView } from "@/components/planning/RunStatus";
 import { brandColor } from "@/lib/brand";
 import { summarize } from "@/lib/employeeRules";
 import { invalidate } from "@/lib/invalidate";
@@ -135,24 +137,26 @@ function StepPeriod({ month, setMonth, existing, onOpen, onEdit, onNext, canEdit
 
 function StepRoster({ pid, canEdit }: { pid: string; canEdit: boolean }) {
   const r = useApi<Roster>(`/periods/${pid}/roster`);
-  const [q, setQ] = useState(""); const [rows, setRows] = useState<RosterRow[] | null>(null); const [status, setStatus] = useState("");
-  const pending = useRef(new Map<string, boolean>()); const timer = useRef<ReturnType<typeof setTimeout>>(undefined);
-  useEffect(() => { if (r.data && !pending.current.size) setRows(r.data.employees); }, [r.data]);
+  const [q, setQ] = useState(""); const [rows, setRows] = useState<RosterRow[] | null>(null);
+  const [, rerender] = useState(0);
+  // enregistrement automatique fiable : un envoi à la fois, « Enregistré » seulement après confirmation de TOUTES les modifications
+  const queue = useRef<SaveQueue<string, boolean> | null>(null);
+  if (!queue.current) queue.current = new SaveQueue<string, boolean>(async (batch) => {
+    const res = await api<Roster>(`/periods/${pid}/roster`, { method: "PUT", json: { employees: [...batch].map(([employee_id, included]) => ({ employee_id, included })) } });
+    if (!queue.current!.unsaved) { r.mutate(res); setRows(res.employees); } // une réponse ne remplace jamais des modifications plus récentes à l'écran
+    invalidate();
+  }, () => rerender((x) => x + 1));
+  useEffect(() => () => queue.current?.dispose(), []);
+  useEffect(() => { if (r.data && !queue.current?.unsaved) setRows(r.data.employees); }, [r.data]);
   function toggle(ids: string[], included: boolean) {
     setRows((x) => (x ?? []).map((e) => (ids.includes(e.employee_id) && e.selectable ? { ...e, included, state: included ? "included" : "excluded" } : e)));
-    for (const id of ids) pending.current.set(id, included);
-    setStatus("Enregistrement…"); clearTimeout(timer.current);
-    timer.current = setTimeout(async () => {
-      const body = [...pending.current].map(([employee_id, inc]) => ({ employee_id, included: inc })); pending.current.clear();
-      try { const res = await api<Roster>(`/periods/${pid}/roster`, { method: "PUT", json: { employees: body } }); r.mutate(res); setRows(res.employees); setStatus("Enregistré automatiquement"); invalidate(); }
-      catch (e) { setStatus(`Échec : ${err(e)}`); r.reload(); }
-    }, 350);
+    for (const id of ids) queue.current!.set(id, included);
   }
   const list = (rows ?? []).filter((e) => !q || e.name.toLowerCase().includes(q.toLowerCase()));
   const selectable = list.filter((e) => e.selectable).map((e) => e.employee_id);
   const n = (rows ?? []).filter((e) => e.included).length;
   return (
-    <Card title="Collaborateurs du mois" eyebrow={`${n} sélectionné${n > 1 ? "s" : ""} sur ${(rows ?? []).length}`} actions={<span className="muted" role="status" aria-live="polite">{status}</span>}>
+    <Card title="Collaborateurs du mois" eyebrow={`${n} sélectionné${n > 1 ? "s" : ""} sur ${(rows ?? []).length}`} actions={<SaveStatus state={queue.current.state} error={queue.current.error} confirmed={queue.current.confirmed} onRetry={() => queue.current!.retry()} />}>
       <div className="stack">
         <p className="help">Décocher un collaborateur l&apos;exclut <strong>uniquement de ce mois</strong> : sa fiche, son historique, ses anciens shifts et ses autres mois ne changent pas. « Contrat terminé » et « Inactif » sont des états permanents (fiche / contrat).</p>
         <div className="row">
@@ -310,7 +314,8 @@ function StepGenerate({ pid, period, onDone, onOpen }: { pid: string; period?: P
   const [run, setRun] = useState<RunView | null>(null);
   const [confirm, setConfirm] = useState(false); const [limit, setLimit] = useState(30);
   const [paramsMode, setParamsMode] = useState<ParamsMode>(null);
-  const saved = (r: RunView | null) => r?.status === "termine" && r.result_status !== "infaisable" && r.result_status !== "interrompu";
+  // enregistré = le serveur l'a dit (résultat d'enregistrement) ; repli pour les calculs plus anciens sans ce résultat
+  const saved = (r: RunView | null) => r?.status === "termine" && (r.save ? r.save.outcome === "replaced" : r.result_status !== "infaisable" && r.result_status !== "interrompu");
   const key = useRef(crypto.randomUUID());
   useEffect(() => {
     if (!run || ["termine", "annule", "erreur"].includes(run.status)) return;
@@ -334,7 +339,8 @@ function StepGenerate({ pid, period, onDone, onOpen }: { pid: string; period?: P
         <TimeLimitField value={limit} onChange={setLimit} />
         {!run && <div><Button variant="primary" icon="sparkles" disabled={blocking.length > 0 || (hasPlan && paramsMode === null)} onClick={() => (hasPlan ? setConfirm(true) : go())}>Générer automatiquement le planning</Button></div>}
         {running && <RunProgress run={run!} limit={limit} />}
-        {run && (run.status === "erreur" || run.status === "annule" || (run.status === "termine" && !saved(run))) && <RunFailure runId={run.id} status={run.status} />}
+        {run && (run.status === "erreur" || run.status === "annule" || (run.status === "termine" && !saved(run))) && <RunFailure runId={run.id} status={run.status} save={run.save} timing={run.timing} />}
+        {saved(run) && <SaveOutcome save={run!.save} timing={run!.timing} />}
         {saved(run) && <Callout kind="ok" title={`Planning de ${period?.name ?? "ce mois"} généré (${String(run?.result_status ?? "").replace(/_/g, " ")})`}>
           <div className="row"><Button variant="primary" icon="calendar" onClick={onOpen}>Ouvrir le planning</Button><a className="btn" href="/generate">Voir le diagnostic détaillé</a></div></Callout>}
         {run && !running && !saved(run) && <div><Button icon="sparkles" disabled={blocking.length > 0} onClick={() => { setRun(null); }}>Modifier et relancer</Button></div>}

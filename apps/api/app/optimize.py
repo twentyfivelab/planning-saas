@@ -2,6 +2,7 @@
 import copy
 import re
 import threading
+import time
 import uuid
 from datetime import datetime, timezone
 
@@ -143,6 +144,20 @@ def new_violations(found, before) -> list:
     return out
 
 
+def _save_kept(res, before_state: dict, cancelled: bool) -> dict:
+    """Résultat d'enregistrement quand aucun nouveau planning n'est écrit : l'ancien est conservé, avec la raison exploitable."""
+    first = next((i.message for i in res.diagnostics if i.severity == "blocking"), None) or (res.diagnostics[0].message if res.diagnostics else None)
+    if cancelled:
+        code, reason = "cancelled", "Calcul annulé : le planning existant n'a pas été modifié."
+    elif res.status == "infaisable":
+        code, reason = "infeasible", "Aucun planning ne respecte toutes les contraintes obligatoires" + (f" : {first}" if first else ".")
+    elif res.status == "interrompu" and not res.assignments:
+        code, reason = "no_solution_in_time", "Aucune solution trouvée dans la durée maximale : relancez avec une durée plus longue."
+    else:
+        code, reason = "not_saved", "Aucun planning enregistré."
+    return {"outcome": "kept_previous", "reason_code": code, "reason": reason, "before": before_state, "after": before_state}
+
+
 class PlanRejected(Exception):
     """Le planning enregistré enfreint une contrainte stricte : la transaction d'enregistrement est annulée."""
 
@@ -195,6 +210,7 @@ def run_optimization(tenant_id: str, run_id: str) -> None:
                     return
                 push(db)
 
+    t_start = time.time()
     try:
         with tenant_session(tenant_id) as db:
             run = db.get(m.OptimizationRun, uuid.UUID(run_id))
@@ -221,8 +237,13 @@ def run_optimization(tenant_id: str, run_id: str) -> None:
             before_plan = build_input(db, period, config)
             before_violations = set(validate(before_plan, assignments_for_validation(db, before_plan, period)))
             used_locks = dict(inp.locked)
+            # état du planning AVANT le calcul (diagnostic d'enregistrement : ce qui a été remplacé ou conservé)
+            before_state = {"assignments": len(prev), "locked": len(locked), "version": db.scalar(
+                select(func.max(m.ScheduleVersion.number)).where(m.ScheduleVersion.period_id == period.id))}
         threading.Thread(target=watch, daemon=True).start()
+        t_solve = time.time()
         res = solve(inp, cancel, on_progress)
+        t_solved = time.time()
         stop.set()
         with tenant_session(tenant_id) as db:
             run = db.get(m.OptimizationRun, uuid.UUID(run_id))
@@ -244,9 +265,14 @@ def run_optimization(tenant_id: str, run_id: str) -> None:
             else:
                 verification["reason"] = "Aucun planning produit : rien à vérifier, rien n'est enregistré."
             report["verification"] = verification
+            report["save"] = _save_kept(res, before_state, cancel.is_set())  # remplacé ci-dessous si le planning est enregistré
+            report["timing"] = {"preparation_s": round(t_solve - t_start, 3), **(res.timing or {}), "solver_call_s": round(t_solved - t_solve, 3)}
             report["params_used"] = {"mode": mode_used, "frozen_at": period.frozen_at.isoformat() if mode_used == "frozen" and period.frozen_at else None,
                                      "monthly_cap_minutes": inp.config.monthly_cap_minutes}
             if simulation:  # une simulation n'écrit JAMAIS dans le planning : elle garde sa proposition jusqu'à une application explicite
+                report["save"] = {"outcome": "simulation", "reason_code": "simulation", "reason": "Proposition calculée : le planning n'est pas modifié tant qu'elle n'est pas appliquée.",
+                                  "before": before_state, "after": before_state}
+                report["timing"]["total_s"] = round(time.time() - t_start, 3)
                 report["base_fingerprint"] = base_fp
                 known = {s.id for s in inp.slots}
                 reference = {k: v for k, v in prev.items() if k in known} if run.kind == "local" else prev
@@ -266,6 +292,9 @@ def run_optimization(tenant_id: str, run_id: str) -> None:
             # garde-fou : un planning qui enfreint une contrainte dure n'est JAMAIS enregistré (vérification indépendante)
             if res.hard_violations:
                 report["blocked_by_verification"] = res.hard_violations
+                report["save"] = {**report["save"], "outcome": "kept_previous", "reason_code": "verification_failed",
+                                  "reason": f"La solution trouvée enfreint {len(res.hard_violations)} contrainte(s) obligatoire(s) selon la vérification indépendante : elle n'a pas été enregistrée."}
+                report["timing"]["total_s"] = round(time.time() - t_start, 3)
                 row.report = report
                 db.add(m.Conflict(tenant_id=run.tenant_id, run_id=run.id, code="PLAN_REJECTED", severity="blocking",
                                   message="Planning refusé par la vérification automatique : " + "; ".join(res.hard_violations[:5]),
@@ -286,7 +315,11 @@ def run_optimization(tenant_id: str, run_id: str) -> None:
                         verification["after_save"] = saved
                         if saved["violations"]:
                             raise PlanRejected(saved["violations"])
-                        make_version(db, run.tenant_id, period.id, "Planning généré", "generated", run.requested_by, run_id=run.id)
+                        v_after = make_version(db, run.tenant_id, period.id, "Planning généré", "generated", run.requested_by, run_id=run.id)
+                        n_after = db.scalar(select(func.count()).select_from(m.Assignment).where(m.Assignment.period_id == period.id)) or 0
+                        n_locked = db.scalar(select(func.count()).select_from(m.Assignment).where(m.Assignment.period_id == period.id, m.Assignment.locked.is_(True))) or 0
+                        report["save"] = {"outcome": "replaced", "reason_code": "saved", "reason": "Nouveau planning vérifié puis enregistré.",
+                                          "before": before_state, "after": {"assignments": n_after, "locked": n_locked, "version": v_after.number}}
                         # paramètres conservés par ce planning : ceux du calcul (actuels si choisis ou si le planning n'en avait pas)
                         if mode_used == "current":
                             freeze_period(db, period, "generation", captured, inp.config.monthly_cap_minutes, used_cfg=inp.config)
@@ -298,11 +331,16 @@ def run_optimization(tenant_id: str, run_id: str) -> None:
                         period.frozen_params = {**period.frozen_params, "generation_run_id": str(run.id)}  # calcul à l'origine du planning
                 except PlanRejected as exc:
                     report["blocked_by_verification"] = exc.violations
+                    report["save"] = {"outcome": "kept_previous", "reason_code": "rejected_after_save", "before": before_state, "after": before_state,
+                                      "reason": f"Le planning enregistré enfreignait {len(exc.violations)} contrainte(s) obligatoire(s) à la relecture : l'enregistrement a été annulé."}
+                    report["timing"]["total_s"] = round(time.time() - t_start, 3)
                     row.report = report
                     db.add(m.Conflict(tenant_id=run.tenant_id, run_id=run.id, code="PLAN_REJECTED", severity="blocking",
                                       message="Planning refusé par la vérification du planning enregistré : " + "; ".join(exc.violations[:5]), slots=[]))
                     run.status, run.finished_at = "erreur", datetime.now(timezone.utc)
                     return
+            report["timing"]["total_s"] = round(time.time() - t_start, 3)
+            report["timing"]["saving_s"] = round(time.time() - t_solved, 3)
             row.report = report
             for i in res.diagnostics + res.missing_data:
                 if i.severity != "info":

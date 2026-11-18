@@ -430,7 +430,11 @@ def test_performance_grand_effectif(monkeypatch):
     t0 = _time.time()
     r = solve(inp)
     took = _time.time() - t0
+    t = r.timing
+    print(f"TIMING model_s={t['model_s']} search_s={t['search_s']} post_s={t['post_s']} engine_total_s={t['engine_total_s']} time_limit_s={t['time_limit_s']}")
     assert took < 90, f"{took:.1f}s"
+    # la durée maximale borne la construction du modèle et la recherche (dépassement mesuré : quelques dixièmes de seconde)
+    assert t["model_s"] + t["search_s"] <= t["time_limit_s"] + 1.0, t
     assert r.hard_violations == []
     assert r.metrics["coverage_rate"] == 100.0 and r.uncovered_slots == []  # la capacité dépasse largement la demande : aucun manque n'est acceptable ici
     lv = {x["level"]: x for x in r.levels}

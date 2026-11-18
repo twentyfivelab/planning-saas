@@ -9,6 +9,18 @@ const API = process.env.API_URL ?? "http://localhost:8000";
 const j = (page: Page, path: string) => getJson(page, path);
 type P = { id: string; name: string; start_date: string; status: string };
 const periodOf = async (page: Page, iso: string) => ((await j(page, "/periods")) as P[]).find((p) => p.start_date === iso);
+/** Attend une confirmation RÉELLE d'enregistrement (compteur du serveur incrémenté, état « Enregistré »), limite raisonnable de 15 s ;
+ *  une erreur affichée fait échouer immédiatement avec son message. */
+async function saved(page: Page, action: () => Promise<unknown>) {
+  const st = page.locator("[data-save-confirmed]").first();
+  const before = Number((await st.getAttribute("data-save-confirmed")) ?? 0);
+  await action();
+  await expect.poll(async () => {
+    const [state, n] = [await st.getAttribute("data-save-state"), Number(await st.getAttribute("data-save-confirmed"))];
+    if (state === "error") throw new Error(`Échec d'enregistrement affiché : ${await st.textContent()}`);
+    return state === "saved" && n > before;
+  }, { timeout: 15_000, message: "confirmation d'enregistrement de l'effectif" }).toBe(true);
+}
 const roster = async (page: Page, pid: string) => (await j(page, `/periods/${pid}/roster`)).employees as { code: string; included: boolean; state: string }[];
 const next = (page: Page) => page.getByRole("navigation", { name: "Navigation de l'assistant" }).getByRole("button", { name: /^Suivant/ });
 const history = (page: Page) => page.getByRole("navigation", { name: "Navigation principale" }).locator(".history-nav");
@@ -49,19 +61,17 @@ test("2-5. janvier 2027 : effectif (Zaki décoché), exception de jours, indispo
   await openJanuary(page);
   const jan = (await periodOf(page, "2027-01-01"))!;
   // --- étape 2 : tous les actifs cochés par défaut, Zaki décoché pour ce mois seulement
-  await page.getByRole("button", { name: "Tout sélectionner" }).click();
-  await expect(page.getByRole("status").filter({ hasText: "Enregistré automatiquement" })).toBeVisible();
+  await saved(page, () => page.getByRole("button", { name: "Tout sélectionner" }).click());
   const list = page.getByRole("list", { name: "Effectif du mois" });
   const active = (r: { state: string; included: boolean }[]) => r.filter((x) => x.state !== "inactive" && x.state !== "contract_ended");
-  await expect.poll(async () => active(await roster(page, jan.id)).every((x) => x.included)).toBe(true); // enregistrement automatique terminé
+  expect(active(await roster(page, jan.id)).every((x) => x.included)).toBe(true); // confirmé par le serveur : vérifiable immédiatement
   const r0 = await roster(page, jan.id);
   const all = r0.length, selectable = r0.filter((x) => x.included).length;
   expect(r0.filter((x) => x.state !== "inactive" && x.state !== "contract_ended").every((x) => x.included)).toBe(true); // tous les actifs cochés
   await expect(page.getByText(new RegExp(`^${selectable} sélectionnés sur ${all}$`, "i"))).toBeVisible();
   await page.getByPlaceholder("Rechercher un collaborateur…").fill("zak");
-  await list.getByRole("checkbox").first().uncheck();
+  await saved(page, () => list.getByRole("checkbox").first().uncheck());
   await expect(list.locator("li").first()).toContainText("Exclu ce mois");
-  await expect(page.getByRole("status").filter({ hasText: "Enregistré automatiquement" })).toBeVisible();
   await page.getByPlaceholder("Rechercher un collaborateur…").fill("");
   await expect(page.getByText(new RegExp(`^${selectable - 1} sélectionnés sur ${all}$`, "i"))).toBeVisible();
   expect((await roster(page, jan.id)).find((x) => x.code === "zaki")!.state).toBe("excluded");

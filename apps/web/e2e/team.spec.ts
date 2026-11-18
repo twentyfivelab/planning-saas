@@ -124,7 +124,11 @@ test("génération : durée maximale expliquée, choix des paramètres, temps é
   await page.getByRole("button", { name: "Générer automatiquement le planning" }).click();
   await page.getByRole("button", { name: "Confirmer et lancer" }).click();
   await expect(page.getByTestId("run-progress")).toBeVisible();
-  await expect(page.getByTestId("run-elapsed")).toContainText(/Temps écoulé : \d+ s · durée maximale : 12 s/);
+  await expect(page.getByTestId("run-elapsed")).toContainText(/Temps écoulé depuis le début : \d+ s · durée maximale du calcul \(modèle et recherche\) : 12 s/);
   await expect(page.getByText(/Résultat :/)).toBeVisible({ timeout: 90_000 });
+  const outcome = page.getByTestId("save-outcome"); // résultat d'enregistrement donné par le serveur, avec les temps mesurés
+  await expect(outcome).toHaveAttribute("data-outcome", "replaced");
+  await expect(outcome).toContainText(/Avant : \d+ affectation\(s\), version n° \d+ ; après : version n° \d+/);
+  await expect(outcome.getByTestId("run-timing")).toContainText("(durée maximale 12 s pour ces deux étapes)");
   await expect(page.getByText(/Paramètres utilisés : ceux conservés par ce planning · plafond mensuel 176 h par collaborateur/)).toBeVisible();
 });

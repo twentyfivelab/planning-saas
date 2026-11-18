@@ -545,6 +545,7 @@ def solve(inp: SolverInput, cancel: Optional[threading.Event] = None, progress: 
             m.AddHint(x[eid, sid], 1)
     # Résolution niveau par niveau : la solution du niveau précédent sert de point de départ et sa valeur est figée
     groups_lv = _level_groups(cfg, exprs, bool(inp.previous)) or [("pondere", [])]
+    t_built = _time.time()  # modèle construit : ce temps est compté dans la durée maximale
     deadline = t0 + cfg.time_limit_s
     shares = {"couverture": 0.35, "engagements": 0.25}
     floor = 5.0  # le préchargement d'un grand modèle prend plusieurs secondes : un niveau a besoin d'un minimum de temps pour exister
@@ -612,8 +613,14 @@ def solve(inp: SolverInput, cancel: Optional[threading.Event] = None, progress: 
             if cancel is not None and cancel.is_set():
                 break
     stopped["v"] = True
-    dur = _time.time() - t0
+    t_end = _time.time()
+    dur = t_end - t0
     report(phase="checking")
+
+    def _timing() -> Dict[str, float]:
+        now = _time.time()
+        return {"time_limit_s": float(cfg.time_limit_s), "model_s": round(t_built - t0, 3), "search_s": round(t_end - t_built, 3),
+                "post_s": round(now - t_end, 3), "engine_total_s": round(now - t0, 3)}
 
     names = {cp_model.OPTIMAL: "optimal", cp_model.FEASIBLE: "faisable"}
     missing = missing_data(inp)
@@ -641,7 +648,7 @@ def solve(inp: SolverInput, cancel: Optional[threading.Event] = None, progress: 
             diag = []
         return SolverResult(status=st_name, mode=mode, validable=False, assignments=[], uncovered_slots=[],
                             budgets=[], objective={}, preferences={}, avoided_violations={},
-                            hard_violations=[], employee_hours={}, diagnostics=diag, sunday=sunday_summary(inp), **base)
+                            hard_violations=[], employee_hours={}, diagnostics=diag, sunday=sunday_summary(inp), timing=_timing(), **base)
 
     assigns: List[Assignment] = []
     for (eid, sid), v in x.items():
@@ -659,7 +666,7 @@ def solve(inp: SolverInput, cancel: Optional[threading.Event] = None, progress: 
                       suggestions=["Relancer avec un délai de calcul plus long."])]
         return SolverResult(status="interrompu", mode=mode, validable=False, assignments=[], uncovered_slots=[],
                             budgets=[], objective={}, preferences={}, avoided_violations={},
-                            hard_violations=[], employee_hours={}, diagnostics=diag, sunday=sunday_summary(inp), **base)
+                            hard_violations=[], employee_hours={}, diagnostics=diag, sunday=sunday_summary(inp), timing=_timing(), **base)
     filled = {a.slot_id for a in assigns}
     uncovered = [s.id for s in inp.slots if s.mandatory and s.id not in filled]
 
@@ -702,7 +709,7 @@ def solve(inp: SolverInput, cancel: Optional[threading.Event] = None, progress: 
                         assignments=assigns, uncovered_slots=uncovered, budgets=budgets, objective=objective,
                         preferences=dict(prefs), avoided_violations=avoided, hard_violations=viol,
                         employee_hours=dict(hours), diagnostics=diag, sunday=sunday_summary(inp, assigns),
-                        metrics=plan_metrics(inp, assigns, prep=prep), **base)
+                        metrics=plan_metrics(inp, assigns, prep=prep), timing=_timing(), **base)
 
 
 def _lock_issue(prep, sid: str, eid: str) -> Issue:

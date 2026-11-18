@@ -281,6 +281,9 @@ class SolverResult:
     model: Dict[str, int] = field(default_factory=dict)  # taille du problème : variables de décision, affectations écartées par le préfiltrage
     proved_optimal: bool = False  # True seulement si le solveur a PROUVÉ l'optimalité (tous les niveaux)
     metrics: Dict[str, object] = field(default_factory=dict)  # indicateurs recalculés indépendamment (couverture, équité…)
+    # temps mesurés (secondes) : construction du modèle (comptée dans la durée maximale), recherche du solveur (bornée par ce qui reste de
+    # la durée maximale), contrôles après la recherche (vérificateur indépendant, coûts, indicateurs : en plus de la durée maximale)
+    timing: Dict[str, float] = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return asdict(self)

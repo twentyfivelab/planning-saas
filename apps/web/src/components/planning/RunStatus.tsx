@@ -5,7 +5,8 @@ import { Badge, Callout, Field, Input, Progress } from "@/components/ui/primitiv
 import { api } from "@/lib/api";
 
 export type RunProgressData = { phase?: string; level?: string; index?: number; count?: number; solutions?: number; elapsed_s?: number; time_limit_s?: number } | null;
-export type RunView = { id: string; status: string; result_status?: string | null; started_at?: string | null; progress?: RunProgressData; config?: { time_limit_s?: number } };
+export type RunView = { id: string; status: string; result_status?: string | null; started_at?: string | null; progress?: RunProgressData; config?: { time_limit_s?: number };
+  save?: SaveInfo | null; timing?: RunTiming | null };
 export type PeriodParams = { frozen: boolean; frozen_at: string | null; source: string | null; differences: ParamDiff[]; current_cap_minutes: number | null; plan_cap_minutes: number | null;
   generation_run_id?: string | null; weights?: Record<string, number> | null };
 export type ParamsMode = "frozen" | "current" | null;
@@ -33,7 +34,7 @@ export function TimeLimitField({ value, onChange, width = "8rem" }: { value: num
       <Field label="Durée maximale du calcul (secondes)">{(p) => <Input {...p} type="number" min={5} max={600} value={value} onChange={(e) => onChange(Math.max(5, Math.min(600, Number(e.target.value) || 30)))} style={{ width }} aria-describedby="time-limit-help" />}</Field>
       <div id="time-limit-help" className="help" data-testid="time-limit-help">
         <p style={{ margin: 0 }}><strong>C&apos;est une limite, pas une durée fixe.</strong> Le moteur s&apos;arrête plus tôt dès que le planning ne peut plus être amélioré (meilleure solution prouvée).</p>
-        <p style={{ margin: 0 }}>Une durée plus longue laisse plus de temps pour trouver un meilleur planning (moins de shifts non couverts, heures mieux réparties) ; elle ne change jamais les règles obligatoires. La préparation et la vérification ajoutent quelques secondes.</p>
+        <p style={{ margin: 0 }}>Une durée plus longue laisse plus de temps pour trouver un meilleur planning (moins de shifts non couverts, heures mieux réparties) ; elle ne change jamais les règles obligatoires. Elle borne la construction du modèle et la recherche du solveur (à quelques dixièmes de seconde près : le solveur termine l&apos;étape en cours) ; la préparation des données (avant), puis les contrôles du moteur et l&apos;enregistrement vérifié (après) s&apos;y ajoutent. Le détail mesuré de chaque étape est affiché à la fin du calcul.</p>
         <p style={{ margin: 0 }}>À l&apos;expiration : si une solution existe, la meilleure trouvée est vérifiée puis enregistrée (statut « faisable » au lieu d&apos;« optimal ») ; si aucune solution n&apos;a été trouvée, rien n&apos;est enregistré et le planning existant reste intact.</p>
         <p style={{ margin: 0 }}>Un planning qui enfreindrait une contrainte obligatoire n&apos;est jamais enregistré ni présenté comme valide.</p>
       </div>
@@ -66,7 +67,7 @@ export function RunProgress({ run, limit }: { run: RunView; limit: number }) {
     <div className="stack" role="status" aria-live="polite" data-testid="run-progress" style={{ gap: "var(--sp-2)" }}>
       <p style={{ margin: 0 }}><Badge tone="info">{run.status === "en_attente" ? "En attente" : "En cours"}</Badge> {stateText(run)}</p>
       <Progress value={Math.min(100, (elapsed / Math.max(1, max)) * 100)} label="Temps utilisé sur la durée maximale" />
-      <p className="help num" style={{ margin: 0 }} data-testid="run-elapsed">Temps écoulé : {elapsed} s · durée maximale : {max} s{elapsed > max ? " (vérification et enregistrement en cours)" : ""}</p>
+      <p className="help num" style={{ margin: 0 }} data-testid="run-elapsed">Temps écoulé depuis le début : {elapsed} s · durée maximale du calcul (modèle et recherche) : {max} s{elapsed > max ? " — contrôles et enregistrement en cours, hors durée maximale" : ""}</p>
     </div>
   );
 }
@@ -97,7 +98,7 @@ export function ParamsChoice({ periodId, value, onChange }: { periodId: string |
 }
 
 /** Calcul refusé par la vérification indépendante : jamais présenté comme un planning valide. */
-export function RunFailure({ runId, status }: { runId: string; status: string }) {
+export function RunFailure({ runId, status, save, timing }: { runId: string; status: string; save?: SaveInfo | null; timing?: RunTiming | null }) {
   const [blocked, setBlocked] = useState<string[] | null>(null);
   const [reason, setReason] = useState<string | null>(null);
   useEffect(() => {
@@ -105,11 +106,55 @@ export function RunFailure({ runId, status }: { runId: string; status: string })
       .then((r) => { setBlocked(r.report.blocked_by_verification ?? null); if (r.status === "infaisable" || r.status === "interrompu") setReason(r.status === "interrompu" ? "Aucune solution trouvée dans la durée maximale : augmentez-la ou allégez les contraintes." : r.report.diagnostics?.[0]?.message ?? "Contraintes incompatibles."); })
       .catch(() => setBlocked(null));
   }, [runId]);
+  if (save && save.outcome === "kept_previous" && !blocked?.length) return <SaveOutcome save={save} timing={timing} />;
   return (
     <Callout kind="bad" title={status === "annule" ? "Calcul annulé" : blocked?.length ? "Planning refusé par la vérification" : "La génération n'a pas abouti"}>
       <p style={{ margin: 0 }}>Le planning existant (s&apos;il y en a un) n&apos;a pas été modifié.</p>
       {blocked && blocked.length > 0 && <><p style={{ margin: "var(--sp-1) 0 0" }}>La solution trouvée enfreignait {blocked.length} contrainte(s) obligatoire(s) : elle n&apos;a pas été enregistrée.</p><ul style={{ margin: 0, paddingLeft: "1.1rem" }}>{blocked.slice(0, 5).map((b) => <li key={b}>{b}</li>)}</ul></>}
-      {reason && <p style={{ margin: "var(--sp-1) 0 0" }}>{reason}</p>}
+      {(save?.reason ?? reason) && <p style={{ margin: "var(--sp-1) 0 0" }}>{save?.reason ?? reason}</p>}
+      <TimingLine t={timing} />
+    </Callout>
+  );
+}
+
+export type SaveInfo = { outcome: "replaced" | "kept_previous" | "simulation"; reason_code: string; reason: string;
+  before: { assignments: number; locked: number; version: number | null }; after: { assignments: number; locked: number; version: number | null } };
+export type RunTiming = { time_limit_s?: number; preparation_s?: number; model_s?: number; search_s?: number; post_s?: number; engine_total_s?: number;
+  solver_call_s?: number; saving_s?: number; total_s?: number };
+const sec = (v?: number) => (v === undefined || v === null ? "—" : `${v < 10 ? v.toFixed(1) : Math.round(v)} s`.replace(".", ","));
+
+/** Temps MESURÉS de chaque étape : la durée maximale borne la construction du modèle et la recherche du solveur ; la préparation des données,
+ *  les contrôles du moteur et l'enregistrement s'y ajoutent. */
+export function TimingLine({ t }: { t?: RunTiming | null }) {
+  if (!t || t.total_s === undefined) return null;
+  return (
+    <p className="help" data-testid="run-timing" style={{ margin: 0 }}>
+      Temps mesurés : préparation des données {sec(t.preparation_s)} · construction du modèle {sec(t.model_s)} + recherche du solveur {sec(t.search_s)}
+      {t.time_limit_s ? ` (durée maximale ${sec(t.time_limit_s)} pour ces deux étapes)` : ""} · contrôles du moteur {sec(t.post_s)} · enregistrement et vérification {sec(t.saving_s)} · total {sec(t.total_s)}.
+    </p>
+  );
+}
+
+/** Résultat d'enregistrement donné par le serveur : planning remplacé (versions avant / après) ou ancien planning conservé, avec la raison. */
+export function SaveOutcome({ save, timing }: { save?: SaveInfo | null; timing?: RunTiming | null }) {
+  if (!save) return null;
+  const v = (n: number | null | undefined) => (n ? `version n° ${n}` : "aucune version");
+  if (save.outcome === "replaced") return (
+    <Callout kind="ok" title="Nouveau planning enregistré">
+      <div className="stack" style={{ gap: "var(--sp-1)" }} data-testid="save-outcome" data-outcome="replaced">
+        <p style={{ margin: 0 }}>{save.after.assignments} affectation(s) enregistrée(s), dont {save.after.locked} verrouillée(s) conservée(s) telles quelles. Avant : {save.before.assignments} affectation(s), {v(save.before.version)} ; après : {v(save.after.version)}.</p>
+        <TimingLine t={timing} />
+      </div>
+    </Callout>
+  );
+  if (save.outcome === "simulation") return null;
+  return (
+    <Callout kind="warn" title="Le planning précédent est conservé">
+      <div className="stack" style={{ gap: "var(--sp-1)" }} data-testid="save-outcome" data-outcome="kept_previous" data-reason={save.reason_code}>
+        <p style={{ margin: 0 }}><strong>Pourquoi :</strong> {save.reason}</p>
+        <p style={{ margin: 0 }}>Planning inchangé : {save.before.assignments} affectation(s) ({save.before.locked} verrouillée(s)), {v(save.before.version)}. Aucune nouvelle solution valide n&apos;a été enregistrée.</p>
+        <TimingLine t={timing} />
+      </div>
     </Callout>
   );
 }
