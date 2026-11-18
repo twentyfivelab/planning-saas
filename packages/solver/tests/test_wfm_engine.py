@@ -493,3 +493,15 @@ def test_validateur_refuse_un_shift_hors_perimetre():
     s = slot("b", d)
     bad = [Assignment("b", "anna", d, s.start, s.end, 540, 60, 480, dict(s.allocations))]
     assert any(v.startswith("FROZEN_SLOT") for v in validate(SolverInput(d, d, [s], [emp("anna")], [], cfg(), frozen_empty={"b"}), bad))
+
+
+def test_verrou_sur_un_shift_disparu_explique_sans_identifiant_interne():
+    """Shift verrouillé dont l'animation n'existe plus dans le mois (marque désactivée…) : calcul infaisable, message lisible (date)."""
+    d = date(2026, 12, 5)
+    s = Slot(f"X|{d}", d, "S1", time(9), time(17), 0, {"A": 480})
+    inp = SolverInput(d, d, [s], [Employee("ana", "Ana", {"A": PRIORITY})], [], SolverConfig(time_limit_s=5, workers=2),
+                      locked={"CARTIER-SOIR|2026-12-05": "ana"})
+    r = solve(inp)
+    assert r.status == "infaisable"
+    msg = next(i.message for i in r.diagnostics if i.code == "LOCK_IMPOSSIBLE")
+    assert "du 05/12/2026" in msg and "(Ana)" in msg and "n'existe plus dans la configuration de ce mois" in msg and "|" not in msg

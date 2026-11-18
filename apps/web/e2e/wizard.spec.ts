@@ -272,3 +272,27 @@ test("9. renommer puis archiver un site : les anciens plannings gardent leurs af
     await page.request.patch(`${API}/catalog/sites/Cartier`, { headers: { "X-CSRF-Token": token }, data: { name: "Cartier", archived_from: "" } });
   }
 });
+
+test("effectif : un échec d'enregistrement s'affiche avec « Réessayer », rien n'est perdu, la reprise est confirmée par le serveur", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 1100 });
+  await openJanuary(page);
+  const jan = (await periodOf(page, "2027-01-01"))!;
+  const list = page.getByRole("list", { name: "Effectif du mois" });
+  const box = list.getByRole("checkbox").first();
+  const initial = await box.isChecked();
+  const status = page.locator("[data-save-confirmed]").first();
+  let fail = true;
+  await page.route("**/roster", (r) => (r.request().method() === "PUT" && fail ? r.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ detail: "Service momentanément indisponible" }) }) : r.continue()));
+  await box.setChecked(!initial);
+  await expect(status).toHaveAttribute("data-save-state", "error", { timeout: 15_000 });
+  await expect(status).toContainText("Échec de l'enregistrement");
+  await expect(box).toBeChecked({ checked: !initial }); // la modification reste à l'écran, prête à être renvoyée
+  const code = (await roster(page, jan.id)); expect(code.length).toBeGreaterThan(0);
+  fail = false;
+  await saved(page, () => status.getByRole("button", { name: "Réessayer" }).click());
+  const name = (await list.locator("li").first().locator("strong").textContent())!.trim();
+  const row = (await j(page, `/periods/${jan.id}/roster`)).employees.find((x: { name: string }) => x.name === name);
+  expect(row.included).toBe(!initial); // confirmé par le serveur
+  await saved(page, () => box.setChecked(initial)); // remise en l'état
+  await page.unroute("**/roster");
+});

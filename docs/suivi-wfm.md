@@ -7,15 +7,15 @@ Une fonctionnalité n'est classée « terminée et vérifiée » que si une vér
 - `docs/identite-visuelle.md` (rose de référence) ;
 - `docs/backup-restore.md`.
 
-## Résultats de tests (17/11/2026)
+## Résultats de tests (18/11/2026)
 
 | Suite | Résultat | Environnement |
 |---|---|---|
-| Moteur, tests de correction (`packages/solver`) | **136 / 136** | local ; aussi **127 / 127 sous forte charge** (charge moyenne 44 sur 10 cœurs) et pendant la suite e2e |
+| Moteur, tests de correction (`packages/solver`) | **137 / 137** | local ; aussi **127 / 127 sous forte charge** (charge moyenne 44 sur 10 cœurs) et pendant la suite e2e |
 | Moteur, mesures de performance (marqueur `perf`) | à part : `scripts/ops/perf_engine.sh` | conditions consignées dans `docs/mesures-moteur.md` |
-| API (`apps/api`) | **160 / 160** | base PostgreSQL jetable par session (`planning_test_<pid>`) |
-| Interface, unitaires, dont contrastes WCAG AA | **120 / 120** | Vitest |
-| Navigateur e2e | **74 / 74** | pile Docker isolée (`infra/compose.e2e.yaml`, base `planning_e2e`) |
+| API (`apps/api`) | **161 / 161** | base PostgreSQL jetable par session (`planning_test_<pid>`) |
+| Interface, unitaires, dont contrastes WCAG AA | **123 / 123** | Vitest |
+| Navigateur e2e | **75 / 75** | pile Docker isolée (`infra/compose.e2e.yaml`, base `planning_e2e`) |
 | ruff, TypeScript, ESLint | sans erreur | |
 
 Fiabilité du moteur (deux échecs observés sous charge, corrigés à la source, sans relance ni délai allongé) :
@@ -49,6 +49,21 @@ Cinq exécutions complètes de la suite API, dont quatre en parallèle de la sui
 - `test_demo_flow::test_manual_move_reports_conflicts_immediately` : un échec, le 18/11, dans une suite complète en parallèle des tests navigateur ; jamais reproduit depuis (5 suites complètes, 11 exécutions isolées dont 6 sous forte charge). Cause **probable, non confirmée** : l'ancienne version prenait le premier shift GVA9 et cherchait un seul collègue ce jour-là ; une sonde a montré qu'il ne restait parfois qu'**un** collègue possible (1 fois sur 6 observations), ce qui rend plausible un cas sans candidat selon la solution du moteur. La version actuelle cherche parmi tous les couples possibles (88 à 112 selon les exécutions) ; elle a passé toutes les exécutions depuis. Le mode d'échec exact de l'occurrence initiale n'a pas été enregistré.
 - `test_monthly_setup::test_10` : échec 1 fois sur 5 (exécution 3), même symptôme que le 17/11 (décembre régénéré sans remplacer le planning). La cause du 17/11 (verrou posé par un test précédent, « affectation verrouillée impossible ») est corrigée ; la cause de l'échec du 18/11 n'est **pas confirmée** : une sonde ajoutée ensuite a donné « faisable » ou « optimal » dans les exécutions 4 et 5. Hypothèses : calcul « interrompu » faute de temps sous forte charge (délai de 20 s), ou autre refus. Le test affiche désormais, s'il échoue, le résultat du calcul et ses diagnostics, pour trancher à la prochaine occurrence.
 - `e2e/wizard.spec.ts` (janvier 2027) : échec 1 fois sur 4 en parallèle de la suite API, jamais seul. Cause **probable, non confirmée** : l'attente de l'enregistrement automatique de l'effectif (5 s) dépassée sous charge ; l'effectif enregistré ne contenait ensuite aucune ligne bloquée. Le délai n'a pas été allongé.
+
+## Régénération, enregistrement automatique et temps de calcul (18/11/2026)
+
+**Régénération qui laisse l'ancien planning en place**
+- Inventaire du code : l'ancien planning est conservé dans cinq cas seulement. (1) Calcul infaisable, par exemple un shift verrouillé devenu impossible : cause **confirmée** de l'échec du 17/11, corrigée côté test. (2) Calcul interrompu sans aucune solution. (3) Refus par le vérificateur avant l'enregistrement. (4) Refus à la relecture du planning enregistré, l'enregistrement étant alors annulé. (5) Annulation.
+- Aucun chemin où un calcul réussi garderait des affectations de l'ancien planning, hors verrous. Un verrou sur un shift qui n'existe plus rend le calcul infaisable (vérifié dans le moteur et par un test).
+- Chaque calcul enregistre désormais un **résultat d'enregistrement** : planning remplacé ou conservé, code et texte de la raison, affectations et version avant / après, verrous conservés. Il enregistre aussi les **temps mesurés** de chaque étape. Les écrans « Générer » et l'assistant affichent ce résultat (« Le planning précédent est conservé — Pourquoi : … »), vérifié dans le navigateur sur un cas réel. Les messages de verrou n'affichent plus d'identifiant interne.
+- L'échec de `test_10` du 18/11 (1 suite sur 5) reste **non expliqué** : il est survenu avant cette instrumentation. Il ne s'est pas reproduit dans les deux suites complètes lancées ensuite en parallèle des tests navigateur (API 161 / 161 les deux fois, navigateur 74 / 74 puis 75 / 75). Cette absence ne prouve pas qu'il soit résolu. S'il se reproduit, le message du test affichera le résultat d'enregistrement et les diagnostics.
+
+**Enregistrement automatique de l'effectif (assistant)**
+- Vrais défauts trouvés dans l'écran, indépendants du test. « Enregistré automatiquement » s'affichait à la fin d'un premier envoi alors que d'autres modifications partaient encore. Deux envois pouvaient être simultanés, et une réponse ancienne pouvait écraser l'affichage. Aucun « Réessayer » en cas d'échec. Enfin, l'état « Enregistré » restait affiché d'une action à l'autre, et c'est ce qui trompait le test.
+- Corrections : file d'enregistrement (un envoi à la fois, « Enregistré » seulement après confirmation de toutes les modifications, erreur affichée avec « Réessayer » et modifications conservées), testée seule (3 tests unitaires) et dans le navigateur (échec simulé puis reprise confirmée par le serveur).
+- Le test attend une confirmation réelle (compteur de confirmations du serveur), avec une limite de 15 s, au lieu de l'ancienne attente de 5 s.
+
+**Temps de calcul** : décomposition mesurée dans `docs/mesures-moteur.md`. Les 46 s pour 45 s correspondent à 0,4 s de dépassement du solveur et 0,65 s de contrôles du moteur. Le libellé de la durée maximale indique désormais ce qu'elle borne (construction du modèle et recherche) et ce qui s'y ajoute.
 
 ## Vérifications ciblées
 

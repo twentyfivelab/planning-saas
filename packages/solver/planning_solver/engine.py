@@ -713,12 +713,23 @@ def solve(inp: SolverInput, cancel: Optional[threading.Event] = None, progress: 
 
 
 def _lock_issue(prep, sid: str, eid: str) -> Issue:
-    """Un verrou impossible rend le problème infaisable : le diagnostic nomme le shift, la personne et la règle en cause."""
+    """Un verrou impossible rend le problème infaisable : le diagnostic nomme le shift (date, horaires, site), la personne et la règle en
+    cause, sans identifiant interne."""
     s, e = prep.slots.get(sid), prep.emps.get(eid)
-    if s is None or e is None:
-        return Issue("LOCK_IMPOSSIBLE", "blocking", f"Verrou impossible sur {sid} : shift ou collaborateur absent des données du mois.", slots=[sid])
+    day = sid.rsplit("|", 1)[-1] if "|" in sid else ""
+    when = f"du {day[8:10]}/{day[5:7]}/{day[:4]}" if len(day) == 10 else ""
+    if s is None:
+        who = f" ({e.name})" if e else ""
+        return Issue("LOCK_IMPOSSIBLE", "blocking",
+                     f"Un shift verrouillé {when}{who} n'existe plus dans la configuration de ce mois (marque, site ou animation désactivé ou modifié) : "
+                     "il ne peut pas être conservé.", slots=[sid],
+                     suggestions=["Déverrouiller ou retirer ce shift dans le planning, puis relancer la génération."])
+    if e is None:
+        return Issue("LOCK_IMPOSSIBLE", "blocking", f"Le shift verrouillé {when} ({s.start:%H:%M}–{s.end:%H:%M}, {s.site}) est attribué à un collaborateur absent des données du mois.",
+                     slots=[sid], suggestions=["Déverrouiller ou réattribuer ce shift, puis relancer la génération."])
     why = ineligibility(e, s, prep.starts_by_site)
-    return Issue("LOCK_IMPOSSIBLE", "blocking", f"Le shift verrouillé {sid} ({s.day}, {s.start:%H:%M}-{s.end:%H:%M}) ne peut pas rester à {e.name} : {why[1] if why else 'repos insuffisant avec une période voisine'}.",
+    return Issue("LOCK_IMPOSSIBLE", "blocking", f"Le shift verrouillé {when} ({s.start:%H:%M}–{s.end:%H:%M}, {s.site}) ne peut pas rester à {e.name} : "
+                 f"{why[1] if why else 'repos insuffisant avec une période voisine'}.",
                  slots=[sid], constraints=[why[0] if why else "REST"], suggestions=["Déverrouiller ce shift ou lever la contrainte, puis relancer la génération."])
 
 
