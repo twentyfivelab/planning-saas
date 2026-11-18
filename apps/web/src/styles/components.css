@@ -506,3 +506,5 @@ dialog.modal:has(.emonth) { width: min(70rem, calc(100vw - 1.5rem)); }
 details.advanced { padding: var(--sp-4); display: grid; gap: var(--sp-3); }
 details.advanced > summary { cursor: pointer; font-weight: 650; }
 details.advanced[open] > summary { margin-bottom: var(--sp-2); }
+.history-filters > summary { cursor: pointer; font-weight: 650; padding: var(--sp-2) 0; }
+@media (min-width: 768px) { .history-filters > summary { display: none; } }

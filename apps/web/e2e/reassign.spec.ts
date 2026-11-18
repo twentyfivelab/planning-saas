@@ -25,7 +25,11 @@ test.beforeAll(async ({ browser }) => {
   const all = await schedule(page);
   target = all.find((a) => a.day === "2026-11-02" && a.site === "GVA3" && a.start.startsWith("06:00"))!;
   const emps = (await (await page.request.get(`${API}/employees`)).json()) as { id: string; name: string }[];
-  other = emps.find((e) => e.id !== target.employee_id && (e as unknown as { brands: Record<string, string> }).brands["Ploom GVA3"] && !all.some((a) => a.employee_id === e.id && a.day === target.day))!;
+  // remplaçant autorisé, libre ce jour-là et avec de la marge sous le plafond mensuel de 176 h (sinon le remplacement est refusé, à juste titre)
+  const used = (id: string) => all.filter((a) => a.employee_id === id).reduce((s, a) => s + ((a as unknown as { effective_minutes: number }).effective_minutes ?? 0), 0);
+  const eff = (target as unknown as { effective_minutes: number }).effective_minutes ?? 480;
+  other = emps.find((e) => e.id !== target.employee_id && !(e as unknown as { deleted_at?: string | null }).deleted_at && (e as unknown as { brands: Record<string, string> }).brands["Ploom GVA3"]
+    && !all.some((a) => a.employee_id === e.id && a.day === target.day) && used(e.id) + eff <= 176 * 60)!;
   await ctx.close();
 });
 test.afterEach(async ({ page }) => { if ((await owner(page)) !== target.employee_id) await force(page, target.employee_id); });

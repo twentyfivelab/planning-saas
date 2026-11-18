@@ -29,6 +29,9 @@ export function HistoryFeed({ periodId, employeeId, filters = true, limit = 30 }
   const [more, setMore] = useState<HistoryItem[]>([]); const [next, setNext] = useState<string | null>(null); const [busy, setBusy] = useState(false);
   useEffect(() => { setMore([]); setNext(q.data?.next ?? null); }, [q.data]);
   const set = (k: keyof Filters, v: string) => setF((x) => ({ ...x, [k]: v }));
+  // filtres ouverts sur ordinateur, repliés sur téléphone (les événements restent visibles sans défiler)
+  const [wide, setWide] = useState(true);
+  useEffect(() => { try { setWide(window.matchMedia("(min-width: 768px)").matches); } catch { /* ignoré */ } }, []);
   async function loadMore() {
     if (!next) return;
     setBusy(true);
@@ -41,6 +44,8 @@ export function HistoryFeed({ periodId, employeeId, filters = true, limit = 30 }
   return (
     <div className="stack" data-testid="history-feed">
       {filters && (
+        <details className="history-filters" open={wide} onToggle={(e) => setWide((e.target as HTMLDetailsElement).open)}>
+        <summary>Filtres{active ? " (actifs)" : ""}</summary>
         <div className="toolbar" role="search" aria-label="Filtres de l'historique">
           <Field label="Du">{(p) => <Input {...p} type="date" value={f.from} onChange={(e) => set("from", e.target.value)} />}</Field>
           <Field label="Au">{(p) => <Input {...p} type="date" value={f.to} onChange={(e) => set("to", e.target.value)} />}</Field>
@@ -51,6 +56,7 @@ export function HistoryFeed({ periodId, employeeId, filters = true, limit = 30 }
           <Field label="Type d'action">{(p) => <Select {...p} value={f.kind} onChange={(e) => set("kind", e.target.value)}><option value="">Tous</option>{q.data?.kinds.map((k) => <option key={k.key} value={k.key}>{k.label}</option>)}</Select>}</Field>
           {active && <Button size="sm" variant="ghost" onClick={() => setF({ ...EMPTY, employee_id: employeeId ?? "" })}>Effacer les filtres</Button>}
         </div>
+        </details>
       )}
       {q.error ? <Callout kind="bad" title="Chargement impossible">{q.error}</Callout> : !q.data ? <SkeletonCard lines={4} /> : !items.length ? (
         <EmptyState icon="history" title="Aucune modification">{active ? "Aucune modification ne correspond à ces filtres." : "Les ajouts, remplacements, échanges, changements d'horaires, générations, restaurations et publications apparaîtront ici."}</EmptyState>
