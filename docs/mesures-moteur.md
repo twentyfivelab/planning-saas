@@ -22,3 +22,4 @@ Les « 46 s pour 45 s » s'expliquent donc par 0,4 s de dépassement du solveur 
 |---|---|---|---|---|---|---|---|
 | 17/11/2026 17:44 | e2a248a+modifs | Apple M4, 10 cœurs, 16 Go | 1.81 | conformes | Python 3.12.10, OR-Tools 9.15.6755 | 1 passed, 136 deselected in 46.28s | test_performance_grand_effectif 46.08 s |
 | 17/11/2026 18:29 | b9fed88 | Apple M4, 10 cœurs, 16 Go | 1.98 | conformes | Python 3.12.10, OR-Tools 9.15.6755 | 1 passed, 136 deselected in 46.50s | test_performance_grand_effectif 46.09 s |
+| 18/11/2026 21:42 | da47ca6 | Apple M4, 10 cœurs, 16 Go | 1.80 | conformes | Python 3.12.10, OR-Tools 9.15.6755 | 1 passed, 137 deselected in 46.54s | test_performance_grand_effectif 46.10 s — modèle 3.955 s, recherche 41.429 s, contrôles 0.652 s, total moteur 46.036 s (durée maximale 45.0 s) |
