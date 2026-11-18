@@ -29,6 +29,27 @@ Intermittences corrigées à la source :
 - **« mouvement réduit »** : la lecture se faisait en deux allers-retours, et le tableau de bord, rechargé par un événement temps réel, pouvait remplacer la carte entre les deux. Un élément détaché donne une durée vide, d'où NaN. Le test lit désormais toutes les cartes en une seule exécution dans la page : 20 passages sur 20, plus les suites complètes.
 - **Alignement** : la mesure se fait désormais après l'animation d'ouverture.
 
+## Stabilité des tests (18/11/2026)
+
+Moteur : **136 / 136** tests de correction le 18/11 (code du moteur inchangé depuis `b9fed88` ; l'équité sur plusieurs mois est couverte et passe) ; mesure de performance sur `b9fed88`, machine au repos : 46 s pour un budget de 45 s (`docs/mesures-moteur.md`).
+
+Cinq exécutions complètes de la suite API, dont quatre en parallèle de la suite navigateur (les conditions de l'échec initial) :
+
+| Exécution | Conditions | API | Navigateur (en parallèle) |
+|---|---|---|---|
+| 1 | en parallèle | 161 / 161 * | 70 / 71 : `wizard` (janvier 2027) |
+| 2 | seule | 161 / 161 * | — |
+| 3 | en parallèle | 160 / 161 : `test_monthly_setup::test_10` | 74 / 74 |
+| 4 | en parallèle | 161 / 161 * | 74 / 74 |
+| 5 | en parallèle | 161 / 161 * | 74 / 74 |
+
+\* 160 tests + une sonde temporaire, retirée ensuite.
+
+**Incertitudes restantes (causes non confirmées)**
+- `test_demo_flow::test_manual_move_reports_conflicts_immediately` : un échec, le 18/11, dans une suite complète en parallèle des tests navigateur ; jamais reproduit depuis (5 suites complètes, 11 exécutions isolées dont 6 sous forte charge). Cause **probable, non confirmée** : l'ancienne version prenait le premier shift GVA9 et cherchait un seul collègue ce jour-là ; une sonde a montré qu'il ne restait parfois qu'**un** collègue possible (1 fois sur 6 observations), ce qui rend plausible un cas sans candidat selon la solution du moteur. La version actuelle cherche parmi tous les couples possibles (88 à 112 selon les exécutions) ; elle a passé toutes les exécutions depuis. Le mode d'échec exact de l'occurrence initiale n'a pas été enregistré.
+- `test_monthly_setup::test_10` : échec 1 fois sur 5 (exécution 3), même symptôme que le 17/11 (décembre régénéré sans remplacer le planning). La cause du 17/11 (verrou posé par un test précédent, « affectation verrouillée impossible ») est corrigée ; la cause de l'échec du 18/11 n'est **pas confirmée** : une sonde ajoutée ensuite a donné « faisable » ou « optimal » dans les exécutions 4 et 5. Hypothèses : calcul « interrompu » faute de temps sous forte charge (délai de 20 s), ou autre refus. Le test affiche désormais, s'il échoue, le résultat du calcul et ses diagnostics, pour trancher à la prochaine occurrence.
+- `e2e/wizard.spec.ts` (janvier 2027) : échec 1 fois sur 4 en parallèle de la suite API, jamais seul. Cause **probable, non confirmée** : l'attente de l'enregistrement automatique de l'effectif (5 s) dépassée sous charge ; l'effectif enregistré ne contenait ensuite aucune ligne bloquée. Le délai n'a pas été allongé.
+
 ## Vérifications ciblées
 
 | Exigence | Preuves exécutées |
