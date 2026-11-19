@@ -64,6 +64,7 @@ def test_generation_remplacement_horaires_suppression_en_langage_simple(t):
     before = datetime.now(timezone.utc)
     r = o.post(f"/periods/{pid}/manual-assign", json={"employee_id": to["id"], "shift_id": x["shift_id"], "force": True, "reason": "test"})
     assert r.status_code == 200, r.text
+    after = datetime.now(timezone.utc)
     ev = hist(o, kind="replace")["items"][0]
     assert ev["title"] == "Remplacement sur Alpha" and ev["lines"][0] == f"{holder['name']} → {to['name']}" and ev["by"] == "Historique SA"
     d = datetime.fromisoformat(x["day"])
@@ -73,6 +74,8 @@ def test_generation_remplacement_horaires_suppression_en_langage_simple(t):
     # distinctes (écart mesuré : environ 1 ms, base en retard). Comparaison stricte impossible : tolérance explicite d'une seconde.
     skew = (at - before).total_seconds()
     assert skew > -1.0, f"modification enregistrée à {at.isoformat()}, avant l'envoi ({before.isoformat()}) de {-skew:.3f} s"
+    late = (at - after).total_seconds()  # et jamais après la réponse (même tolérance) : l'heure est bien celle de l'action
+    assert late < 1.0, f"modification enregistrée à {at.isoformat()}, {late:.3f} s après la réponse ({after.isoformat()})"
     assert ev["at_label"].endswith(f"à {at:%H:%M}") and h["timezone"] == "Europe/Zurich"
     # changement d'horaires : ancienne et nouvelle valeur
     y = next(r for r in rows(o, pid) if not r["locked"] and r["site"] == "GARE")
@@ -86,6 +89,19 @@ def test_generation_remplacement_horaires_suppression_en_langage_simple(t):
     assert o.delete(f"/assignments/{z['assignment_id']}?force=true").status_code == 204
     ev = hist(o, kind="remove")["items"][0]
     assert ev["title"].startswith("Suppression d'un shift") and ev["lines"][0].startswith(f"{zname} : ")
+    # ordre : du plus récent au plus ancien ; les heures enregistrées (même horloge, celle de la base) suivent l'ordre réel des actions
+    items = hist(o, limit=200)["items"]
+    ats = [datetime.fromisoformat(i["at"]) for i in items]
+    assert ats == sorted(ats, reverse=True)
+    pos = {k: next(n for n, i in enumerate(items) if i["kind"] == k) for k in ("remove", "hours", "replace", "generation")}
+    assert pos["remove"] < pos["hours"] < pos["replace"] < pos["generation"]  # suppression, puis horaires, puis remplacement, puis génération
+    t_ = {k: ats[pos[k]] for k in pos}
+    assert t_["generation"] < t_["replace"] < t_["hours"] < t_["remove"]
+    # date du shift ≠ date de modification : le shift est en novembre 2026, la modification a eu lieu aujourd'hui
+    rep = items[pos["replace"]]
+    zh = ZoneInfo("Europe/Zurich")
+    assert rep["shift_days"] == [x["day"]]  # date du shift : celle du shift modifié
+    assert datetime.fromisoformat(rep["at"]).astimezone(zh).date() == datetime.now(zh).date()  # date de modification : aujourd'hui
 
 
 def test_operation_refusee_absente_de_l_historique(t):

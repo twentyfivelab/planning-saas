@@ -87,3 +87,19 @@ test("suppression réussie : message, planning retiré, trace dans l'historique 
   await page.setViewportSize({ width: 390, height: 844 });
   expect(await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth)).toBe(false);
 });
+
+test("après suppression : nouveau planning du même mois, distinct, l'ancien reste supprimé avec son historique", async ({ page }) => {
+  const token = await csrf(page);
+  const fresh = await (await page.request.post(`${API}/periods/ensure`, { headers: { "X-CSRF-Token": token }, data: { year: 2027, month: 6 } })).json();
+  expect(fresh.id).not.toBe(pid);
+  const run = await page.request.post(`${API}/periods/${fresh.id}/runs`, { headers: { "X-CSRF-Token": token, "Idempotency-Key": `regen-${Date.now()}` }, data: { time_limit_s: 10 } });
+  expect(run.status()).toBe(202);
+  await expect.poll(async () => ((await j(page, `/periods/${fresh.id}/schedule`)).assignments as unknown[]).length, { timeout: 90_000 }).toBeGreaterThan(0);
+  expect((await page.request.get(`${API}/periods/${pid}/schedule`)).status()).toBe(404); // l'ancien n'est pas réactivé
+  await openJune(page);
+  await expect(page.getByRole("button", { name: "Supprimer ce planning" })).toBeVisible(); // le nouveau planning est actif
+  await expect(page.locator(".shift").first()).toBeVisible();
+  await page.goto("/history?kind=deletion"); await page.waitForLoadState("networkidle");
+  await expect(page.getByTestId("history-event").filter({ hasText: "juin 2027" }).first()).toContainText("Planning : Juin 2027 (planning supprimé le ");
+  pid = fresh.id; // pour une exécution suivante du fichier
+});

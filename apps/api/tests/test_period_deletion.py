@@ -94,7 +94,7 @@ def test_suppression_reussie_trace_persistante_et_rien_d_autre_modifie(t):
     ev = o.get("/history", params={"kind": "deletion"}).json()["items"]
     assert len(ev) == 1
     e = ev[0]
-    assert e["title"] == "Suppression d'un planning" and e["period"] == "Novembre 2026" and e["by"] == me["name"]
+    assert e["title"] == "Suppression d'un planning" and e["period"].startswith("Novembre 2026 (planning supprimé le ") and e["by"] == me["name"]
     assert f"{n} affectation(s)" in e["lines"][0] and me["id"] in e["lines"][1] and me["name"] in e["lines"][1] and e["at_label"]
     assert o.get("/history", params={"period_id": pid}).json()["items"]  # l'historique du planning supprimé reste consultable
     # un nouveau planning de novembre peut être créé EXPLICITEMENT, distinct de l'ancien
@@ -142,3 +142,43 @@ def test_cloisonnement_compte_externe_et_heures_reelles(t):
     assert pv["can_delete"] is False and "heures réelles" in pv["blocking"][0]
     r = o.post(f"/periods/{pids[10]}/delete", json={"password": PW})
     assert r.status_code == 409 and r.json()["detail"]["code"] == "blocked" and sched(o, pids[10]).status_code == 200
+
+
+def test_nouveau_planning_du_meme_mois_apres_suppression_identite_distincte(t):
+    """Après suppression, un nouveau planning de novembre se génère normalement : nouvel identifiant, l'ancien reste supprimé (jamais
+    réactivé), son archive et son historique restent intacts et séparés de ceux du nouveau."""
+    o, pid = t["o"], t["pids"][11]
+    old_assign = sorted((a["shift_id"], a["employee_id"]) for a in sched(o, pid).json()["assignments"])
+    assert o.post(f"/periods/{pid}/delete", json={"password": PW}).status_code == 200
+    old_hist = o.get("/history", params={"period_id": pid, "limit": 200}).json()["items"]
+    assert {i["kind"] for i in old_hist} >= {"generation", "deletion"}
+    from app.db import tenant_session
+    from app import models as m
+    tid = o.get("/auth/me").json()["tenant_id"]
+    with tenant_session(tid) as db:
+        archive_before = db.get(m.PlanningPeriod, uuid.UUID(pid)).deletion_archive
+    # nouveau planning du même mois, créé explicitement puis généré
+    new = o.post("/periods/ensure", json={"year": 2026, "month": 11}).json()
+    assert new["created"] is True and new["id"] != pid and new["name"] == "Novembre 2026"
+    r = o.post(f"/periods/{new['id']}/runs", json={"time_limit_s": 8}, headers={"Idempotency-Key": uuid.uuid4().hex})
+    assert r.status_code == 202
+    run = o.get(f"/runs/{r.json()['run_id']}").json()
+    assert run["status"] == "termine" and run["save"]["outcome"] == "replaced"
+    assert run["save"]["before"] == {"assignments": 0, "locked": 0, "version": None}  # rien de l'ancien planning n'est repris
+    new_rows = sched(o, new["id"]).json()["assignments"]
+    assert new_rows and all(a["shift_id"] not in {x for x, _ in old_assign} for a in new_rows)  # shifts distincts
+    vs = o.get(f"/periods/{new['id']}/versions").json()
+    assert vs and min(v["number"] for v in vs) == 1  # numérotation propre au nouveau planning
+    # l'ancien reste supprimé, inaccessible, avec son archive inchangée ; la liste n'a qu'un seul novembre (le nouveau)
+    assert sched(o, pid).status_code == 404
+    nov = [p for p in o.get("/periods").json() if p["start_date"] == "2026-11-01"]
+    assert [p["id"] for p in nov] == [new["id"]]
+    with tenant_session(tid) as db:
+        old = db.get(m.PlanningPeriod, uuid.UUID(pid))
+        assert old.deleted_at is not None and old.deletion_archive == archive_before
+        assert len(old.deletion_archive["assignments"]) == len(old_assign)
+    # historiques séparés : l'ancien inchangé, le nouveau ne contient que ses propres événements
+    assert [i["id"] for i in o.get("/history", params={"period_id": pid, "limit": 200}).json()["items"]] == [i["id"] for i in old_hist]
+    new_hist = o.get("/history", params={"period_id": new["id"]}).json()["items"]
+    assert new_hist and all(i["period"] == "Novembre 2026" for i in new_hist) and not any(i["kind"] == "deletion" for i in new_hist)
+    assert all(i["period"].startswith("Novembre 2026 (planning supprimé le ") for i in old_hist)

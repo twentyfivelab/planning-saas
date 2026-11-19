@@ -191,7 +191,9 @@ def history(ctx: Ctx = CtxDep, period_id: Optional[str] = None, employee_id: Opt
     # faits enregistrés ailleurs (jamais déduits) : planning d'une version, planning et auteur d'une génération
     versions = {str(v.id): v for v in ctx.db.scalars(select(m.ScheduleVersion))}
     runs = {str(x.id): x for x in ctx.db.scalars(select(m.OptimizationRun))}
-    periods = {str(p.id): p.name for p in ctx.db.scalars(select(m.PlanningPeriod))}
+    # un planning supprimé garde son nom, avec la mention de sa suppression : distinct d'un nouveau planning créé pour le même mois
+    periods = {str(p.id): (f"{p.name} (planning supprimé le {p.deleted_at.astimezone(tz):%d/%m/%Y})" if p.deleted_at else p.name)
+               for p in ctx.db.scalars(select(m.PlanningPeriod))}
     groups: "OrderedDict[tuple, dict]" = OrderedDict()
     last_at = None
     facets = {"users": {}, "employees": {}, "sites": {}, "brands": set()}
