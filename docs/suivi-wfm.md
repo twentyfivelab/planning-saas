@@ -13,9 +13,9 @@ Une fonctionnalité n'est classée « terminée et vérifiée » que si une vér
 |---|---|---|
 | Moteur, tests de correction (`packages/solver`) | **142 / 142** (19/11, dont 5 tests d'équité des heures) | local ; aussi **127 / 127 sous forte charge** (charge moyenne 44 sur 10 cœurs) et pendant la suite e2e |
 | Moteur, mesures de performance (marqueur `perf`) | à part : `scripts/ops/perf_engine.sh` | conditions consignées dans `docs/mesures-moteur.md` |
-| API (`apps/api`) | **191 / 191** | base PostgreSQL jetable par session (`planning_test_<pid>`) |
+| API (`apps/api`) | **196 / 196** | base PostgreSQL jetable par session (`planning_test_<pid>`) |
 | Interface, unitaires, dont contrastes WCAG AA | **124 / 124** | Vitest |
-| Navigateur e2e | **90 / 90** (suite complète, seule ; le 19/11 aussi 85 / 85 en parallèle de la suite API, charge jusqu'à 16) | pile Docker isolée (`infra/compose.e2e.yaml`, base `planning_e2e`) |
+| Navigateur e2e | **92 / 92** (suite complète, seule ; le 19/11 aussi 85 / 85 en parallèle de la suite API, charge jusqu'à 16) | pile Docker isolée (`infra/compose.e2e.yaml`, base `planning_e2e`) |
 | ruff, TypeScript, ESLint | sans erreur | |
 
 Fiabilité du moteur (deux échecs observés sous charge, corrigés à la source, sans relance ni délai allongé) :
@@ -170,6 +170,8 @@ Aucun shift possible ce mois (aucune de leurs marques n'a de besoin) : Chloé D.
 - Transferts vérifiés un à un par le vérificateur indépendant (sur le planning du moteur corrigé, couverture inchangée) : 5 possibles sans aucune nouvelle violation — 3 shifts Valmont tenus par Ying (08:00–17:00, hors de sa préférence) et 2 shifts Cartier tenus par Zaki (renfort pour elle). Chaîne de ces 5 transferts : Chloé 40 → 80 h ; puis 2 besoins Valmont optionnels réels non attribués, sur ses derniers jours libres : 96 h. Aucun blocage dur.
 - Pourquoi le moteur ne les fait pas, et pourquoi ce n'est pas une erreur d'équité : à jours possibles comparables, sa charge est déjà au niveau de ses pairs (heures / référence : Chloé 0,42 ; Ying 0,40 ; Jane 0,38 ; Aziza 0,42 ; Valérie 0,42 — tous sur des marques aux besoins optionnels sans budget) ; le groupe Ploom est à 0,50 parce que ses besoins sont obligatoires. Prendre les shifts Valmont de Ying ferait passer Ying à 0,25 ; prendre les shifts Cartier de Zaki utiliserait son niveau renfort (dernier recours) sans relever le minimum de l'équipe. Simulations sur la copie : Cartier en « secondaire », sa préférence horaire retirée, ou les deux — résultat identique (Chloé 40 h). **Pas de correction du moteur** : aucune répartition à la fois plus équitable et conforme à la configuration n'existe ici.
 - Leviers qui relèveraient ses heures (décisions de l'utilisateur, aucune appliquée) : un budget Valmont pour le mois (volume visé pour ses besoins optionnels), les compléments manuels depuis « Besoins optionnels non attribués », ou un ajustement manuel après génération (mérite, priorité) ; le planning affiche les shifts concernés.
+
+**Lot 1 (modifications simultanées), deux échecs de tests à cause confirmée, corrigés** : `e2e/rules.spec.ts` (transfert depuis le calendrier) choisissait son cas d'après les seuls jours voisins ; avec un planning généré différent, il a choisi un collaborateur déjà à son maximum de jours par semaine, et l'application a affiché à juste titre l'alerte — le test choisit désormais un cas que le serveur juge sans alerte. `test_demo_flow::test_lock_and_partial…` a révélé une régression réelle du lot 1 (une demande sans effet sur une affectation verrouillée était acceptée au lieu d'être refusée) — le verrou est de nouveau vérifié en premier.
 
 **Données** : les tableaux de ce document nomment désormais les collaborateurs par prénom et initiale. Le commit 33d3c7d (déjà poussé) contenait les noms complets : ils restent dans l'historique de la branche tant qu'une réécriture n'est pas décidée.
 

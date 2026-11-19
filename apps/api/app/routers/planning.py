@@ -210,15 +210,20 @@ def unlock(aid: str, ctx: Ctx = Depends(require("planning.edit"))):
 class MoveIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
     employee_id: uuid.UUID
+    expected_employee_id: Optional[uuid.UUID] = None  # titulaire affiché à l'écran : refus si un autre utilisateur l'a changé entre-temps
 
 
 @router.put("/assignments/{aid}")
 def reassign(aid: str, body: MoveIn, ctx: Ctx = Depends(require("planning.edit"))):
     """Modification manuelle : enregistrée, et les conflits sont recalculés et renvoyés immédiatement."""
-    a = get_or_404(ctx, m.Assignment, aid)
+    from ..concurrency import check_holder, lock_assignment
+    a = lock_assignment(ctx.db, aid)
     ensure_editable(ctx.db, a.period_id)
-    if a.locked:
+    if a.locked:  # le verrou prime toujours, même pour une demande sans effet
         raise HTTPException(409, "Affectation verrouillée : déverrouiller d'abord")
+    if a.employee_id == body.employee_id:  # déjà fait (double clic, nouvel envoi après une coupure) : rien n'est refait
+        return {"assignment_id": str(a.id), "already": True, "conflicts": _conflicts(ctx, a.period_id)}
+    check_holder(a, body.expected_employee_id)
     if ctx.db.get(m.Employee, body.employee_id) is None:
         raise HTTPException(422, "Collaborateur inconnu")
     new = ctx.db.get(m.Employee, body.employee_id)
@@ -281,13 +286,21 @@ class ShiftPatch(BaseModel):
     start_time: time
     end_time: time
     break_minutes: int = Field(60, ge=0, le=480)
+    # horaires affichés à l'écran : refus si un autre utilisateur les a modifiés entre-temps (jamais d'écrasement silencieux)
+    expected_start: Optional[time] = None
+    expected_end: Optional[time] = None
+    expected_break: Optional[int] = Field(None, ge=0, le=480)
 
 
 @router.patch("/shifts/{sid}")
 def edit_shift(sid: str, body: ShiftPatch, ctx: Ctx = Depends(require("planning.edit"))):
     """Modification d'horaire : durées recalculées côté serveur, imputations proportionnelles, conflits renvoyés."""
-    sh = get_or_404(ctx, m.Shift, sid)
+    from ..concurrency import check_times, lock_shift
+    sh = lock_shift(ctx.db, sid)
     ensure_editable(ctx.db, sh.period_id)
+    if (sh.start_time, sh.end_time, sh.break_minutes) == (body.start_time, body.end_time, body.break_minutes):  # déjà enregistré : rien n'est refait
+        return {"shift_id": str(sh.id), "already": True, "conflicts": _conflicts(ctx, sh.period_id)}
+    check_times(sh, body.expected_start, body.expected_end, body.expected_break)
     allowed = _allowed_schedules(ctx, sh)
     if allowed and not any(a["start"] == body.start_time.isoformat() and a["end"] == body.end_time.isoformat() for a in allowed):
         if ctx.user.role not in ("owner", "admin"):

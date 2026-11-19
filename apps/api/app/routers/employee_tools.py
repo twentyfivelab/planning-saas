@@ -126,10 +126,14 @@ def add_assignment(pid: str, body: AddIn, ctx: Ctx = Depends(require("planning.e
 
 
 @router.delete("/assignments/{aid}", status_code=204)
-def delete_assignment(aid: str, force: bool = False, reason: Optional[str] = None, ctx: Ctx = Depends(require("planning.edit"))):
-    """Retire un shift du collaborateur (le shift redevient disponible). Verrouillé : 409, sauf `force` par un rôle d'administration."""
-    a = get_or_404(ctx, m.Assignment, aid)
+def delete_assignment(aid: str, force: bool = False, reason: Optional[str] = None, expected_employee_id: Optional[uuid.UUID] = None,
+                      ctx: Ctx = Depends(require("planning.edit"))):
+    """Retire un shift du collaborateur (le shift redevient disponible). Verrouillé : 409, sauf `force` par un rôle d'administration.
+    `expected_employee_id` : titulaire affiché ; refus si un autre utilisateur l'a changé entre-temps (jamais d'écrasement silencieux)."""
+    from ..concurrency import check_holder, lock_assignment
+    a = lock_assignment(ctx.db, aid)
     ensure_editable(ctx.db, a.period_id)
+    check_holder(a, expected_employee_id)
     refusal = override_refusal(ctx, (a.employee_id,))
     if a.locked and not force:
         raise HTTPException(409, detail={"code": "locked", "can_override": refusal is None, "refusal": refusal, "message": "Affectation verrouillée : déverrouillez-la d'abord, ou confirmez le retrait."})

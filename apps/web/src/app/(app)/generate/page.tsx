@@ -15,6 +15,7 @@ import { MonthNeeds, type MonthCalendar } from "@/components/planning/MonthNeeds
 import { copyPreviousBudgets } from "@/lib/budgetCopy";
 import { invalidate } from "@/lib/invalidate";
 import { monthLabel, parseMonthKey } from "@/lib/months";
+import { GenerationSummary } from "@/components/planning/GenerationSummary";
 import { ParamsChoice, RunFailure, RunProgress, SaveOutcome, TimeLimitField, type ParamsMode, type RunTiming, type SaveInfo } from "@/components/planning/RunStatus";
 
 const WEIGHT_LABELS: Record<string, string> = { coverage: "Couverture", budget: "Budgets", reinforce: "Renforts", preference: "Préférences", fairness: "Équité", overtime: "Heures supplémentaires", site_change: "Changements de site", balance: "Équilibre ouvertures/fermetures/week-ends", fatigue: "Enchaînements fatigants", family: "Relations entre collaborateurs", stagger: "Décalage cosmétique", rest_days: "Jours de repos", stability: "Stabilité", time_pref: "Préférence matin/middle/soir", secondary: "Marques secondaires", budget_over: "Dépassement de budget souple", sunday_quota: "Objectif exact de dimanches", individual: "Priorité individuelle", sunday_balance: "Équilibrage des dimanches", alternation: "Alternance matin/soir", days_balance: "Équilibrage des jours", cost: "Coût estimé" };
@@ -117,6 +118,7 @@ export default function Generate() {
       )}
       {step === 4 && diag && (
         <>
+          {run && diag.save?.outcome === "replaced" && <GenerationSummary runId={run.id} />}
           {diag.save ? <SaveOutcome save={diag.save} timing={diag.timing} proof={{ proved: !!diag.proved_optimal, time_limit_s: diag.timing?.time_limit_s ?? null }} /> : (diag.status === "infaisable" || (diag.status === "interrompu" && !diag.verification?.executed)) && (
             <Callout kind="bad" title="Aucun planning enregistré">{diag.status === "infaisable" ? "Les contraintes obligatoires ne permettent aucun planning : voir le diagnostic ci-dessous." : "Aucune solution trouvée dans la durée maximale : augmentez-la ou allégez les contraintes."} Le planning existant n&apos;a pas été modifié.</Callout>)}
           {diag.params_used && <p className="help">Paramètres utilisés : {diag.params_used.mode === "frozen" ? "ceux conservés par ce planning" : "paramètres actuels (désormais conservés par ce planning)"}{diag.params_used.monthly_cap_minutes ? ` · plafond mensuel ${Math.round(diag.params_used.monthly_cap_minutes / 60)} h par collaborateur` : ""}.</p>}

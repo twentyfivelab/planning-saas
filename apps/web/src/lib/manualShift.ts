@@ -1,7 +1,7 @@
 import { ApiError } from "./api";
 
 export type Issue = { code: string; level: "blocking" | "override" | "soft"; message: string; legal: boolean; needs_unlock?: boolean; rule?: string; limit?: string; reached?: string; consequence?: string };
-export type AssignDetail = { code: "blocked" | "needs_confirmation" | "forbidden" | "locked" | "stale"; issues?: Issue[]; can_override: boolean; message: string; refusal?: string | null };
+export type AssignDetail = { code: "blocked" | "needs_confirmation" | "forbidden" | "locked" | "stale" | "gone"; issues?: Issue[]; can_override: boolean; message: string; refusal?: string | null };
 export type DayRow = {
   shift_id: string; assignment_id: string | null; slot_key: string; site: string; start: string; end: string; effective_minutes: number; brands: string[];
   status: "available" | "assigned"; locked: boolean; manual: boolean; assigned_to: { id: string; name: string } | null; mine: boolean; brand_ok: boolean;

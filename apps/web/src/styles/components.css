@@ -541,3 +541,11 @@ details.advanced[open] > summary { margin-bottom: var(--sp-2); }
 .cover-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--sp-2); padding: var(--sp-2) var(--sp-3); border-radius: var(--radius-md);
   border: 1px solid var(--line); background: var(--solid-2); }
 .cover-row[data-state="conflict"] { border-color: var(--warn, #c77700); }
+
+/* ---------- Résultat d'une génération en six blocs ---------- */
+.summary-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr)); gap: var(--sp-3); }
+.summary-block { display: flex; flex-direction: column; gap: var(--sp-2); border-left: 4px solid var(--line); }
+.summary-block[data-state="ok"] { border-left-color: var(--ok, #15803d); }
+.summary-block[data-state="warn"] { border-left-color: var(--warn); }
+.summary-block[data-state="bad"] { border-left-color: var(--bad, #b91c1c); }
+.summary-block[data-state="info"] { border-left-color: var(--accent); }

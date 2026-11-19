@@ -133,6 +133,13 @@ test("génération : durée maximale expliquée, choix des paramètres, temps é
   await expect(page.getByText(/Résultat :/)).toBeVisible({ timeout: 90_000 });
   const outcome = page.getByTestId("save-outcome"); // résultat d'enregistrement donné par le serveur, avec les temps mesurés
   await expect(outcome).toHaveAttribute("data-outcome", "replaced");
+  // résultat en six blocs distincts : règles, couverture, budgets et volume, équité, shifts à compléter, état de l'optimisation
+  const summary = page.getByTestId("generation-summary");
+  for (const k of ["rules", "coverage", "budgets", "fairness", "remaining", "optimisation"]) await expect(summary.getByTestId(`summary-${k}`)).toBeVisible();
+  await expect(summary.getByTestId("summary-rules")).toHaveAttribute("data-state", "ok");
+  await expect(summary.getByTestId("summary-rules")).toContainText("contrôle indépendant");
+  await expect(summary.getByTestId("summary-optimisation")).toContainText(/Meilleure solution prouvée|Planning valide et utilisable, mais optimisation non terminée/);
+  await expect(summary.getByTestId("engine-priorities")).toContainText("Comment le moteur arbitre");
   await expect(outcome).toContainText(/Avant : \d+ affectation\(s\), version n° \d+ ; après : version n° \d+/);
   await expect(outcome.getByTestId("run-timing")).toContainText("(durée maximale 12 s pour ces deux étapes)");
   await expect(page.getByText(/Paramètres utilisés : ceux conservés par ce planning · plafond mensuel 176 h par collaborateur/)).toBeVisible();

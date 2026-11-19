@@ -29,7 +29,8 @@ import { parseMonthKey } from "@/lib/months";
 import { canWork } from "@/lib/brandGroups";
 import { invalidate } from "@/lib/invalidate";
 import { computeCounter, type SundaySummary } from "@/lib/sundays";
-import { api } from "@/lib/api";
+import { api, ApiError } from "@/lib/api";
+import { errText } from "@/lib/wfm";
 import { brandColor, brandVars } from "@/lib/brand";
 import { budgetProgress, plannedByBrand, splitShares, type BudgetRow } from "@/lib/metrics";
 import {
@@ -109,9 +110,10 @@ export default function PlanningPage() {
   }
   async function editTimes(a: Assignment, f: FormData) {
     try {
-      const r = await api<{ conflicts: string[] }>(`/shifts/${a.shift_id}`, { method: "PATCH", json: { start_time: f.get("s"), end_time: f.get("e"), break_minutes: Number(f.get("b")) } });
+      const r = await api<{ conflicts: string[] }>(`/shifts/${a.shift_id}`, { method: "PATCH", json: { start_time: f.get("s"), end_time: f.get("e"), break_minutes: Number(f.get("b")),
+        expected_start: a.start, expected_end: a.end, expected_break: a.break_minutes } }); // horaires affichés : pas d'écrasement silencieux
       toast.push(r.conflicts.length ? `Horaire modifié — ${r.conflicts.length} conflit(s) à vérifier.` : "Horaire modifié ; durées recalculées par le serveur.", r.conflicts.length ? "warn" : "ok"); setSel(null); refresh();
-    } catch (e: any) { toast.push(String(e.message), "bad"); }
+    } catch (e: unknown) { toast.push(errText(e), "bad"); if (e instanceof ApiError && (e.detail as { code?: string } | undefined)?.code === "stale") { setSel(null); refresh(); } }
   }
   async function saveVersion() {
     await api(`/periods/${period!.id}/versions`, { method: "POST" }); toast.push("Version enregistrée (voir « Versions »).", "ok");

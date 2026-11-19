@@ -137,7 +137,7 @@ export function EmployeeMonthModal({ employee, initialMonth, onClose, emps }: { 
                     {confirmRemove && <Callout kind="warn" title="Retirer cette affectation ?">
                       <p style={{ margin: 0 }}>Le shift redeviendra disponible et apparaîtra dans les besoins non couverts.</p>
                       <div className="row" style={{ marginTop: "var(--sp-2)" }}><Button onClick={() => setConfirmRemove(false)}>Annuler</Button>
-                        <Button variant="danger" disabled={busy} onClick={() => act(() => api(`/assignments/${sel.item.assignment_id}?force=${sel.item.locked}`, { method: "DELETE" }), "Affectation retirée.")}>Retirer</Button></div>
+                        <Button variant="danger" disabled={busy} onClick={() => act(() => api(`/assignments/${sel.item.assignment_id}?force=${sel.item.locked}&expected_employee_id=${employee!.id}`, { method: "DELETE" }), "Affectation retirée.")}>Retirer</Button></div>
                     </Callout>}
                   </div>
                 ) : <p className="help">{d.period?.archived ? "Planning archivé : consultation seulement." : "Votre rôle permet la consultation seulement."}</p>}

@@ -20,7 +20,7 @@ export function BulkTransfer({ periodId, owner, shifts, emps, onDone }: { period
   const pool = emps.filter((e) => !e.deleted_at && e.id !== owner && brands.every((b) => b in (e.brands ?? {})));
   async function go(force: boolean) {
     const r = await op.send<{ changed: number; forced: boolean }>(`/periods/${periodId}/bulk-transfer`,
-      { operations: picked.map((id) => ({ assignment_id: id, to_employee_id: to })), reason: reason || null }, force);
+      { operations: picked.map((id) => ({ assignment_id: id, to_employee_id: to, expected_from: owner })), reason: reason || null }, force);
     if (r) { toast.push(`${r.changed} shift(s) transféré(s)${r.forced ? " (dérogation tracée)" : ""}.`, r.forced ? "warn" : "ok"); setPicked([]); setTo(""); invalidate(); onDone(); }
   }
   const fr = (iso: string) => { const d = new Date(`${iso}T12:00:00Z`); return `${DOW[(d.getUTCDay() + 6) % 7]} ${iso.slice(8)}/${iso.slice(5, 7)}`; };

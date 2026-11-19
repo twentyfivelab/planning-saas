@@ -1,5 +1,6 @@
 """Exécution d'une optimisation (worker RQ ou inline)."""
 import copy
+import logging
 import re
 import threading
 import time
@@ -23,6 +24,8 @@ from .db import tenant_session
 from .frozen import snapshot
 from .services_bridge import assignments_for_validation, build_input, current_assignments, params_mode, persist_result
 from .versioning import current_map, fingerprint, make_version
+
+log = logging.getLogger(__name__)
 
 
 def freeze_period(db, period, source: str, capture: dict = None, cap_used=None, used_cfg=None) -> None:
@@ -298,6 +301,16 @@ def run_optimization(tenant_id: str, run_id: str) -> None:
             run.progress = {**(state["progress"] or {}), "phase": "saving", "elapsed_s": res.duration_s, "time_limit_s": inp.config.time_limit_s}
             report = _jsonable({k: v for k, v in res.to_dict().items() if k != "assignments"})
             report["weights_used"] = res.weights
+            try:  # équité expliquée : part équitable, référence et capacité de chacun (mêmes calculs que le moteur)
+                fp = prepare(inp)
+                mins: dict = {}
+                for x in res.assignments:
+                    mins[x.employee_id] = mins.get(x.employee_id, 0) + x.effective_minutes
+                report["fairness"] = {e.id: {"name": e.name, "minutes": mins.get(e.id, 0), "target": fp.targets.get(e.id, 0), "ref": fp.fair_ref.get(e.id, 0),
+                                             "cap": fp.fair_cap.get(e.id, 0), "eligible": len(fp.by_emp.get(e.id, ()))}
+                                      for e in inp.employees if not e.excluded and e.left_on is None}
+            except Exception:  # noqa: BLE001 — diagnostic d'affichage seulement : jamais bloquant pour l'enregistrement
+                log.exception("équité : détail non calculé")
             report["criteria_scores"] = breakdown(res.objective)  # coût par critère : quels critères ont influencé le choix
             # vérification indépendante, sans exception dès qu'un planning existe (optimal, valide, partiel, interrompu, simulation, réoptimisation)
             verification = {"executed": bool(res.assignments), "status": res.status, "kind": run.kind, "simulation": simulation,

@@ -22,7 +22,8 @@ export function useConfirmed() {
     try { const r = await api<T>(url, { method: "POST", json: { ...body, force } }); setRefused(null); return r; }
     catch (e) {
       const d = e instanceof ApiError ? (e.detail as Refused | undefined) : undefined;
-      if (d && typeof d === "object" && Array.isArray(d.issues)) setRefused(d); else setErr(errText(e));
+      if (d && typeof d === "object" && (d as { code?: string }).code === "stale") { setErr(errText(e)); invalidate(); } // modifié ailleurs : situation actualisée
+      else if (d && typeof d === "object" && Array.isArray(d.issues)) setRefused(d); else setErr(errText(e));
       return null;
     } finally { setBusy(false); }
   }
@@ -58,7 +59,7 @@ export function SwapModal({ a, periodId, all, onClose, onDone }: { a: Assignment
   const target = theirs.find((x) => x.assignment_id === other);
   async function go(force: boolean) {
     if (!a || !target) return;
-    const r = await op.send<{ forced: boolean }>(`/periods/${periodId}/swap`, { a: a.assignment_id, b: target.assignment_id, reason: reason || null }, force);
+    const r = await op.send<{ forced: boolean }>(`/periods/${periodId}/swap`, { a: a.assignment_id, b: target.assignment_id, expected_a: a.employee_id, expected_b: target.employee_id, reason: reason || null }, force);
     if (r) { toast.push(`Échange enregistré : ${a.employee} ↔ ${target.employee}${r.forced ? " (dérogation tracée)" : ""}.`, r.forced ? "warn" : "ok"); invalidate(); onDone(); }
   }
   return (

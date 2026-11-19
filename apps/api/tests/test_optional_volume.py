@@ -92,3 +92,20 @@ def test_annulation_pendant_le_calcul_n_enregistre_jamais_la_solution(t, monkeyp
     assert run["status"] == "annule" and run["save"]["outcome"] == "kept_previous" and run["save"]["reason_code"] == "cancelled", run["save"]
     assert sorted((a["assignment_id"], a["employee_id"]) for a in o.get(f"/periods/{pid}/schedule").json()["assignments"]) == before
     assert len(o.get(f"/periods/{pid}/versions").json()) == versions  # aucune version « avant / après » créée
+
+
+def test_resultat_en_six_blocs(t):
+    o, pid, run = t["o"], t["pid"], t["run"]
+    s = o.get(f"/runs/{run['id']}/summary").json()
+    b = s["blocks"]
+    assert list(b) == ["rules", "coverage", "budgets", "fairness", "remaining", "optimisation"]
+    assert b["rules"]["state"] == "ok" and b["rules"]["checked"] > 0 and "contrôle indépendant" in b["rules"]["text"]
+    assert b["coverage"]["state"] == "ok" and b["coverage"]["mandatory"] == b["coverage"]["covered"] == 23
+    assert b["budgets"]["state"] == "info" and "Aucun budget saisi" in b["budgets"]["text"]  # aucun budget : dit, jamais supposé
+    assert b["fairness"]["spread"] is not None and len(b["fairness"]["employees"]) == 3 and all(e["target_minutes"] > 0 for e in b["fairness"]["employees"])
+    opt = o.get(f"/periods/{pid}/optional-needs").json()
+    assert b["remaining"]["optional_unassigned"] == opt["total"]
+    assert b["optimisation"]["proved"] in (True, False)
+    if not b["optimisation"]["proved"]:
+        assert "Planning valide et utilisable, mais optimisation non terminée" in b["optimisation"]["text"]
+    assert len(s["priorities"]) == 5 and "ancienneté" in s["priorities"][-1]

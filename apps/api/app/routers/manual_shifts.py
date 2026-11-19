@@ -292,6 +292,9 @@ def manual_assign(pid: str, body: ManualIn, ctx: Ctx = Depends(require("planning
     if e is None:
         raise HTTPException(404, "Introuvable")
     current = ctx.db.scalar(select(m.Assignment).where(m.Assignment.shift_id == sh.id))
+    if current is not None and current.employee_id == e.id and body.expected_from is not None and body.expected_from != str(e.id):
+        # déjà fait par ce même envoi (double clic, nouvel essai après une coupure) : même résultat, rien n'est refait
+        return {"assignment_id": str(current.id), "kind": "already", "already": True, "forced": False, "conflicts": _conflicts(ctx, p.id), "regularizations": []}
     if body.expected_from is not None and body.expected_from != (str(current.employee_id) if current else "free"):
         raise HTTPException(409, detail={"code": "stale", "can_override": False, "issues": [],
                                          "message": "Ce shift vient d'être modifié par quelqu'un d'autre. La liste a été actualisée : vérifiez puis recommencez."})
@@ -362,6 +365,8 @@ class SwapIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
     a: uuid.UUID
     b: uuid.UUID
+    expected_a: Optional[uuid.UUID] = None  # titulaires affichés à l'écran (refus si l'un a changé entre-temps)
+    expected_b: Optional[uuid.UUID] = None
     force: bool = False
     reason: Optional[str] = Field(None, max_length=300)
 
@@ -376,6 +381,12 @@ def swap(pid: str, body: SwapIn, ctx: Ctx = Depends(require("planning.edit"))):
                                             .with_for_update()).scalars()}
     if body.a == body.b or len(rows) != 2:
         raise HTTPException(404, "Deux affectations distinctes de ce planning sont attendues")
+    from ..concurrency import check_holder
+    A, B = rows[body.a], rows[body.b]
+    if body.expected_a and body.expected_b and A.employee_id == body.expected_b and B.employee_id == body.expected_a:
+        return {"already": True, "forced": False, "conflicts": _conflicts(ctx, p.id)}  # échange déjà fait (double clic) : rien n'est refait
+    check_holder(A, body.expected_a)
+    check_holder(B, body.expected_b)
     return perform_swap(ctx, p, rows[body.a], rows[body.b], body.force, body.reason)
 
 
@@ -410,6 +421,7 @@ class BulkOp(BaseModel):
     model_config = ConfigDict(extra="forbid")
     assignment_id: uuid.UUID
     to_employee_id: uuid.UUID
+    expected_from: Optional[uuid.UUID] = None  # titulaire affiché : refus de TOUTE l'opération si l'un a changé entre-temps
 
 
 class BulkIn(BaseModel):
@@ -434,6 +446,10 @@ def bulk_transfer(pid: str, body: BulkIn, ctx: Ctx = Depends(require("planning.e
     emps = {e.id: e for e in ctx.db.scalars(select(m.Employee).where(m.Employee.id.in_({o.to_employee_id for o in body.operations} | {a.employee_id for a in rows.values()})))}
     if any(o.to_employee_id not in emps for o in body.operations):
         raise HTTPException(422, "Collaborateur inconnu")
+    from ..concurrency import check_holder
+    for o in body.operations:  # un seul shift modifié ailleurs entre-temps : rien n'est fait (tout ou rien) ; déjà transféré : ignoré
+        if rows[o.assignment_id].employee_id != o.to_employee_id:
+            check_holder(rows[o.assignment_id], o.expected_from)
     shifts = {a.id: ctx.db.get(m.Shift, a.shift_id) for a in rows.values()}
     plan = [(rows[o.assignment_id], shifts[o.assignment_id], emps[o.to_employee_id]) for o in body.operations if rows[o.assignment_id].employee_id != o.to_employee_id]
     if not plan:

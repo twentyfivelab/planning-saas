@@ -4,7 +4,8 @@ import { Badge, Button, Callout } from "@/components/ui/primitives";
 import { Icon } from "@/components/ui/Icon";
 import { Modal } from "@/components/ui/Modal";
 import { useToast } from "@/components/ui/Toast";
-import { api } from "@/lib/api";
+import { api, ApiError } from "@/lib/api";
+import { errText } from "@/lib/wfm";
 import { brandColor } from "@/lib/brand";
 import { hourRange, longDate, previewConflicts } from "@/lib/reassign";
 import { fmtHM, History, type Assignment } from "@/lib/schedule";
@@ -28,7 +29,8 @@ export function useReassign({ all, emps, refresh, getSchedule }: { all: Assignme
 
   const commit = useCallback(async (a: Assignment, toId: string, record: boolean): Promise<boolean> => {
     try {
-      const r = await api<{ conflicts: string[] }>(`/assignments/${a.assignment_id}`, { method: "PUT", json: { employee_id: toId } });
+      // titulaire affiché envoyé : si un autre utilisateur a changé ce shift entre-temps, rien n'est écrasé (refus explicite)
+      const r = await api<{ conflicts: string[] }>(`/assignments/${a.assignment_id}`, { method: "PUT", json: { employee_id: toId, expected_employee_id: a.employee_id } });
       if (record) history.current.push({ assignmentId: a.assignment_id, from: a.employee_id, to: toId });
       const mine = r.conflicts.filter((c) => c.includes(a.slot_key));
       const who = byId.get(toId)?.name ?? "le collaborateur";
@@ -37,8 +39,10 @@ export function useReassign({ all, emps, refresh, getSchedule }: { all: Assignme
       refresh(); bump((x) => x + 1);
       return true;
     } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : "erreur inconnue";
-      setError(`Le remplacement n'a pas pu être enregistré (${msg}). L'affectation d'origine est conservée.`);
+      const msg = errText(e, "erreur inconnue");
+      const stale = e instanceof ApiError && (e.detail as { code?: string } | undefined)?.code === "stale";
+      setError(stale ? msg : `Le remplacement n'a pas pu être enregistré (${msg}). L'affectation d'origine est conservée.`);
+      if (stale) refresh(); // la nouvelle situation s'affiche aussitôt
       return false;
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps

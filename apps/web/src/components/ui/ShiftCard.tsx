@@ -16,7 +16,7 @@ export function ShiftCard({ a, size = "sm", alerts = [], dragging, draggable, on
   const label = `${a.employee}, ${brands}, ${a.site}, ${timeShort(a.start)} à ${timeShort(a.end)}, ${fmtHM(a.effective_minutes)} effectives, pause ${a.break_minutes} min${a.locked ? ", verrouillé" : ""}${alerts.length ? `, ${alerts.length} alerte(s)` : ""}`;
   return (
     <button type="button" className={`shift ${size === "lg" ? "shift-lg" : ""}`} style={brandVars(brand)} draggable={draggable} data-dragging={dragging || undefined}
-      data-locked={a.locked || undefined} data-alert={alerts.length > 0 || undefined} aria-label={label} title={alerts.join("\n") || undefined}
+      data-assignment={a.assignment_id} data-locked={a.locked || undefined} data-alert={alerts.length > 0 || undefined} aria-label={label} title={alerts.join("\n") || undefined}
       onClick={() => onOpen(a)} onDragStart={(e) => { e.dataTransfer.setData("text/plain", a.assignment_id); e.dataTransfer.effectAllowed = "move"; onDragStart?.(a); }} onDragEnd={onDragEnd}>
       <span className="shift-time">
         <span>{timeShort(a.start)}–{timeShort(a.end)}</span>

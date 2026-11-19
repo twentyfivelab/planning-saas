@@ -283,8 +283,13 @@ async function findCase(page: Page): Promise<{ a: Row; to: Emp }> {
   for (const a of rows) {
     if (a.locked || sunday(a.day) || a.day < "2026-11-03" || a.day > "2026-11-27") continue;
     const near = new Set(rows.filter((x) => Math.abs(Number(x.day.slice(8)) - Number(a.day.slice(8))) <= 1).map((x) => x.employee));
-    const to = all.find((e) => e.active && !near.has(e.name) && e.code !== "sabrina" && Object.keys(a.allocations).every((b) => b in e.brands));
-    if (to) return { a, to };
+    for (const to of all.filter((e) => e.active && !near.has(e.name) && e.code !== "sabrina" && Object.keys(a.allocations).every((b) => b in e.brands))) {
+      // cas valide selon le serveur lui-même (même contrôle que l'écran) : aucune alerte pour ce transfert. Le planning généré varie
+      // d'une génération à l'autre ; deviner le cas sur les seuls jours voisins a déjà choisi un collaborateur à son maximum de jours
+      // par semaine (constaté le 19/11).
+      const d = (await (await page.request.get(`${API}/periods/${periodId}/day-shifts?day=${a.day}&employee_id=${to.id}`)).json()) as { shifts: { assignment_id: string | null; issues: unknown[] }[] };
+      if (d.shifts.find((x) => x.assignment_id === a.assignment_id)?.issues.length === 0) return { a, to };
+    }
   }
   throw new Error("aucun cas de test");
 }

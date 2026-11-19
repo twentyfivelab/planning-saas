@@ -6,6 +6,7 @@ import { Modal } from "@/components/ui/Modal";
 import { useToast } from "@/components/ui/Toast";
 import { useApi } from "@/components/hooks";
 import { api } from "@/lib/api";
+import { invalidate } from "@/lib/invalidate";
 import { brandColor } from "@/lib/brand";
 import { fmtHM } from "@/lib/schedule";
 import { hourRange, longDate } from "@/lib/reassign";
@@ -143,14 +144,14 @@ export function AlertStep({ detail, name, shift, reason, setReason, busy, onCanc
 }
 
 /** Retrait d'un shift du planning d'un collaborateur (il redevient « disponible »). Verrouillé : autorisation d'administration. */
-export function RemoveDialog({ a, onClose, onDone }: { a: { assignment_id: string; employee: string; day: string; site: string; start: string; end: string; locked: boolean } | null; onClose: () => void; onDone: () => void }) {
+export function RemoveDialog({ a, onClose, onDone }: { a: { assignment_id: string; employee: string; employee_id?: string; day: string; site: string; start: string; end: string; locked: boolean } | null; onClose: () => void; onDone: () => void }) {
   const toast = useToast();
   const [busy, setBusy] = useState(false); const [err, setErr] = useState(""); const cancelRef = useRef<HTMLButtonElement>(null);
   useEffect(() => setErr(""), [a]);
   async function remove() {
     if (!a) return; setBusy(true); setErr("");
-    try { await api(`/assignments/${a.assignment_id}?force=${a.locked}`, { method: "DELETE" }); toast.push(`Shift retiré du planning de ${a.employee}. Il est de nouveau disponible.`, "ok"); onDone(); }
-    catch (e: unknown) { const d = parseDetail(e); setErr(d?.message ?? (e instanceof Error ? e.message : "Retrait impossible")); }
+    try { await api(`/assignments/${a.assignment_id}?force=${a.locked}${a.employee_id ? `&expected_employee_id=${a.employee_id}` : ""}`, { method: "DELETE" }); toast.push(`Shift retiré du planning de ${a.employee}. Il est de nouveau disponible.`, "ok"); onDone(); }
+    catch (e: unknown) { const d = parseDetail(e); setErr(d?.message ?? (e instanceof Error ? e.message : "Retrait impossible")); if (d?.code === "stale" || d?.code === "gone") invalidate(); }
     finally { setBusy(false); }
   }
   return (
