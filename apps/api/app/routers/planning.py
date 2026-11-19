@@ -144,7 +144,10 @@ def _run_view(ctx: Ctx, run: m.OptimizationRun) -> dict:
             "result_status": res.status if res else None, "mode": res.mode if res else None,
             "duration_s": res.duration_s if res else None, "progress": run.progress,
             # résultat d'enregistrement (planning remplacé ou conservé, et pourquoi) et temps mesurés de chaque étape
-            "save": (res.report or {}).get("save") if res else None, "timing": (res.report or {}).get("timing") if res else None}
+            "save": (res.report or {}).get("save") if res else None, "timing": (res.report or {}).get("timing") if res else None,
+            # planning valide (règles obligatoires vérifiées) ≠ optimum prouvé : distinction affichée quand la durée maximale est atteinte
+            "proof": {"proved": bool((res.report or {}).get("proved_optimal")), "time_limit_s": (run.config or {}).get("time_limit_s"),
+                      "levels": [{"level": lv.get("level"), "proved": bool(lv.get("proved_optimal"))} for lv in ((res.report or {}).get("levels") or [])]} if res else None}
 
 
 @router.get("/runs")

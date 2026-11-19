@@ -153,6 +153,8 @@ def delete_period(pid: str, body: DeleteIn, ctx: Ctx = Depends(require("planning
         ctx.db.delete(row)
     ctx.db.flush()
     p.deleted_at, p.deleted_by, p.deleted_by_name, p.deletion_archive, p.wizard_step = now, ctx.user.id, ctx.user.name, archive, None
+    for r in ctx.db.scalars(select(m.OptimizationRun).where(m.OptimizationRun.period_id == p.id, m.OptimizationRun.status.in_(("en_attente", "en_cours")))):
+        r.cancel_requested = True  # calcul en file ou en cours : annulé (et, s'il se termine quand même, rien n'est écrit)
     # 4) trace, dans la même transaction : identité de la personne (nom et identifiant interne), planning, nombre d'affectations
     audit(ctx, "period.deleted", "period", p.id, {"period_id": str(p.id), "period": p.name, "month": p.start_date.strftime("%Y-%m"), "label": pv["label"],
                                                    "status": pv["status"], "status_label": pv["status_label"],

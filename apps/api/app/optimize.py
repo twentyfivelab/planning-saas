@@ -152,10 +152,47 @@ def new_violations(found, before) -> list:
     return out
 
 
-def _save_kept(res, before_state: dict, cancelled: bool) -> dict:
+def _volume(inp, slot_ids) -> dict:
+    """Volume attribué : shifts et heures, obligatoires et optionnels (besoins saisis du mois)."""
+    slots = {s.id: s for s in inp.slots}
+    out = {"mandatory": 0, "optional": 0, "minutes": 0, "optional_minutes": 0, "other": 0}
+    for sid in slot_ids:
+        s = slots.get(sid)
+        if s is None:
+            out["other"] += 1  # shift ajouté à la main ou besoin retiré depuis
+            continue
+        out["minutes"] += s.effective_minutes
+        if s.mandatory:
+            out["mandatory"] += 1
+        else:
+            out["optional"] += 1
+            out["optional_minutes"] += s.effective_minutes
+    return out
+
+
+def _volume_report(inp, before_ids, after_ids) -> dict:
+    """Évolution du volume, présentée à part de l'équité : toute baisse des shifts optionnels est visible et expliquée."""
+    b, a = _volume(inp, before_ids), _volume(inp, after_ids)
+    budgeted = {x.brand for x in inp.budgets}
+    no_budget = sorted({br for s in inp.slots if not s.mandatory for br in s.brands} - budgeted)
+    d, dm = a["optional"] - b["optional"], a["optional_minutes"] - b["optional_minutes"]
+    note = None
+    if before_ids and d < 0:
+        h = -dm // 60
+        note = (f"{-d} shift(s) optionnel(s) de moins que dans le planning remplacé ({h} h). "
+                + (f"Les besoins optionnels de {', '.join(no_budget)} n'ont pas de budget ce mois-ci : aucun volume n'est visé pour eux, "
+                   "le moteur ne retient que ce qu'il faut pour équilibrer les heures. " if no_budget else
+                   "Les budgets du mois sont atteints avec moins de shifts optionnels. ")
+                + "Vous pouvez compléter les besoins optionnels non attribués à la main depuis le planning.")
+    return {"before": b, "after": a, "delta_optional": d, "delta_optional_minutes": dm, "optional_without_budget": no_budget, "note": note}
+
+
+def _save_kept(res, before_state: dict, cancelled: bool, deleted: bool = False) -> dict:
     """Résultat d'enregistrement quand aucun nouveau planning n'est écrit : l'ancien est conservé, avec la raison exploitable."""
     first = next((i.message for i in res.diagnostics if i.severity == "blocking"), None) or (res.diagnostics[0].message if res.diagnostics else None)
-    if cancelled:
+    if deleted:
+        code, reason = "period_deleted", "Le planning a été supprimé pendant le calcul : rien n'a été enregistré."
+    elif cancelled:
         code, reason = "cancelled", "Calcul annulé : le planning existant n'a pas été modifié."
     elif res.status == "infaisable":
         code, reason = "infeasible", "Aucun planning ne respecte toutes les contraintes obligatoires" + (f" : {first}" if first else ".")
@@ -255,7 +292,9 @@ def run_optimization(tenant_id: str, run_id: str) -> None:
         stop.set()
         with tenant_session(tenant_id) as db:
             run = db.get(m.OptimizationRun, uuid.UUID(run_id))
-            period = db.get(m.PlanningPeriod, run.period_id)
+            # planning verrouillé pendant l'enregistrement (même verrou que sa suppression) : supprimé pendant le calcul -> rien n'est écrit
+            period = db.execute(select(m.PlanningPeriod).where(m.PlanningPeriod.id == run.period_id).with_for_update()).scalar_one()
+            gone = period.deleted_at is not None
             run.progress = {**(state["progress"] or {}), "phase": "saving", "elapsed_s": res.duration_s, "time_limit_s": inp.config.time_limit_s}
             report = _jsonable({k: v for k, v in res.to_dict().items() if k != "assignments"})
             report["weights_used"] = res.weights
@@ -273,7 +312,7 @@ def run_optimization(tenant_id: str, run_id: str) -> None:
             else:
                 verification["reason"] = "Aucun planning produit : rien à vérifier, rien n'est enregistré."
             report["verification"] = verification
-            report["save"] = _save_kept(res, before_state, cancel.is_set())  # remplacé ci-dessous si le planning est enregistré
+            report["save"] = _save_kept(res, before_state, cancel.is_set(), gone)  # remplacé ci-dessous si le planning est enregistré
             report["timing"] = {"preparation_s": round(t_solve - t_start, 3), **(res.timing or {}), "solver_call_s": round(t_solved - t_solve, 3)}
             report["params_used"] = {"mode": mode_used, "frozen_at": period.frozen_at.isoformat() if mode_used == "frozen" and period.frozen_at else None,
                                      "monthly_cap_minutes": inp.config.monthly_cap_minutes}
@@ -309,8 +348,9 @@ def run_optimization(tenant_id: str, run_id: str) -> None:
                                   slots=[]))
                 run.status, run.finished_at = "erreur", datetime.now(timezone.utc)
                 return
-            if res.status in ("optimal", "faisable", "partiellement_couvert") or (
-                    res.status == "interrompu" and res.assignments):
+            # annulation demandée (avant ou pendant la recherche) : la solution partielle n'est JAMAIS enregistrée, le planning existant reste
+            if not cancel.is_set() and not gone and (res.status in ("optimal", "faisable", "partiellement_couvert") or (
+                    res.status == "interrompu" and res.assignments)):
                 try:
                     with db.begin_nested():  # enregistrement et vérification du planning enregistré : tout ou rien
                         if prev:  # le planning remplacé reste récupérable
@@ -327,7 +367,8 @@ def run_optimization(tenant_id: str, run_id: str) -> None:
                         n_after = db.scalar(select(func.count()).select_from(m.Assignment).where(m.Assignment.period_id == period.id)) or 0
                         n_locked = db.scalar(select(func.count()).select_from(m.Assignment).where(m.Assignment.period_id == period.id, m.Assignment.locked.is_(True))) or 0
                         report["save"] = {"outcome": "replaced", "reason_code": "saved", "reason": "Nouveau planning vérifié puis enregistré.",
-                                          "before": before_state, "after": {"assignments": n_after, "locked": n_locked, "version": v_after.number}}
+                                          "before": before_state, "after": {"assignments": n_after, "locked": n_locked, "version": v_after.number},
+                                          "volume": _volume_report(inp, list(prev), [x.slot_id for x in res.assignments])}
                         # paramètres conservés par ce planning : ceux du calcul (actuels si choisis ou si le planning n'en avait pas)
                         if mode_used == "current":
                             freeze_period(db, period, "generation", captured, inp.config.monthly_cap_minutes, used_cfg=inp.config)

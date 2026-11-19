@@ -265,3 +265,40 @@ def test_recuperation_controlee_depuis_l_archive(t):
     assert again["can_recover"] is False and "déjà un planning actif" in again["blocking"][0]
     assert o.post(f"/periods/{pid}/recover", json={"password": PW}).status_code == 409
     assert [p["id"] for p in o.get("/periods").json() if p["start_date"] == "2026-11-01"] == [new]
+
+
+def test_calcul_termine_apres_la_suppression_n_ecrit_rien(t, monkeypatch):
+    """Défaut constaté le 19/11 : un calcul terminé après la suppression de son planning y avait écrit 196 affectations. Désormais rien
+    n'est écrit (verrou du planning à l'enregistrement), la raison est donnée, et la base refuse toute écriture dans un planning supprimé."""
+    import app.optimize as opt
+    from datetime import datetime, timezone
+    from app.db import tenant_session
+    from app import models as m
+    o, pid = t["o"], t["pids"][11]
+    tid = o.get("/auth/me").json()["tenant_id"]
+    real = opt.solve
+
+    def deleted_during_search(inp, cancel=None, on_progress=None):
+        res = real(inp, cancel, on_progress)
+        with tenant_session(tid) as db:  # suppression validée pendant que le moteur cherche
+            p = db.get(m.PlanningPeriod, uuid.UUID(pid))
+            for a in db.query(m.Assignment).filter(m.Assignment.period_id == p.id):
+                db.delete(a)
+            db.flush()
+            for s in db.query(m.Shift).filter(m.Shift.period_id == p.id):
+                db.delete(s)
+            p.deleted_at, p.deletion_archive = datetime.now(timezone.utc), {"assignments": [], "counts": {}}
+        return res
+    monkeypatch.setattr(opt, "solve", deleted_during_search)
+    r = o.post(f"/periods/{pid}/runs", json={"time_limit_s": 8}, headers={"Idempotency-Key": uuid.uuid4().hex})
+    assert r.status_code == 202
+    with tenant_session(tid) as db:
+        assert db.query(m.Assignment).filter(m.Assignment.period_id == uuid.UUID(pid)).count() == 0
+        assert db.query(m.Shift).filter(m.Shift.period_id == uuid.UUID(pid)).count() == 0
+        res = db.query(m.OptimizationResult).join(m.OptimizationRun, m.OptimizationRun.id == m.OptimizationResult.run_id).filter(m.OptimizationRun.id == uuid.UUID(r.json()["run_id"])).one()
+        assert res.report["save"]["reason_code"] == "period_deleted"
+    # garantie en base : aucune écriture possible dans un planning supprimé
+    with pytest.raises(Exception, match="Planning supprimé"):
+        with tenant_session(tid) as db:
+            db.execute(text("insert into shifts (id, tenant_id, period_id, slot_key, day, site_code, start_time, end_time, break_minutes, presence_minutes, effective_minutes) "
+                            "values (gen_random_uuid(), :t, :p, 'X|2026-11-02', '2026-11-02', 'AERO', '09:00', '18:00', 60, 540, 480)"), {"t": tid, "p": pid})

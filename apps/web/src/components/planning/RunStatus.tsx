@@ -6,7 +6,7 @@ import { api } from "@/lib/api";
 
 export type RunProgressData = { phase?: string; level?: string; index?: number; count?: number; solutions?: number; elapsed_s?: number; time_limit_s?: number } | null;
 export type RunView = { id: string; status: string; result_status?: string | null; started_at?: string | null; progress?: RunProgressData; config?: { time_limit_s?: number };
-  save?: SaveInfo | null; timing?: RunTiming | null };
+  save?: SaveInfo | null; timing?: RunTiming | null; proof?: Proof | null };
 export type PeriodParams = { frozen: boolean; frozen_at: string | null; source: string | null; differences: ParamDiff[]; current_cap_minutes: number | null; plan_cap_minutes: number | null;
   generation_run_id?: string | null; weights?: Record<string, number> | null };
 export type ParamsMode = "frozen" | "current" | null;
@@ -117,8 +117,11 @@ export function RunFailure({ runId, status, save, timing }: { runId: string; sta
   );
 }
 
+export type Volume = { mandatory: number; optional: number; minutes: number; optional_minutes: number; other: number };
+export type VolumeReport = { before: Volume; after: Volume; delta_optional: number; delta_optional_minutes: number; optional_without_budget: string[]; note: string | null };
+export type Proof = { proved: boolean; time_limit_s?: number | null; levels?: { level: string; proved: boolean }[] };
 export type SaveInfo = { outcome: "replaced" | "kept_previous" | "simulation"; reason_code: string; reason: string;
-  before: { assignments: number; locked: number; version: number | null }; after: { assignments: number; locked: number; version: number | null } };
+  before: { assignments: number; locked: number; version: number | null }; after: { assignments: number; locked: number; version: number | null }; volume?: VolumeReport };
 export type RunTiming = { time_limit_s?: number; preparation_s?: number; model_s?: number; search_s?: number; post_s?: number; engine_total_s?: number;
   solver_call_s?: number; saving_s?: number; total_s?: number };
 const sec = (v?: number) => (v === undefined || v === null ? "—" : `${v < 10 ? v.toFixed(1) : Math.round(v)} s`.replace(".", ","));
@@ -136,12 +139,39 @@ export function TimingLine({ t }: { t?: RunTiming | null }) {
 }
 
 /** Résultat d'enregistrement donné par le serveur : planning remplacé (versions avant / après) ou ancien planning conservé, avec la raison. */
-export function SaveOutcome({ save, timing }: { save?: SaveInfo | null; timing?: RunTiming | null }) {
+const hm = (m: number) => { const h = Math.floor(m / 60), r = m % 60; return r ? `${h} h ${String(r).padStart(2, "0")}` : `${h} h`; };
+
+/** Volume attribué, présenté À PART de l'équité : obligatoires, optionnels, heures ; toute baisse des optionnels est signalée et expliquée. */
+export function VolumeLine({ v }: { v?: VolumeReport }) {
+  if (!v) return null;
+  const a = v.after, b = v.before;
+  return (
+    <div className="stack" style={{ gap: "var(--sp-1)" }} data-testid="volume">
+      <p style={{ margin: 0 }}><strong>Volume attribué :</strong> {a.mandatory} shift(s) obligatoire(s) et {a.optional} optionnel(s), {hm(a.minutes)} au total
+        {b.mandatory + b.optional > 0 ? <> (planning remplacé : {b.mandatory} obligatoire(s), {b.optional} optionnel(s), {hm(b.minutes)})</> : null}.</p>
+      {v.note && <Callout kind="warn" title={`${-v.delta_optional} shift(s) optionnel(s) de moins (${hm(-v.delta_optional_minutes)})`}>
+        <span data-testid="volume-note">{v.note}</span> <a href="/planning#besoins-optionnels" style={{ textDecoration: "underline" }}>Voir les besoins optionnels non attribués</a></Callout>}
+    </div>
+  );
+}
+
+/** Planning valide ≠ optimum prouvé : quand la durée maximale est atteinte, le planning respecte toutes les règles obligatoires (vérifiées)
+ *  mais sa répartition n'est pas prouvée la meilleure possible. */
+export function ProofLine({ p }: { p?: Proof | null }) {
+  if (!p) return null;
+  return p.proved
+    ? <p className="help" style={{ margin: 0 }} data-testid="proof" data-proved="true">Meilleure solution prouvée pour les critères choisis.</p>
+    : <p style={{ margin: 0 }} data-testid="proof" data-proved="false"><strong>Planning valide, optimisation non terminée :</strong> toutes les règles obligatoires sont vérifiées, mais la durée maximale{p.time_limit_s ? ` (${p.time_limit_s} s)` : ""} a été atteinte avant de prouver la meilleure répartition. Le planning est utilisable ; une durée plus longue peut encore l&apos;améliorer.</p>;
+}
+
+export function SaveOutcome({ save, timing, proof }: { save?: SaveInfo | null; timing?: RunTiming | null; proof?: Proof | null }) {
   if (!save) return null;
   const v = (n: number | null | undefined) => (n ? `version n° ${n}` : "aucune version");
   if (save.outcome === "replaced") return (
     <Callout kind="ok" title="Nouveau planning enregistré">
       <div className="stack" style={{ gap: "var(--sp-1)" }} data-testid="save-outcome" data-outcome="replaced">
+        <ProofLine p={proof} />
+        <VolumeLine v={save.volume} />
         <p style={{ margin: 0 }}>{save.after.assignments} affectation(s) enregistrée(s), dont {save.after.locked} verrouillée(s) conservée(s) telles quelles. Avant : {save.before.assignments} affectation(s), {v(save.before.version)} ; après : {v(save.after.version)}.</p>
         <TimingLine t={timing} />
       </div>

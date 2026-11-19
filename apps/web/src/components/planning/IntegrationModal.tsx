@@ -151,7 +151,7 @@ export function IntegrationModal({ added, onClose }: { added: Added | null; onCl
 
         {step === "running" && run && <>
           {!DONE.has(run.status) ? <RunProgress run={run} limit={TIME_LIMIT} /> : run.status === "termine" && run.save?.outcome === "replaced" ? (
-            <Callout kind="ok" title="Planning recalculé"><span data-testid="integration-result" data-outcome="replaced" hidden /><SaveOutcome save={run.save} timing={run.timing} /><p className="help" style={{ margin: 0 }}>Le planning précédent reste disponible dans les versions (« Avant intégration de {added.name} »). La nouvelle version n&apos;est pas publiée.</p></Callout>
+            <Callout kind="ok" title="Planning recalculé"><span data-testid="integration-result" data-outcome="replaced" hidden /><SaveOutcome save={run.save} timing={run.timing} proof={run.proof} /><p className="help" style={{ margin: 0 }}>Le planning précédent reste disponible dans les versions (« Avant intégration de {added.name} »). La nouvelle version n&apos;est pas publiée.</p></Callout>
           ) : <div data-testid="integration-result" data-outcome={run.save?.outcome ?? run.status}>
             <Callout kind="warn" title={`Planning de ${cur.label} conservé`}>Le recalcul n&apos;a pas remplacé le planning : il reste actif tel qu&apos;il était. Raison ci-dessous.</Callout>
             <RunFailure runId={run.id} status={run.status} save={run.save} timing={run.timing} /></div>}

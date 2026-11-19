@@ -13,9 +13,9 @@ Une fonctionnalité n'est classée « terminée et vérifiée » que si une vér
 |---|---|---|
 | Moteur, tests de correction (`packages/solver`) | **142 / 142** (19/11, dont 5 tests d'équité des heures) | local ; aussi **127 / 127 sous forte charge** (charge moyenne 44 sur 10 cœurs) et pendant la suite e2e |
 | Moteur, mesures de performance (marqueur `perf`) | à part : `scripts/ops/perf_engine.sh` | conditions consignées dans `docs/mesures-moteur.md` |
-| API (`apps/api`) | **186 / 186** | base PostgreSQL jetable par session (`planning_test_<pid>`) |
+| API (`apps/api`) | **191 / 191** | base PostgreSQL jetable par session (`planning_test_<pid>`) |
 | Interface, unitaires, dont contrastes WCAG AA | **124 / 124** | Vitest |
-| Navigateur e2e | **87 / 87** (suite complète, seule ; le 19/11 aussi 85 / 85 en parallèle de la suite API, charge jusqu'à 16) | pile Docker isolée (`infra/compose.e2e.yaml`, base `planning_e2e`) |
+| Navigateur e2e | **90 / 90** (suite complète, seule ; le 19/11 aussi 85 / 85 en parallèle de la suite API, charge jusqu'à 16) | pile Docker isolée (`infra/compose.e2e.yaml`, base `planning_e2e`) |
 | ruff, TypeScript, ESLint | sans erreur | |
 
 Fiabilité du moteur (deux échecs observés sous charge, corrigés à la source, sans relance ni délai allongé) :
@@ -61,23 +61,23 @@ Analyse faite sur une **copie** de la base (`planning_copie_equite`, restaurée 
 
 | Collaborateur | Poids | Avant (planning enregistré) | Après | Capacité | Raison d'un écart persistant |
 |---|---|---|---|---|---|
-| Pierre CAIGNAN | 1.0 | 80 h | 0 h | 176 h | renfort uniquement sur les marques qui ont des besoins ce mois (prioritaire sur : Lindt 0 shifts / 2 prioritaires, Toblerone 0 shifts / 2 prioritaires) |
-| Chloé DROUARD | 1.0 | 88 h | 64 h | 112 h | 14 jours possibles; volume limité de ses marques prioritaires (Valmont 66 shifts / 2 prioritaires) |
-| Yasmine DUCASTELLE | 0.75 | 24 h | 80 h | 96 h | disponible L-M-M seulement; 12 jours possibles; volume limité de ses marques prioritaires (Ploom GVA3 90 shifts / 9 prioritaires, Ploom GVA9 60 shifts / 9 prioritaires, Ploom Pilar 8 shifts / 9 prioritaires) |
-| Aziza MULAY | 1.0 | 104 h | 88 h | 176 h | volume limité de ses marques prioritaires (Cailler 26 shifts / 2 prioritaires, Lindt 0 shifts / 2 prioritaires, Toblerone 0 shifts / 2 prioritaires) |
-| Ying YANG | 1.0 | 88 h | 112 h | 176 h | volume limité de ses marques prioritaires (Valmont 66 shifts / 2 prioritaires) |
-| Valérie MARTIN | 1.0 | 104 h | 136 h | 176 h | volume limité de ses marques prioritaires (Cailler 26 shifts / 2 prioritaires) |
-| I Jane DON | 1.0 | 144 h | 144 h | 144 h | au maximum de ce qu'il peut faire (18 jours possibles) |
-| Sahra HADJAZ | 1.25 | 176 h | 152 h | 176 h | équilibré avec les collaborateurs comparables |
-| Abdu SEIDI | 1.25 | 176 h | 160 h | 176 h | équilibré avec les collaborateurs comparables |
-| Adam KSIBI | 1.0 | 176 h | 160 h | 176 h | équilibré avec les collaborateurs comparables |
-| Florian ALGRIN | 1.0 | 128 h | 160 h | 176 h | équilibré avec les collaborateurs comparables |
-| Jamilatu DJALO MANE | 1.25 | 176 h | 160 h | 176 h | équilibré avec les collaborateurs comparables |
-| Sabrina LE BLANC | 1.0 | 120 h | 160 h | 176 h | équilibré avec les collaborateurs comparables |
-| Simona DUMITRASCU | 1.0 | 168 h | 160 h | 176 h | équilibré avec les collaborateurs comparables |
-| Zaki Zakaria HATTAB-BEY | 1.0 | 144 h | 160 h | 176 h | équilibré avec les collaborateurs comparables |
+| Pierre C. | 1.0 | 80 h | 0 h | 176 h | renfort uniquement sur les marques qui ont des besoins ce mois (prioritaire sur : Lindt 0 shifts / 2 prioritaires, Toblerone 0 shifts / 2 prioritaires) |
+| Chloé D. | 1.0 | 88 h | 64 h | 112 h | 14 jours possibles; volume limité de ses marques prioritaires (Valmont 66 shifts / 2 prioritaires) |
+| Yasmine D. | 0.75 | 24 h | 80 h | 96 h | disponible L-M-M seulement; 12 jours possibles; volume limité de ses marques prioritaires (Ploom GVA3 90 shifts / 9 prioritaires, Ploom GVA9 60 shifts / 9 prioritaires, Ploom Pilar 8 shifts / 9 prioritaires) |
+| Aziza M. | 1.0 | 104 h | 88 h | 176 h | volume limité de ses marques prioritaires (Cailler 26 shifts / 2 prioritaires, Lindt 0 shifts / 2 prioritaires, Toblerone 0 shifts / 2 prioritaires) |
+| Ying Y. | 1.0 | 88 h | 112 h | 176 h | volume limité de ses marques prioritaires (Valmont 66 shifts / 2 prioritaires) |
+| Valérie M. | 1.0 | 104 h | 136 h | 176 h | volume limité de ses marques prioritaires (Cailler 26 shifts / 2 prioritaires) |
+| I Jane D. | 1.0 | 144 h | 144 h | 144 h | au maximum de ce qu'il peut faire (18 jours possibles) |
+| Sahra H. | 1.25 | 176 h | 152 h | 176 h | équilibré avec les collaborateurs comparables |
+| Abdu S. | 1.25 | 176 h | 160 h | 176 h | équilibré avec les collaborateurs comparables |
+| Adam K. | 1.0 | 176 h | 160 h | 176 h | équilibré avec les collaborateurs comparables |
+| Florian A. | 1.0 | 128 h | 160 h | 176 h | équilibré avec les collaborateurs comparables |
+| Jamilatu D. | 1.25 | 176 h | 160 h | 176 h | équilibré avec les collaborateurs comparables |
+| Sabrina L. | 1.0 | 120 h | 160 h | 176 h | équilibré avec les collaborateurs comparables |
+| Simona D.. | 1.0 | 168 h | 160 h | 176 h | équilibré avec les collaborateurs comparables |
+| Zaki Zakaria H. | 1.0 | 144 h | 160 h | 176 h | équilibré avec les collaborateurs comparables |
 
-Aucun shift possible ce mois (aucune de leurs marques n'a de besoin) : Chloé DAVISTER, Hugo SIMIAN, Paul-Joseph DE ANGELIS, Rebecca Sarah Thomas, Selin AKIN, Simon FERRANTE, Simona AKOPIAN, Sylvain ZHENG, Yanis BENDJOUADI.
+Aucun shift possible ce mois (aucune de leurs marques n'a de besoin) : Chloé D., Hugo S., Paul-Joseph D., Rebecca T., Selin A., Simon F., Simona A., Sylvain Z., Yanis B..
 
 #### Décembre 2026 — tenant de démonstration
 
@@ -87,32 +87,32 @@ Aucun shift possible ce mois (aucune de leurs marques n'a de besoin) : Chloé DA
 
 | Collaborateur | Poids | Avant (planning enregistré) | Après | Capacité | Raison d'un écart persistant |
 |---|---|---|---|---|---|
-| Pierre CAIGNAN | 1.0 | 0 h | 0 h | 176 h | renfort uniquement sur les marques qui ont des besoins ce mois (prioritaire sur : Lindt 0 shifts / 8 prioritaires, Toblerone 0 shifts / 9 prioritaires) |
-| Chloé DAVISTER | 1.0 | 32 h | 24 h | 96 h | 12 jours possibles; secondaire (jamais prioritaire) sur les marques qui ont des besoins; volume limité de ses marques prioritaires (Lindt 0 shifts / 8 prioritaires, Toblerone 0 shifts / 9 prioritaires) |
-| Simona AKOPIAN | 1.0 | 24 h | 32 h | 64 h | 8 jours possibles; secondaire (jamais prioritaire) sur les marques qui ont des besoins; volume limité de ses marques prioritaires (Toblerone 0 shifts / 9 prioritaires) |
-| Sylvain ZHENG | 1.0 | 40 h | 32 h | 104 h | 13 jours possibles; volume limité de ses marques prioritaires (Cailler 27 shifts / 7 prioritaires, Lindt 0 shifts / 8 prioritaires, Toblerone 0 shifts / 9 prioritaires) |
-| Yasmine DUCASTELLE | 0.75 | 32 h | 40 h | 112 h | disponible L-M-M seulement; 14 jours possibles; volume limité de ses marques prioritaires (Ploom GVA3 93 shifts / 12 prioritaires, Ploom GVA9 62 shifts / 12 prioritaires, Ploom Pilar 8 shifts / 12 prioritaires) |
-| Chloé DROUARD | 1.0 | 72 h | 48 h | 104 h | 13 jours possibles; volume limité de ses marques prioritaires (Valmont 66 shifts / 2 prioritaires) |
-| Aziza MULAY | 1.0 | 48 h | 56 h | 176 h | volume limité de ses marques prioritaires (Cailler 27 shifts / 7 prioritaires, Lindt 0 shifts / 8 prioritaires, Toblerone 0 shifts / 9 prioritaires) |
-| Hugo SIMIAN | 1.0 | 56 h | 56 h | 176 h | volume limité de ses marques prioritaires (Cailler 27 shifts / 7 prioritaires, Lindt 0 shifts / 8 prioritaires, Toblerone 0 shifts / 9 prioritaires) |
-| Simon FERRANTE | 1.0 | 8 h | 56 h | 176 h | volume limité de ses marques prioritaires (Cailler 27 shifts / 7 prioritaires, Lindt 0 shifts / 8 prioritaires, Toblerone 0 shifts / 9 prioritaires) |
-| Valérie MARTIN | 1.0 | 96 h | 56 h | 176 h | volume limité de ses marques prioritaires (Cailler 27 shifts / 7 prioritaires) |
-| Zaki Zakaria HATTAB-BEY | 1.0 | 56 h | 64 h | 152 h | 19 jours possibles; volume limité de ses marques prioritaires (Cartier 8 shifts / 2 prioritaires, Ploom GVA3 93 shifts / 12 prioritaires, Ploom GVA9 62 shifts / 12 prioritaires, Ploom Pilar 8 shifts / 12 prioritaires) |
-| I Jane DON | 1.0 | 112 h | 72 h | 136 h | 17 jours possibles; volume limité de ses marques prioritaires (Cellcosmet 22 shifts / 1 prioritaires, Nuxe 22 shifts / 1 prioritaires) |
-| Jamilatu DJALO MANE | 1.25 | 112 h | 88 h | 176 h | équilibré avec les collaborateurs comparables |
-| Paul-Joseph DE ANGELIS | 1.0 | 80 h | 88 h | 176 h | équilibré avec les collaborateurs comparables |
-| Rebecca Sarah Thomas | 1.0 | 64 h | 96 h | 176 h | secondaire (jamais prioritaire) sur les marques qui ont des besoins |
-| Selin AKIN | 1.0 | 72 h | 96 h | 176 h | secondaire (jamais prioritaire) sur les marques qui ont des besoins |
-| Ying YANG | 1.0 | 104 h | 96 h | 176 h | équilibré avec les collaborateurs comparables |
-| Abdu SEIDI | 1.25 | 128 h | 104 h | 176 h | équilibré avec les collaborateurs comparables |
-| Adam KSIBI | 1.0 | 96 h | 104 h | 176 h | équilibré avec les collaborateurs comparables |
-| Anastasia ANIKUTINA | 1.0 | 96 h | 104 h | 176 h | équilibré avec les collaborateurs comparables |
-| Florian ALGRIN | 1.0 | 96 h | 104 h | 176 h | équilibré avec les collaborateurs comparables |
-| Kristina THANASI | 1.0 | 96 h | 104 h | 176 h | équilibré avec les collaborateurs comparables |
-| Sabrina LE BLANC | 1.0 | 96 h | 104 h | 176 h | équilibré avec les collaborateurs comparables |
-| Sahra HADJAZ | 1.25 | 128 h | 104 h | 176 h | équilibré avec les collaborateurs comparables |
-| Simona DUMITRASCU | 1.0 | 96 h | 104 h | 176 h | équilibré avec les collaborateurs comparables |
-| Yanis BENDJOUADI | 1.0 | 96 h | 104 h | 176 h | équilibré avec les collaborateurs comparables |
+| Pierre C. | 1.0 | 0 h | 0 h | 176 h | renfort uniquement sur les marques qui ont des besoins ce mois (prioritaire sur : Lindt 0 shifts / 8 prioritaires, Toblerone 0 shifts / 9 prioritaires) |
+| Chloé D. | 1.0 | 32 h | 24 h | 96 h | 12 jours possibles; secondaire (jamais prioritaire) sur les marques qui ont des besoins; volume limité de ses marques prioritaires (Lindt 0 shifts / 8 prioritaires, Toblerone 0 shifts / 9 prioritaires) |
+| Simona A. | 1.0 | 24 h | 32 h | 64 h | 8 jours possibles; secondaire (jamais prioritaire) sur les marques qui ont des besoins; volume limité de ses marques prioritaires (Toblerone 0 shifts / 9 prioritaires) |
+| Sylvain Z. | 1.0 | 40 h | 32 h | 104 h | 13 jours possibles; volume limité de ses marques prioritaires (Cailler 27 shifts / 7 prioritaires, Lindt 0 shifts / 8 prioritaires, Toblerone 0 shifts / 9 prioritaires) |
+| Yasmine D. | 0.75 | 32 h | 40 h | 112 h | disponible L-M-M seulement; 14 jours possibles; volume limité de ses marques prioritaires (Ploom GVA3 93 shifts / 12 prioritaires, Ploom GVA9 62 shifts / 12 prioritaires, Ploom Pilar 8 shifts / 12 prioritaires) |
+| Chloé D. | 1.0 | 72 h | 48 h | 104 h | 13 jours possibles; volume limité de ses marques prioritaires (Valmont 66 shifts / 2 prioritaires) |
+| Aziza M. | 1.0 | 48 h | 56 h | 176 h | volume limité de ses marques prioritaires (Cailler 27 shifts / 7 prioritaires, Lindt 0 shifts / 8 prioritaires, Toblerone 0 shifts / 9 prioritaires) |
+| Hugo S. | 1.0 | 56 h | 56 h | 176 h | volume limité de ses marques prioritaires (Cailler 27 shifts / 7 prioritaires, Lindt 0 shifts / 8 prioritaires, Toblerone 0 shifts / 9 prioritaires) |
+| Simon F. | 1.0 | 8 h | 56 h | 176 h | volume limité de ses marques prioritaires (Cailler 27 shifts / 7 prioritaires, Lindt 0 shifts / 8 prioritaires, Toblerone 0 shifts / 9 prioritaires) |
+| Valérie M. | 1.0 | 96 h | 56 h | 176 h | volume limité de ses marques prioritaires (Cailler 27 shifts / 7 prioritaires) |
+| Zaki Zakaria H. | 1.0 | 56 h | 64 h | 152 h | 19 jours possibles; volume limité de ses marques prioritaires (Cartier 8 shifts / 2 prioritaires, Ploom GVA3 93 shifts / 12 prioritaires, Ploom GVA9 62 shifts / 12 prioritaires, Ploom Pilar 8 shifts / 12 prioritaires) |
+| I Jane D. | 1.0 | 112 h | 72 h | 136 h | 17 jours possibles; volume limité de ses marques prioritaires (Cellcosmet 22 shifts / 1 prioritaires, Nuxe 22 shifts / 1 prioritaires) |
+| Jamilatu D. | 1.25 | 112 h | 88 h | 176 h | équilibré avec les collaborateurs comparables |
+| Paul-Joseph D. | 1.0 | 80 h | 88 h | 176 h | équilibré avec les collaborateurs comparables |
+| Rebecca T. | 1.0 | 64 h | 96 h | 176 h | secondaire (jamais prioritaire) sur les marques qui ont des besoins |
+| Selin A. | 1.0 | 72 h | 96 h | 176 h | secondaire (jamais prioritaire) sur les marques qui ont des besoins |
+| Ying Y. | 1.0 | 104 h | 96 h | 176 h | équilibré avec les collaborateurs comparables |
+| Abdu S. | 1.25 | 128 h | 104 h | 176 h | équilibré avec les collaborateurs comparables |
+| Adam K. | 1.0 | 96 h | 104 h | 176 h | équilibré avec les collaborateurs comparables |
+| Anastasia A. | 1.0 | 96 h | 104 h | 176 h | équilibré avec les collaborateurs comparables |
+| Florian A. | 1.0 | 96 h | 104 h | 176 h | équilibré avec les collaborateurs comparables |
+| Kristina T. | 1.0 | 96 h | 104 h | 176 h | équilibré avec les collaborateurs comparables |
+| Sabrina L. | 1.0 | 96 h | 104 h | 176 h | équilibré avec les collaborateurs comparables |
+| Sahra H. | 1.25 | 128 h | 104 h | 176 h | équilibré avec les collaborateurs comparables |
+| Simona D.. | 1.0 | 96 h | 104 h | 176 h | équilibré avec les collaborateurs comparables |
+| Yanis B. | 1.0 | 96 h | 104 h | 176 h | équilibré avec les collaborateurs comparables |
 
 #### Février 2027 — compte d’essai
 
@@ -137,9 +137,32 @@ Aucun shift possible ce mois (aucune de leurs marques n'a de besoin) : Chloé DA
 | Mila | 1.25 | 176 h | 112 h | 176 h | équilibré avec les collaborateurs comparables |
 | Sabrina | 1.0 | 88 h | 112 h | 176 h | équilibré avec les collaborateurs comparables |
 | Sahra | 1.25 | 176 h | 112 h | 176 h | équilibré avec les collaborateurs comparables |
-| Simona D | 1.0 | 80 h | 112 h | 176 h | équilibré avec les collaborateurs comparables |
+| Simona D. | 1.0 | 80 h | 112 h | 176 h | équilibré avec les collaborateurs comparables |
 | Zaki | 1.0 | 80 h | 112 h | 176 h | équilibré avec les collaborateurs comparables |
 
+
+### Compléments du 19/11 (soir) : cas des 56 h, volume de février, vérifications
+
+**Cas des 56 h** : le message ne nommait ni le mois ni les collaborateurs. Trois plannings enregistrés présentent exactement ce profil (une personne vers 56 h, d'autres à 168–192 h) : compte d'essai février 2027 (version 1 du 19/11 à 12:05, planning actif : Chloé 56 h ; Abdu, Mila, Sahra 176 h), compte d'essai novembre 2026 (version 1 du 17/11 : Aziza 56 h ; trois à 176 h), démonstration novembre 2026 (archive du 19/11 à 15:27 : Valérie 56 h ; trois à 168–192 h). Rejoués sur la copie avec leurs paramètres d'origine par le moteur PRÉCÉDENT (code exact du commit b423618) : février reproduit à l'identique (Chloé 56 h ; Abdu, Mila, Sahra 176 h), les deux novembre reproduits (trois collaborateurs à 176 h). Moteur corrigé :
+- février : groupe Ploom prioritaire 80–176 h → 112 h pour tous ; **Chloé 56 → 40 h** : elle ne peut travailler que 12 jours (prioritaire seulement sur Valmont, Cartier en renfort) et ses heures possibles au-delà sont des shifts optionnels Valmont sans budget (voir ci-dessous) ; elle reçoit la même proportion de ses jours possibles que les autres. Son cas n'est donc corrigé que pour la cause « priorité automatique » ; augmenter ses heures relève du volume optionnel, à décider ;
+- novembre (essai) : Aziza 56 → 88 h, groupe Ploom 104–176 → 120–128 h ; novembre (démonstration) : Valérie 56 → 104 h, groupe Ploom 96–192 → 136–144 h ;
+- dans les trois cas : 0 violation de règle obligatoire (vérificateur indépendant), couverture obligatoire inchangée (100 %), niveaux prouvés optimaux en 9 à 12 s.
+
+**Février 2027 sans budget : 12 shifts optionnels de moins (−96 h)**. Besoins saisis : 156 obligatoires (Ploom, Cartier : 1 248 h) et 104 optionnels (Cailler 24, Cellcosmet + Nuxe 20, Valmont 60 : 832 h) ; aucun budget du mois (seul un budget de base Nuxe de 88 h existe, non appliqué : planning antérieur au préremplissage). Les optionnels n'ont donc aucun objectif de volume : l'ancien moteur en retenait 42 (336 h) parce que ses cibles tiraient les heures vers le haut ; le moteur corrigé en retient 30 (240 h) : Cailler 144 → 88 h, Cellcosmet + Nuxe 64 → 48 h, Valmont 128 → 104 h ; 26 shifts ont quitté le planning et 14 y sont entrés. Obligatoires : 156/156 avant et après.
+
+**Ajouts** : après chaque génération, le volume attribué est présenté à part de l'équité (obligatoires, optionnels, heures, et planning remplacé) ; toute baisse des optionnels est signalée et expliquée (marques sans budget). Le planning liste les **besoins optionnels non attribués** par marque (shifts, heures, budget ou « aucun budget ») avec « Placer et attribuer » (shift créé sans collaborateur, puis fenêtre d'attribution habituelle). Le résultat distingue « meilleure solution prouvée » et « planning valide, optimisation non terminée » (règles obligatoires vérifiées, durée maximale atteinte, planning utilisable).
+
+**Vérifications complétées sur la pile isolée** : second onglet sans temps réel → enregistrement arrêté au premier envoi refusé, aucun envoi ensuite, pas de « Réessayer » ; second onglet avec temps réel → brouillon supprimé signalé sans action ; recalcul d'une nouvelle marque → besoins manquants listés avec le lien vers « Sites et marques », lancement impossible, budget saisi dans la fenêtre puis « prête pour le calcul » ; annulation pendant le calcul (moteur démarré) → planning initial et versions inchangés.
+
+**Deux défauts réels trouvés par ces vérifications, corrigés**
+- **Annulation pendant le calcul** : la solution trouvée avant l'annulation était enregistrée (calcul « annulé », planning pourtant remplacé). Désormais jamais enregistrée ; raison « Calcul annulé ». Test API de non-régression (échoue sans la correction).
+- **Calcul terminé après la suppression du planning** : il avait écrit 196 affectations, 196 shifts et une version dans le planning supprimé (pile isolée ; vérifié : rien de tel dans la base réelle). Désormais : planning verrouillé à l'enregistrement, rien n'est écrit (raison « planning supprimé pendant le calcul ») ; la suppression annule les calculs en file ou en cours ; et la base refuse toute écriture de shift ou d'affectation dans un planning supprimé (migration 0020). Test API.
+
+**Incident non expliqué (ouvert)** : `e2e/integration.spec.ts`, préparation du mois (19/11 vers 21:35) : l'attente « affectations > 0 » a échoué avec « 50 s dépassées » alors que le journal montre 7 lectures puis le nettoyage de fin de test 5 s après la création du mois, avant la fin du calcul (qui a ensuite écrit dans le planning supprimé : défaut ci-dessus, corrigé). Pourquoi l'attente s'est arrêtée au bout d'environ 5 s n'est pas établi ; relancé ensuite, le même test a passé sa préparation. Aucun délai modifié.
+
+**Dépendance de test corrigée (cause confirmée)** : `test_replacement_offers::test_acceptation_validee_puis_double_clic` a échoué une fois dans la suite complète ; il supposait un ordre fixe entre « lancée » et « envoyée », deux événements écrits dans la même transaction (même horodatage, ordre défini par un identifiant aléatoire). Le test vérifie désormais l'ordre réel (acceptation après) et la simultanéité des deux autres ; suite API complète ensuite : 191 / 191.
+
+**Données** : les tableaux de ce document nomment désormais les collaborateurs par prénom et initiale. Le commit 33d3c7d (déjà poussé) contenait les noms complets : ils restent dans l'historique de la branche tant qu'une réécriture n'est pas décidée.
 
 ## Lenteurs et échecs intermittents : analyse du 19/11/2026
 

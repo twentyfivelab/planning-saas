@@ -173,9 +173,80 @@ test("nouveau collaborateur : « Recalculer tout le planning », planning initia
     if (run.save?.outcome === "replaced") expect(added.sort()).toEqual([`Avant intégration de ${full}`, `Planning recalculé avec ${full}`].sort());
     else expect(added).toEqual([]); // échec : planning initial conservé, actif
     expect(vs.some((v) => v.state === "published")).toBe(false); // jamais publié automatiquement
+    // volume attribué présenté à part, et distinction « optimum prouvé » / « planning valide, durée maximale atteinte »
+    await expect(integ.getByTestId("volume")).toContainText("Volume attribué :");
+    const proof = integ.getByTestId("proof");
+    await expect(proof).toBeAttached();
+    if ((await proof.getAttribute("data-proved")) === "false") await expect(proof).toContainText("Planning valide, optimisation non terminée");
+    else await expect(proof).toContainText("Meilleure solution prouvée");
+    // besoins optionnels non attribués : visibles dans le planning, mêmes chiffres que le serveur
+    const opt = (await j(page, `/periods/${dec}/optional-needs`)) as { total: number };
+    await page.evaluate(() => { try { localStorage.setItem("planning:month", "2027-12"); } catch { /* ignoré */ } });
+    await page.goto("/planning"); await page.waitForLoadState("networkidle");
+    if (opt.total) await expect(page.getByTestId("optional-needs")).toContainText(`Besoins optionnels non attribués : ${opt.total} shift`);
+    else await expect(page.getByTestId("optional-needs")).toHaveCount(0);
     const ros = (await j(page, `/periods/${dec}/roster`)) as { employees: { employee_id: string; state: string }[] };
     expect(ros.employees.find((x) => x.employee_id === empId)!.state).toBe("included");
   } finally {
     if (empId) await page.request.delete(`${API}/employees/${empId}`, { headers: H });
+  }
+});
+
+test("recalcul d'une nouvelle marque : guidage vers « Sites et marques », budget saisi dans la fenêtre, puis annulation : planning initial conservé", async ({ page }) => {
+  const token = await csrf(page); const H = { "X-CSRF-Token": token };
+  const name = `Marque guidage ${Date.now().toString(36)}`;
+  let code = "";
+  // mois dédié (janvier 2028), planning généré
+  const jan = (await (await page.request.post(`${API}/periods/ensure`, { headers: H, data: { year: 2028, month: 1 } })).json()).id as string;
+  try {
+    if (!((await j(page, `/periods/${jan}/schedule`)).assignments as unknown[]).length) {
+      expect((await page.request.post(`${API}/periods/${jan}/runs`, { headers: { ...H, "Idempotency-Key": `g-${Date.now()}` }, data: { time_limit_s: 10 } })).status()).toBe(202);
+      await expect.poll(async () => ((await j(page, `/periods/${jan}/schedule`)).assignments as unknown[]).length, { timeout: 50_000 }).toBeGreaterThan(0);
+    }
+    const rowsBefore = await rows(page, jan);
+    const versionsBefore = ((await j(page, `/periods/${jan}/versions`)) as { id: string }[]).map((v) => v.id).sort();
+    await page.goto("/catalog"); await page.waitForLoadState("networkidle");
+    await page.getByLabel("Nom de la marque (ou marque + boutique)").fill(name);
+    await page.getByRole("button", { name: "Ajouter la marque" }).click();
+    const integ = page.getByTestId("integration-modal");
+    await expect(integ).toBeVisible();
+    code = ((await j(page, "/catalog")) as { brands: { code: string; name: string }[] }).brands.find((b) => b.name === name)!.code;
+    await integ.getByLabel("Planning concerné").selectOption(jan);
+    await integ.getByTestId("choice-recalculate").click();
+    // besoins absents : listés, avec le lien vers « Sites et marques » ; aucun calcul possible
+    const missing = integ.getByTestId("integration-missing");
+    await expect(missing).toContainText(`Aucun besoin (jours d'animation, site et horaire) n'est défini pour ${name}`);
+    await expect(missing.getByRole("link", { name: "Renseigner dans « Sites et marques »" }).first()).toHaveAttribute("href", "/catalog");
+    await expect(integ.getByTestId("integration-launch")).toBeDisabled();
+    // besoins renseignés (comme dans « Sites et marques ») ; il ne manque plus que le budget, saisi dans la fenêtre
+    const site = ((await j(page, "/catalog")) as { sites: { code: string; archived: boolean }[] }).sites.find((s) => !s.archived)!.code;
+    expect((await page.request.post(`${API}/catalog/animations`, { headers: H, data: { site_code: site, brand_code: code, start: "10:00", end: "17:00", weekdays: [2], headcount: 1, from_month: "2028-01" } })).status()).toBe(201);
+    await integ.getByRole("button", { name: "Retour" }).click();
+    await integ.getByTestId("choice-recalculate").click();
+    await expect(missing).toContainText(`Aucun budget n'est saisi pour ${name}`);
+    await expect(missing).not.toContainText("Aucun besoin");
+    await integ.getByLabel(`Budget ${name} pour janvier 2028 (heures)`).fill("24");
+    await integ.getByRole("button", { name: "Enregistrer le budget" }).click();
+    await expect(integ).toContainText(`${name} est prête pour le calcul`);
+    const b = ((await j(page, `/periods/${jan}/brands`)) as { code: string; budget_minutes: number | null }[]).find((x) => x.code === code)!;
+    expect(b.budget_minutes).toBe(24 * 60); // budget du mois enregistré
+    // lancement puis annulation immédiate : le planning initial reste actif, aucune nouvelle version
+    await integ.getByTestId("integration-launch").click();
+    // annulation PENDANT le calcul (pas seulement en file d'attente) : on attend que le moteur ait démarré
+    type R = { id: string; period_id: string; status: string; started_at: string | null; save?: { outcome: string; reason_code: string } };
+    await expect.poll(async () => ((await j(page, "/runs")) as R[]).find((r) => r.period_id === jan)?.status, { timeout: 20_000, intervals: [100] }).toBe("en_cours");
+    await integ.getByRole("button", { name: "Annuler le calcul" }).click();
+    const result = integ.getByTestId("integration-result");
+    await expect(result).toBeAttached({ timeout: 45_000 });
+    expect(["kept_previous", "annule"]).toContain(await result.getAttribute("data-outcome"));
+    await expect(integ).toContainText("Planning de janvier 2028 conservé");
+    const run = ((await j(page, "/runs")) as R[]).find((r) => r.period_id === jan)!;
+    expect(run.started_at).not.toBeNull(); // le calcul avait bien commencé
+    expect(run.status === "annule" || run.save?.reason_code === "cancelled", JSON.stringify(run)).toBe(true);
+    expect(await rows(page, jan)).toEqual(rowsBefore); // planning initial inchangé
+    expect(((await j(page, `/periods/${jan}/versions`)) as { id: string }[]).map((v) => v.id).sort()).toEqual(versionsBefore);
+  } finally {
+    if (code) await page.request.patch(`${API}/catalog/brands/${encodeURIComponent(code)}`, { headers: H, data: { archived_from: "2028-01" } });
+    await page.request.post(`${API}/periods/${jan}/delete`, { headers: H, data: { password: process.env.E2E_PASSWORD } });
   }
 });

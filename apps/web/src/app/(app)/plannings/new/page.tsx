@@ -385,7 +385,7 @@ function StepGenerate({ pid, period, onDone, onOpen }: { pid: string; period?: P
         {!run && <div><Button variant="primary" icon="sparkles" disabled={blocking.length > 0 || (hasPlan && paramsMode === null)} onClick={() => (hasPlan ? setConfirm(true) : go())}>Générer automatiquement le planning</Button></div>}
         {running && <RunProgress run={run!} limit={limit} />}
         {run && (run.status === "erreur" || run.status === "annule" || (run.status === "termine" && !saved(run))) && <RunFailure runId={run.id} status={run.status} save={run.save} timing={run.timing} />}
-        {saved(run) && <SaveOutcome save={run!.save} timing={run!.timing} />}
+        {saved(run) && <SaveOutcome save={run!.save} timing={run!.timing} proof={run!.proof} />}
         {saved(run) && <Callout kind="ok" title={`Planning de ${period?.name ?? "ce mois"} généré (${String(run?.result_status ?? "").replace(/_/g, " ")})`}>
           <div className="row"><Button variant="primary" icon="calendar" onClick={onOpen}>Ouvrir le planning</Button><a className="btn" href="/generate">Voir le diagnostic détaillé</a></div></Callout>}
         {run && !running && !saved(run) && <div><Button icon="sparkles" disabled={blocking.length > 0} onClick={() => { setRun(null); }}>Modifier et relancer</Button></div>}

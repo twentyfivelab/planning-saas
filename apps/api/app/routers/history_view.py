@@ -35,7 +35,7 @@ KIND_OF = {
     "optimization.finished": "generation", "simulation.applied": "generation",
     "version.restore": "restore", "version.publish": "publish", "version.create": "version", "version.validate": "version",
     "period.deleted": "deletion", "period.recovered": "deletion",
-    "integration.chosen": "integration", "shift.placed": "integration",
+    "integration.chosen": "integration", "shift.placed": "integration", "need.placed": "add",
     "assignment.replacement": "replace",
     **{f"replacement.{x}": "proposal" for x in ("requested", "offered", "accepted", "refused", "expired", "cancelled", "invalidated", "exhausted", "skipped")},
 }
@@ -112,6 +112,9 @@ def _render(r: m.AuditLog, d: dict) -> dict:
             lines = [f"{who_from} → {who_to or '—'}", f"Shift : {hours}"]
             return {"title": "Remplacement" + _where(d), "lines": lines}
         return {"title": "Attribution" + _where(d), "lines": [f"{who_to or '—'} : {hours}"]}
+    if a == "need.placed":
+        return {"title": f"Besoin {'optionnel ' if d.get('optional') else ''}placé sans collaborateur{_where(d)}", "lines": [f"{_day(d.get('day')) or '—'}, {hours}, à attribuer"],
+                "shift_days": [d["day"]] if d.get("day") else []}
     if kind == "add":
         return {"title": ("Duplication" if a == "assignment.duplicate" else "Ajout d'un shift") + _where(d), "lines": [f"{who_to or '—'} : {hours}"]}
     if kind == "remove":

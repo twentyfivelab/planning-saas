@@ -112,8 +112,12 @@ def test_acceptation_validee_puis_double_clic(t):
         assert any("est repris par" in x["body"] for x in notes(users[old], "replacement_update"))
     h = o.get("/history", params={"kind": "proposal"}).json()["items"]
     titles = [x["title"] for x in h]
-    assert titles[:3] == [f"Proposition acceptée par {first.capitalize()}", f"Proposition envoyée à {first.capitalize()}", "Proposition de remplacement lancée"]
-    assert h[0]["by"] == first.capitalize() and h[2]["by"] == o.get("/auth/me").json()["name"]
+    # l'acceptation vient après ; lancement et envoi au premier candidat sont écrits dans la MÊME transaction (même horodatage) :
+    # leur ordre relatif n'est pas défini (constaté le 19/11 : ordre aléatoire selon l'identifiant), seule leur présence est vérifiée
+    assert titles[0] == f"Proposition acceptée par {first.capitalize()}"
+    assert set(titles[1:3]) == {f"Proposition envoyée à {first.capitalize()}", "Proposition de remplacement lancée"}
+    assert h[1]["at"] == h[2]["at"] and h[0]["at"] >= h[1]["at"]
+    assert h[0]["by"] == first.capitalize() and {h[1]["by"], h[2]["by"]} == {o.get("/auth/me").json()["name"]}
     rep = o.get("/history", params={"kind": "replace"}).json()["items"][0]
     assert rep["title"].startswith("Remplacement") and f"→ {first.capitalize()}" in rep["lines"][0]
 
