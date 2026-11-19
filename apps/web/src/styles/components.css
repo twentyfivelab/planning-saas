@@ -528,3 +528,16 @@ details.advanced[open] > summary { margin-bottom: var(--sp-2); }
 .nav-menu-item.danger { color: var(--bad); font-weight: 600; }
 .nav-menu-item:hover, .nav-menu-item:focus-visible { background: var(--bad-soft); outline: none; }
 .warn-text { color: var(--warn); font-weight: 600; }
+
+/* ---------- Intégration d'un ajout au planning (choix et suivi de couverture) ---------- */
+.choice-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr)); gap: var(--sp-3); }
+.choice-card { display: flex; flex-direction: column; gap: var(--sp-2); text-align: left; padding: var(--sp-4); border-radius: var(--radius-md); border: 1px solid var(--line);
+  background: var(--glass-2); color: inherit; font: inherit; cursor: pointer; transition: border-color var(--dur, 150ms), background var(--dur, 150ms), box-shadow var(--dur, 150ms); }
+.choice-card:hover:not(:disabled) { border-color: var(--accent); background: var(--accent-soft); }
+.choice-card:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.choice-card:disabled { opacity: 0.6; cursor: not-allowed; }
+.choice-card strong { font-size: var(--text-md, 1rem); }
+.cover-list { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--sp-2); }
+.cover-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--sp-2); padding: var(--sp-2) var(--sp-3); border-radius: var(--radius-md);
+  border: 1px solid var(--line); background: var(--solid-2); }
+.cover-row[data-state="conflict"] { border-color: var(--warn, #c77700); }

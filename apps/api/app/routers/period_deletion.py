@@ -163,4 +163,141 @@ def delete_period(pid: str, body: DeleteIn, ctx: Ctx = Depends(require("planning
             "deleted_at": now.isoformat(), "deleted_by": {"id": str(ctx.user.id), "name": ctx.user.name}}
 
 
+# ---- récupération contrôlée d'un planning supprimé (à partir de son archive) ----
+# Le planning supprimé, son archive et la trace de la suppression restent INCHANGÉS (protégés en base) : la récupération crée un NOUVEAU
+# planning actif pour le même mois, refusée si ce mois a déjà un planning actif. Aucun autre mois n'est lu ni modifié. Mêmes droits et
+# même confirmation par mot de passe que la suppression ; le plafond mensuel s'applique (tout ou rien). Rien n'est publié.
+
+def _deleted_period(ctx: Ctx, pid: str) -> m.PlanningPeriod:
+    import uuid
+    try:
+        key = uuid.UUID(str(pid))
+    except ValueError:
+        raise HTTPException(404, "Introuvable")
+    p = ctx.db.get(m.PlanningPeriod, key)
+    if p is None:
+        raise HTTPException(404, "Introuvable")
+    if p.deleted_at is None:
+        raise HTTPException(409, detail={"code": "not_deleted", "message": f"Le planning de {_label(p)} n'est pas supprimé : rien à récupérer."})
+    return p
+
+
+def _rebuild(ctx: Ctx, old: m.PlanningPeriod) -> dict:
+    """Crée le nouveau planning et y replace les affectations archivées. À appeler dans une transaction (ou un point de sauvegarde)."""
+    from datetime import date, time
+    from ..limits import guard_monthly_cap, month_minutes
+    from planning_solver.timecalc import shift_hours
+    from .months import find_period
+    blocking = []
+    if find_period(ctx, old.start_date, old.end_date) is not None:
+        blocking.append(f"Le mois de {_label(old)} a déjà un planning actif : supprimez-le d'abord ou conservez-le. Rien n'a été modifié.")
+    archive = (old.deletion_archive or {}).get("assignments") or []
+    if not archive:
+        blocking.append("L'archive de ce planning ne contient aucune affectation : rien à récupérer.")
+    if blocking:
+        return {"blocking": blocking}
+    new = m.PlanningPeriod(tenant_id=ctx.tenant_id, name=old.name, start_date=old.start_date, end_date=old.end_date,
+                           frozen_params=old.frozen_params, frozen_at=old.frozen_at, frozen_source=old.frozen_source,
+                           budget_init=old.budget_init or {"legacy": True})  # budgets du mois : déjà rattachés au mois, jamais repréremplis
+    ctx.db.add(new)
+    ctx.db.flush()
+    for row in ctx.db.scalars(select(m.PeriodEmployee).where(m.PeriodEmployee.period_id == old.id)):  # effectif du mois tel qu'il était
+        ctx.db.add(m.PeriodEmployee(tenant_id=ctx.tenant_id, period_id=new.id, employee_id=row.employee_id, included=row.included, reason=row.reason))
+    for row in ctx.db.scalars(select(m.PeriodBrand).where(m.PeriodBrand.period_id == old.id)):
+        ctx.db.add(m.PeriodBrand(tenant_id=ctx.tenant_id, period_id=new.id, brand_code=row.brand_code, active=row.active))
+    for row in ctx.db.scalars(select(m.PeriodSite).where(m.PeriodSite.period_id == old.id)):  # sites activés ou non ce mois-là
+        ctx.db.add(m.PeriodSite(tenant_id=ctx.tenant_id, period_id=new.id, site_code=row.site_code, active=row.active))
+    emps_by_id = {str(e.id): e for e in ctx.db.scalars(select(m.Employee))}
+    emps_by_name = {e.name: e for e in emps_by_id.values()}
+    months = {(d.year, d.month) for d in (old.start_date, old.end_date)}
+    involved = {e.id for x in archive for e in [emps_by_id.get(x.get("employee_id") or "") or emps_by_name.get(x.get("employee"))] if e is not None}
+    before = month_minutes(ctx.db, involved, months)
+    restored, missing_emp, missing_shift = 0, [], []
+    for x in archive:
+        e = emps_by_id.get(x.get("employee_id") or "") or emps_by_name.get(x.get("employee"))
+        if e is None:  # collaborateur supprimé depuis : jamais remplacé par un autre
+            missing_emp.append({"day": x.get("day"), "start": x.get("start"), "end": x.get("end"), "site": x.get("site"), "employee": x.get("employee")})
+            continue
+        if not x.get("site") or not x.get("day"):
+            missing_shift.append(x.get("slot_key"))
+            continue
+        day, start, end = date.fromisoformat(x["day"]), time.fromisoformat(x["start"]), time.fromisoformat(x["end"])
+        h = shift_hours(day, start, end, x.get("break_minutes") or 0)
+        sh = m.Shift(tenant_id=ctx.tenant_id, period_id=new.id, slot_key=x["slot_key"], day=day, site_code=x["site"], start_time=start, end_time=end,
+                     break_minutes=x.get("break_minutes") or 0, presence_minutes=h.presence_minutes, effective_minutes=h.effective_minutes)
+        ctx.db.add(sh)
+        ctx.db.flush()
+        a = m.Assignment(tenant_id=ctx.tenant_id, period_id=new.id, shift_id=sh.id, employee_id=e.id, source=x.get("source") or "manual", locked=bool(x.get("locked")))
+        ctx.db.add(a)
+        ctx.db.flush()
+        ctx.db.add(m.Break(tenant_id=ctx.tenant_id, assignment_id=a.id, minutes=sh.break_minutes, paid=False))
+        for b, mi in (x.get("allocations") or {}).items():
+            ctx.db.add(m.BrandAllocation(tenant_id=ctx.tenant_id, assignment_id=a.id, brand_code=b, minutes=mi))
+        restored += 1
+    ctx.db.flush()
+    try:
+        guard_monthly_cap(ctx.db, ctx.tenant_id, before, involved, months)
+    except HTTPException as exc:  # plafond : récupération refusée en entier (le message nomme les collaborateurs concernés)
+        d = exc.detail if isinstance(exc.detail, dict) else {"message": str(exc.detail)}
+        return {"blocking": [d.get("message", "Plafond mensuel dépassé.")], "cap_issues": d.get("issues", [])}
+    from .. import regularize
+    from ..optimize import ensure_frozen
+    regularize.resolve(ctx.db, new.id)
+    ensure_frozen(ctx.db, new, "manual")
+    return {"blocking": [], "period": new, "restored": restored, "archived": len(archive), "missing_employees": missing_emp, "missing_shifts": missing_shift}
+
+
+def _recovery_view(old: m.PlanningPeriod, r: dict) -> dict:
+    counts = (old.deletion_archive or {}).get("counts") or {}
+    return {"period_id": str(old.id), "name": old.name, "label": _label(old), "deleted_at": old.deleted_at.isoformat() if old.deleted_at else None,
+            "deleted_by_name": old.deleted_by_name, "archived": len((old.deletion_archive or {}).get("assignments") or []), "archived_locked": counts.get("locked", 0),
+            "blocking": r["blocking"], "cap_issues": r.get("cap_issues", []), "can_recover": not r["blocking"],
+            "restorable": r.get("restored", 0), "missing_employees": r.get("missing_employees", []), "missing_shifts": len(r.get("missing_shifts", []))}
+
+
+@router.get("/periods/{pid}/recovery-preview")
+def recovery_preview(pid: str, ctx: Ctx = Depends(require("planning.delete"))):
+    """Essai à blanc : la récupération est calculée dans un point de sauvegarde puis annulée. Rien n'est modifié."""
+    old = _deleted_period(ctx, pid)
+    sp = ctx.db.begin_nested()
+    try:
+        r = _rebuild(ctx, old)
+        view = _recovery_view(old, r)
+    finally:
+        sp.rollback()
+    return view
+
+
+@router.post("/periods/{pid}/recover")
+def recover_period(pid: str, body: DeleteIn, ctx: Ctx = Depends(require("planning.delete"))):
+    if _failures(ctx) >= MAX_FAILURES:
+        raise HTTPException(429, detail={"code": "too_many_attempts", "message": "Trop de mots de passe incorrects : réessayez dans quelques minutes. Rien n'a été modifié."},
+                            headers={"Retry-After": str(WINDOW_S)})
+    if not ctx.user.password_hash:
+        raise HTTPException(409, detail={"code": "reauth_required", "message": "Ce compte se connecte par un fournisseur externe : reconnectez-vous auprès de lui pour confirmer. Rien n'a été modifié."})
+    if not verify_password(body.password, ctx.user.password_hash):
+        _record_failure(ctx)
+        raise HTTPException(403, detail={"code": "wrong_password", "message": "Mot de passe incorrect. Rien n'a été modifié."})
+    _clear_failures(ctx)
+    old = _deleted_period(ctx, pid)
+    # un seul planning actif par mois : verrou consultatif sur (entreprise, mois) contre deux récupérations simultanées
+    from sqlalchemy import text
+    ctx.db.execute(text("SELECT pg_advisory_xact_lock(hashtext(:k))"), {"k": f"recover:{ctx.tenant_id}:{old.start_date.isoformat()}"})
+    sp = ctx.db.begin_nested()  # tout ou rien : un refus (plafond, mois occupé) annule ce qui a été préparé
+    r = _rebuild(ctx, old)
+    if r["blocking"]:
+        sp.rollback()
+        raise HTTPException(409, detail={"code": "blocked", "message": " ".join(r["blocking"]), "cap_issues": r.get("cap_issues", [])})
+    sp.commit()
+    new = r["period"]
+    audit(ctx, "period.recovered", "period", new.id, {"period_id": str(new.id), "period": new.name, "month": new.start_date.strftime("%Y-%m"), "label": _label(new),
+                                                       "from_period_id": str(old.id), "deleted_at": old.deleted_at.isoformat() if old.deleted_at else None,
+                                                       "deleted_by_name": old.deleted_by_name, "by": {"id": str(ctx.user.id), "name": ctx.user.name},
+                                                       "restored": r["restored"], "archived": r["archived"], "missing_employees": len(r["missing_employees"]),
+                                                       "missing_shifts": len(r["missing_shifts"])})
+    ctx.db.flush()
+    return {"message": f"Le planning de {_label(new)} a été récupéré : {r['restored']} affectation(s) sur {r['archived']} replacée(s). Il n'est pas publié.",
+            "period_id": str(new.id), "restored": r["restored"], "archived": r["archived"], "missing_employees": r["missing_employees"]}
+
+
 __all__: Optional[list] = ["router"]

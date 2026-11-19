@@ -8,6 +8,7 @@ import { api } from "@/lib/api";
 import { brandColor } from "@/lib/brand";
 import { invalidate } from "@/lib/invalidate";
 import { monthLabel } from "@/lib/months";
+import { IntegrationModal, type Added } from "@/components/planning/IntegrationModal";
 
 type Animation = { id: string; code: string; brands: { code: string; name: string }[]; start: string; end: string; break_minutes: number; weekdays: number[]; headcount: number; mandatory: boolean; valid_from: string | null; valid_to: string | null; shared_schedule: boolean; hypothesis: boolean };
 type SiteRow = { code: string; name: string; archived: boolean; archived_from: string | null; animations: Animation[] };
@@ -27,6 +28,7 @@ export function SitesEditor({ month, canEdit }: { month: string; canEdit: boolea
   const cat = useApi<Catalog>(`/catalog?month=${month}`);
   const [siteName, setSiteName] = useState(""); const [brandName, setBrandName] = useState(""); const [brandGroup, setBrandGroup] = useState("");
   const [auth, setAuth] = useState<BrandRow | null>(null);
+  const [added, setAdded] = useState<Added | null>(null); // nouvelle marque : proposer son intégration aux plannings existants
   const groups = [...new Set((cat.data?.brands ?? []).map((b) => b.group_code).filter(Boolean))] as string[];
   const done = (msg: string) => { toast.push(msg, "ok"); cat.reload(); invalidate(); };
   async function run(f: () => Promise<unknown>, msg: string) { try { await f(); done(msg); } catch (e) { toast.push(err(e), "bad"); } }
@@ -43,7 +45,7 @@ export function SitesEditor({ month, canEdit }: { month: string; canEdit: boolea
             </form>
           </Card>
           <Card title="Ajouter une marque">
-            <form className="row" style={{ alignItems: "flex-end" }} onSubmit={(e) => { e.preventDefault(); if (brandName.trim()) void run(() => api("/catalog/brands", { method: "POST", json: { name: brandName.trim(), group_code: brandGroup || null } }), `Marque « ${brandName.trim()} » créée.`).then(() => setBrandName("")); }}>
+            <form className="row" style={{ alignItems: "flex-end" }} onSubmit={(e) => { e.preventDefault(); if (brandName.trim()) void run(async () => { const b = await api<{ code: string; name: string }>("/catalog/brands", { method: "POST", json: { name: brandName.trim(), group_code: brandGroup || null } }); setAdded({ kind: "brand", code: b.code, name: b.name }); }, `Marque « ${brandName.trim()} » créée.`).then(() => setBrandName("")); }}>
               <Field label="Nom de la marque (ou marque + boutique)">{(p) => <Input {...p} value={brandName} onChange={(e) => setBrandName(e.target.value)} placeholder="ex. Ploom GVA7" />}</Field>
               <Field label="Groupe">{(p) => <Select {...p} value={brandGroup} onChange={(e) => setBrandGroup(e.target.value)}><option value="">Aucun</option>{groups.map((g) => <option key={g} value={g}>{g}</option>)}</Select>}</Field>
               <Button type="submit" variant="primary" icon="plus" disabled={!brandName.trim()}>Ajouter la marque</Button>
@@ -74,6 +76,7 @@ export function SitesEditor({ month, canEdit }: { month: string; canEdit: boolea
           </Card>
         </>
       )}
+      <IntegrationModal added={added} onClose={() => setAdded(null)} />
       <AuthorizeModal brand={auth} onClose={() => setAuth(null)} onDone={(n) => { setAuth(null); done(`${n} collaborateur(s) autorisé(s).`); }} />
     </div>
   );

@@ -33,11 +33,13 @@ KIND_OF = {
     "assignment.lock": "lock", "assignment.unlock": "lock",
     "optimization.finished": "generation", "simulation.applied": "generation",
     "version.restore": "restore", "version.publish": "publish", "version.create": "version", "version.validate": "version",
-    "period.deleted": "deletion",
+    "period.deleted": "deletion", "period.recovered": "deletion",
+    "integration.chosen": "integration", "shift.placed": "integration",
 }
 KIND_LABEL = {"add": "Ajout", "remove": "Suppression", "replace": "Remplacement", "swap": "Échange", "bulk": "Modification groupée",
               "hours": "Changement d'horaires", "lock": "Verrouillage", "generation": "Génération", "restore": "Restauration",
-              "publish": "Publication", "version": "Version", "deletion": "Suppression d'un planning"}
+              "publish": "Publication", "version": "Version", "deletion": "Suppression d'un planning",
+              "integration": "Intégration d'un ajout"}
 GROUPED = {"assignment.bulk_transfer", "assignment.duplicate", "assignment.mission_release"}  # une opération = plusieurs lignes du journal
 
 
@@ -135,6 +137,25 @@ def _render(r: m.AuditLog, d: dict) -> dict:
                  f"Supprimé par {by.get('name') or NOT_RECORDED} (compte {by.get('id') or NOT_RECORDED})",
                  f"Conservé pour la traçabilité : archive des affectations, {v.get('total', 0)} version(s) et l'historique"]
         return {"title": "Suppression d'un planning", "lines": lines}
+    if a == "integration.chosen":
+        what = "la marque" if d.get("kind") == "brand" else "le collaborateur"
+        lines = [f"Choix : {d.get('choice_label') or '—'}"]
+        if d.get("roster_added"):
+            lines.append(f"{d.get('name') or '—'} ajouté·e à l'effectif de ce mois uniquement")
+        lines.append("Nouvelle génération lancée ; le planning initial est conservé en version" if d.get("choice") == "recalculate"
+                     else "Affectations actuelles conservées ; aucune affectation créée automatiquement")
+        return {"title": f"Intégration de {what} {d.get('name') or '—'} au planning de {d.get('label') or d.get('period') or '—'}", "lines": lines}
+    if a == "shift.placed":
+        return {"title": f"Shift placé sans collaborateur{_where(d)}", "lines": [f"{_day(d.get('day')) or '—'}, {hours}, à attribuer"],
+                "shift_days": [d["day"]] if d.get("day") else []}
+    if a == "period.recovered":
+        by = d.get("by") or {}
+        lines = [f"Planning de {d.get('label') or d.get('period') or '—'} récupéré depuis l'archive du planning supprimé : {d.get('restored', 0)} affectation(s) sur {d.get('archived', 0)} replacée(s)",
+                 f"Récupéré par {by.get('name') or NOT_RECORDED} (compte {by.get('id') or NOT_RECORDED})",
+                 "Le planning supprimé, son archive et la trace de sa suppression restent inchangés ; rien n'a été publié"]
+        if d.get("missing_employees"):
+            lines.append(f"{d['missing_employees']} affectation(s) non replacée(s) : collaborateur introuvable")
+        return {"title": "Récupération d'un planning supprimé", "lines": lines}
     if a == "version.create":
         return {"title": f"Version n° {d.get('number', '—')} enregistrée", "lines": [d["label"]] if d.get("label") else []}
     return {"title": f"Version n° {d.get('number', '—')} validée", "lines": []}
@@ -253,7 +274,7 @@ def history(ctx: Ctx = CtxDep, period_id: Optional[str] = None, employee_id: Opt
         else:
             title, lines = g["part"]["title"], g["part"]["lines"]
         items.append({
-            "id": g["id"], "at": g["at"].isoformat(), "at_label": _when(g["at"], tz, now), "kind": g["kind"], "kind_label": KIND_LABEL[g["kind"]],
+            "id": g["id"], "at": g["at"].isoformat(), "at_label": _when(g["at"], tz, now), "kind": g["kind"], "kind_label": KIND_LABEL[g["kind"]], "action": g["action"],
             "title": title, "lines": lines, "by": users.get(g["author"], NOT_RECORDED) if g["author"] else NOT_RECORDED,
             "period_id": g["pid"], "period": periods.get(g["pid"]) if g["pid"] else None,
             "shift_days": days, "shift_day_label": (_day(days[0]) if len(days) == 1 else f"du {_day(days[0])} au {_day(days[-1])}") if days else None,

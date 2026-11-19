@@ -125,6 +125,13 @@ test("2-5. janvier 2027 : effectif (Zaki décoché), exception de jours, indispo
     await expect(card).toBeVisible();
     await ed.getByLabel("Nom de la marque (ou marque + boutique)").fill(BRAND); await ed.getByRole("button", { name: "Ajouter la marque" }).click();
     await expect(ed.getByRole("cell", { name: BRAND }).first()).toBeVisible();
+    // nouvelle marque : si un planning existant est concerné, la fenêtre d'intégration le propose ; ici, « Décider plus tard » (rien n'est modifié)
+    const integ = page.getByTestId("integration-modal");
+    const code = ((await getJson(page, "/catalog")) as { brands: { code: string; name: string }[] }).brands.find((b) => b.name === BRAND)!.code;
+    if (((await getJson(page, `/integrations/candidates?brand_code=${encodeURIComponent(code)}`)) as { periods: unknown[] }).periods.length) {
+      await integ.getByRole("button", { name: "Décider plus tard" }).click();
+      await expect(integ).toBeHidden();
+    }
     await card.getByRole("button", { name: "Ajouter une animation" }).click();
     const form = card.getByRole("form", { name: `Nouvelle animation — ${SITE}` });
     await form.getByLabel("Marque").selectOption(BRAND);

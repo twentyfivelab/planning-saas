@@ -286,6 +286,8 @@ function BrandLine({ b, canEdit, onPut, onDraft }: { b: BrandRow; canEdit: boole
     clearTimeout(timer.current); timer.current = setTimeout(() => commit(v), 700);
   };
   const base = b.base_minutes ?? null;
+  const [confirmBase, setConfirmBase] = useState(false);
+  const toBase = () => { if (base === null) return; clearTimeout(timer.current); setConfirmBase(false); onDraft(base); void onPut({ budget_minutes: base }); };
   return (
     <tr data-active={b.active}>
       <td><input type="checkbox" aria-label={`${b.name} active ce mois`} checked={b.active} disabled={!canEdit} onChange={(e) => onPut({ active: e.target.checked })} /></td>
@@ -299,7 +301,14 @@ function BrandLine({ b, canEdit, onPut, onDraft }: { b: BrandRow; canEdit: boole
           </Select>
         </div>
         {base !== null ? (
-          <span className="help" data-testid={`base-${b.code}`}>{b.budget_minutes === base ? <>Budget de base : {fmtHM(base)}</> : <>Ajusté pour ce mois · budget de base : {fmtHM(base)}{canEdit && <> · <button type="button" className="link-btn" onClick={() => { onDraft(base); void onPut({ budget_minutes: base }); }}>Revenir au budget de base</button></>}</>}</span>
+          <span className="help" data-testid={`base-${b.code}`}>{b.budget_minutes === base ? <>Budget de base : {fmtHM(base)}</> : <>Ajusté pour ce mois · budget de base : {fmtHM(base)}{canEdit && <> · <button type="button" className="link-btn" onClick={() => setConfirmBase(true)}>Revenir au budget de base</button></>}</>}
+            <Modal open={confirmBase} onClose={() => setConfirmBase(false)} variant="confirm" title={`Revenir au budget de base pour ${b.name} ?`}
+              description="Seul le budget de ce mois change ; le budget de base, les autres mois et les plannings existants restent inchangés.">
+              <div className="stack" data-testid={`base-confirm-${b.code}`}>
+                <p>Le budget de ce mois passera de <strong>{b.budget_minutes === null ? "aucun budget" : fmtHM(b.budget_minutes)}</strong> à <strong>{fmtHM(base)}</strong> (budget de base de {b.name}).</p>
+                <div className="row modal-actions"><Button onClick={() => setConfirmBase(false)}>Annuler</Button><Button variant="primary" onClick={toBase}>Remplacer par {fmtHM(base)}</Button></div>
+              </div>
+            </Modal></span>
         ) : b.budget_minutes === null && !b.archived ? (
           <span className="help warn-text" data-testid={`base-${b.code}`}>Aucun budget de base pour {b.name} : renseignez-le dans « Sites et marques », ou saisissez le budget de ce mois.</span>
         ) : null}

@@ -68,3 +68,23 @@ def test_champ_vide_jamais_rerempli_et_plannings_existants_preserves(t):
     hist = o.get("/history").json()  # la nouvelle base n'est pas un « changement de planning »
     assert hist["items"] is not None
     assert o.patch("/catalog/brands/Nuxe", json={"clear_base_budget": True}).json()["base_budget_minutes"] is None
+
+
+def test_budget_ajuste_conserve_apres_suppression_et_recreation_du_planning(t):
+    """96 h saisies pour décembre (base 88 h) : supprimer puis recréer le planning de décembre reprend 96 h (le budget appartient au mois)."""
+    from tests.conftest import PW
+    o = t["o"]
+    dec = o.post("/periods/ensure", json={"year": 2026, "month": 12}).json()["id"]
+    assert o.put(f"/periods/{dec}/brands/Nuxe", json={"budget_minutes": 96 * 60}).status_code == 200
+    assert o.post(f"/periods/{dec}/runs", json={"time_limit_s": 8}, headers={"Idempotency-Key": uuid.uuid4().hex}).status_code == 202
+    assert o.post(f"/periods/{dec}/delete", json={"password": PW}).status_code == 200
+    new = o.post("/periods/ensure", json={"year": 2026, "month": 12}).json()
+    assert new["created"] is True and new["id"] != dec
+    b = brands(o, new["id"])
+    assert b["Nuxe"]["budget_minutes"] == 96 * 60 and b["Nuxe"]["base_minutes"] == 88 * 60  # ajustement repris, jamais remplacé par la base
+    assert b["Alpha"]["budget_minutes"] is None
+    r = o.post(f"/periods/{new['id']}/runs", json={"time_limit_s": 8}, headers={"Idempotency-Key": uuid.uuid4().hex})
+    rep = o.get(f"/runs/{r.json()['run_id']}/diagnostic").json()["report"]
+    assert next(x for x in rep["budgets"] if x["brand"] == "Nuxe")["target_minutes"] == 96 * 60
+    # un mois jamais saisi reçoit toujours la base
+    assert brands(o, o.post("/periods/ensure", json={"year": 2027, "month": 3}).json()["id"])["Nuxe"]["budget_minutes"] == 88 * 60

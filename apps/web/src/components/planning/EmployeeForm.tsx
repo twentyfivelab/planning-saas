@@ -59,7 +59,7 @@ function DupBox({ dup, onConfirm, onRestore, busy }: { dup: Dup; onConfirm: () =
 
 /** Fiche d'ajout complète, à monter à chaque ouverture (`{open && <EmployeeAddModal open … />}`). Après un enregistrement réussi,
  *  seul le message de confirmation du serveur est affiché. */
-export function EmployeeAddModal({ open, onClose, onAdded, capLabel }: { open: boolean; onClose: () => void; onAdded: (message: string) => void; capLabel?: string | null }) {
+export function EmployeeAddModal({ open, onClose, onAdded, capLabel }: { open: boolean; onClose: () => void; onAdded: (message: string, created?: { id: string; name: string }) => void; capLabel?: string | null }) {
   const brands = useApi<(BrandRow & { archived_from?: string | null })[]>(open ? "/brands" : null);
   const sites = useApi<Site[]>(open ? "/sites" : null);
   const [id, setId] = useState<IdentityData>(EMPTY);
@@ -91,8 +91,8 @@ export function EmployeeAddModal({ open, onClose, onAdded, capLabel }: { open: b
         brands: chosen, sites: siteSel, available_weekdays: avail, unavailable_weekdays: unavail, unavailable_dates: dates,
         time_pref: pref, time_pref_strict: !!pref && strict, min_days_month: minD, max_days_month: maxD, confirm_duplicate: confirm,
       };
-      const r = await api<{ message: string }>("/employees/onboard", { method: "POST", json: body });
-      onAdded(r.message);
+      const r = await api<{ message: string; id: string; name: string }>("/employees/onboard", { method: "POST", json: body });
+      onAdded(r.message, { id: r.id, name: r.name });
     } catch (e) {
       if (e instanceof ApiError && e.status === 409 && typeof e.detail === "object" && (e.detail as { code?: string })?.code === "duplicate") setDup(e.detail as Dup);
       else setErr(errText(e));

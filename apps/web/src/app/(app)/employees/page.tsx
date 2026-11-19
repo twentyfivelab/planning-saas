@@ -15,6 +15,7 @@ import { t } from "@/lib/i18n";
 import { errText, parseRate, rateInput } from "@/lib/wfm";
 import { EmployeeAddModal, EmployeeIdentityModal } from "@/components/planning/EmployeeForm";
 import { EmployeeMonthModal } from "@/components/planning/EmployeeMonth";
+import { IntegrationModal, type Added } from "@/components/planning/IntegrationModal";
 import { invalidate } from "@/lib/invalidate";
 
 type Deleted = { id: string; name: string; removed_on: string | null; deleted_at: string };
@@ -37,6 +38,8 @@ export default function Employees() {
   const all = useApi<Deleted[]>(canWrite ? "/employees?include_deleted=true" : null);
   const deleted = (all.data ?? []).filter((e) => e.deleted_at);
   const [adding, setAdding] = useState(false);
+  const [added, setAdded] = useState<Added | null>(null); // nouveau collaborateur : proposer son intégration aux plannings existants
+  const canPlan = me.permissions.includes("planning.edit");
   const [empMonth, setEmpMonth] = useState<{ id: string; name: string } | null>(null);
   const [identity, setIdentity] = useState<string | null>(null);
   const [del, setDel] = useState<Emp | null>(null); const [preview, setPreview] = useState<Preview | null>(null); const [busy, setBusy] = useState(false);
@@ -99,7 +102,8 @@ export default function Employees() {
       )}
       {sheetCtl.element}
       {empMonth && <EmployeeMonthModal employee={empMonth} onClose={() => setEmpMonth(null)} />}
-      {adding && <EmployeeAddModal open capLabel={sheetCtl.cap.data?.label ?? null} onClose={() => setAdding(false)} onAdded={(msg) => { setAdding(false); toast.push(msg, "ok"); refreshAll(); }} />}
+      {adding && <EmployeeAddModal open capLabel={sheetCtl.cap.data?.label ?? null} onClose={() => setAdding(false)} onAdded={(msg, created) => { setAdding(false); toast.push(msg, "ok"); refreshAll(); if (created && canPlan) setAdded({ kind: "employee", ...created }); }} />}
+      <IntegrationModal added={added} onClose={() => setAdded(null)} />
       <EmployeeIdentityModal employeeId={identity} onClose={() => setIdentity(null)} onSaved={() => { setIdentity(null); toast.push("Identité enregistrée.", "ok"); refreshAll(); }} />
       <Modal open={!!del} onClose={() => !busy && setDel(null)} title={`Êtes-vous sûr de vouloir supprimer le collaborateur ${del?.name ?? ""} ?`} variant="confirm" hideClose>
         <div className="stack">

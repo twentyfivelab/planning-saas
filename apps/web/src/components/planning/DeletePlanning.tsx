@@ -71,3 +71,64 @@ export function DeletePlanningModal({ periodId, open, onClose, onDeleted }: { pe
     </Modal>
   );
 }
+
+type RecoveryPreview = { period_id: string; name: string; label: string; deleted_at: string | null; deleted_by_name: string | null; archived: number; archived_locked: number;
+  blocking: string[]; can_recover: boolean; restorable: number; missing_employees: { day: string; start: string; end: string; site: string; employee: string }[]; missing_shifts: number };
+
+/** Récupération contrôlée d'un planning supprimé : essai à blanc (rien n'est modifié), puis confirmation par mot de passe. Un NOUVEAU
+ *  planning est créé pour ce mois à partir de l'archive ; le planning supprimé et la trace de sa suppression restent inchangés. */
+export function RecoverPlanningModal({ periodId, open, onClose, onRecovered }: { periodId: string; open: boolean; onClose: () => void; onRecovered: (message: string, newId: string) => void }) {
+  const toast = useToast();
+  const [pv, setPv] = useState<RecoveryPreview | null>(null); const [loadErr, setLoadErr] = useState("");
+  const [pw, setPw] = useState(""); const [busy, setBusy] = useState(false); const [err, setErr] = useState("");
+  useEffect(() => {
+    if (!open) { setPw(""); setErr(""); setPv(null); return; }
+    setLoadErr("");
+    api<RecoveryPreview>(`/periods/${periodId}/recovery-preview`).then(setPv).catch((e) => setLoadErr(errText(e)));
+  }, [open, periodId]);
+  const close = () => { if (!busy) { setPw(""); setErr(""); onClose(); } };
+  async function confirm() {
+    if (busy || !pw) return;
+    setBusy(true); setErr("");
+    const secret = pw; setPw("");
+    try {
+      const r = await api<{ message: string; period_id: string }>(`/periods/${periodId}/recover`, { method: "POST", json: { password: secret } });
+      invalidate(); toast.push(r.message, "ok"); onRecovered(r.message, r.period_id);
+    } catch (e) {
+      const d = e instanceof ApiError ? (e.detail as { message?: string } | undefined) : undefined;
+      setErr(d?.message ?? errText(e));
+    } finally { setBusy(false); }
+  }
+  return (
+    <Modal open={open} onClose={close} title={pv ? `Récupérer le planning de ${pv.label} ?` : "Récupérer ce planning ?"}
+      description="Un nouveau planning est créé pour ce mois à partir de l'archive. Le planning supprimé, son archive et l'historique restent inchangés ; aucun autre mois n'est modifié et rien n'est publié.">
+      <div className="stack" data-testid="recover-planning">
+        {loadErr && <Callout kind="bad" title="Aperçu indisponible">{loadErr}</Callout>}
+        {!pv && !loadErr && <div className="skeleton" style={{ height: "6rem" }} aria-hidden="true" />}
+        {pv && <>
+          <dl className="facts" data-testid="recover-summary">
+            <div><dt>Supprimé</dt><dd>{pv.deleted_at ? new Date(pv.deleted_at).toLocaleString("fr-CH") : "—"}{pv.deleted_by_name ? ` par ${pv.deleted_by_name}` : ""}</dd></div>
+            <div><dt>Affectations archivées</dt><dd className="num">{pv.archived}{pv.archived_locked ? ` (dont ${pv.archived_locked} verrouillée(s))` : ""}</dd></div>
+            {pv.can_recover && <div><dt>Replacées</dt><dd className="num">{pv.restorable}</dd></div>}
+          </dl>
+          {pv.missing_employees.length > 0 && <Callout kind="warn" title={`${pv.missing_employees.length} affectation(s) ne seront pas replacées`}>
+            Collaborateur introuvable (supprimé depuis) : {pv.missing_employees.slice(0, 5).map((x) => `${x.employee} le ${x.day} ${x.start}–${x.end}`).join(" · ")}{pv.missing_employees.length > 5 ? " …" : ""}. Aucun autre collaborateur n&apos;est affecté à sa place.</Callout>}
+          {pv.blocking.length > 0 ? <>
+            <Callout kind="bad" title="Récupération impossible">{pv.blocking.map((b) => <p key={b} style={{ margin: 0 }}>{b}</p>)}</Callout>
+            <div className="row modal-actions"><Button onClick={close}>Fermer</Button></div>
+          </> : (
+            <form className="stack" onSubmit={(e) => { e.preventDefault(); void confirm(); }}>
+              <Field label="Mot de passe de votre compte" help="Vérifié par le serveur, jamais enregistré.">{(p) => (
+                <Input {...p} type="password" autoComplete="current-password" value={pw} disabled={busy} onChange={(e) => { setPw(e.target.value); setErr(""); }} />)}</Field>
+              {err && <Callout kind="bad" title="Récupération non effectuée"><span data-testid="recover-error">{err}</span></Callout>}
+              <div className="row modal-actions">
+                <Button type="button" onClick={close} disabled={busy}>Annuler</Button>
+                <Button type="submit" variant="primary" disabled={busy || !pw} aria-busy={busy}>{busy ? "Récupération…" : "Confirmer la récupération"}</Button>
+              </div>
+            </form>
+          )}
+        </>}
+      </div>
+    </Modal>
+  );
+}

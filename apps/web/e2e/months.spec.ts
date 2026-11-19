@@ -174,10 +174,12 @@ test("E. pondérations : curseur + saisie, enregistrement automatique, persistan
   await page.getByTestId("weight-fairness").getByRole("slider").fill("100"); // curseur
   await expect.poll(async () => (await weights()).criteria.find((c) => c.key === "fairness")!.value).toBe(100);
   // le solveur reçoit les poids enregistrés
-  const nov = (await periodOf(page, "2026-11"))!;
   const token = await csrf(page);
-  // nouvelles pondérations appliquées à novembre : choix explicite (sinon le planning garde les pondérations de sa génération)
-  await page.request.post(`${API}/periods/${nov.id}/reoptimize`, { headers: { "X-CSRF-Token": token, "Idempotency-Key": `w-${Date.now()}` }, data: { time_limit_s: 20, params: "current" } });
+  // mois DÉDIÉ (juillet 2027), généré avec les pondérations actuelles puis supprimé : novembre, utilisé par les autres scénarios, n'est
+  // plus recalculé ici (dépendance entre tests identifiée : son recalcul changeait les affectations attendues ailleurs)
+  const dedicated = (await (await page.request.post(`${API}/periods/ensure`, { headers: { "X-CSRF-Token": token }, data: { year: 2027, month: 7 } })).json()).id as string;
+  try {
+  await page.request.post(`${API}/periods/${dedicated}/runs`, { headers: { "X-CSRF-Token": token, "Idempotency-Key": `w-${Date.now()}` }, data: { time_limit_s: 20 } });
   await expect.poll(async () => (await j(page, "/runs"))[0].status, { timeout: 60_000 }).toBe("termine");
   const run = (await j(page, "/runs"))[0];
   const rep = (await j(page, `/runs/${run.id}/diagnostic`)).report;
@@ -189,4 +191,7 @@ test("E. pondérations : curseur + saisie, enregistrement automatique, persistan
   await page.getByRole("dialog").getByRole("button", { name: "Réinitialiser", exact: true }).click();
   await expect.poll(async () => (await weights()).customised).toBe(false);
   await expect(page.getByTestId("weight-family").getByRole("spinbutton")).toHaveValue("90");
+  } finally {
+    await page.request.post(`${API}/periods/${dedicated}/delete`, { headers: { "X-CSRF-Token": token }, data: { password: process.env.E2E_PASSWORD } });
+  }
 });

@@ -37,6 +37,20 @@ test("88 h préremplies, ajustées à 96 h, conservées après actualisation ; a
     await page.getByRole("list", { name: "Étapes de création" }).getByRole("button", { name: /Marques et sites$/ }).click();
     await expect(page.getByLabel("Budget Nuxe (heures)")).toHaveValue("96"); // jamais réécrasé par le préremplissage
     await expect(page.getByTestId("base-Nuxe")).toContainText("Ajusté pour ce mois · budget de base : 88 h");
+    // « Revenir au budget de base » : confirmation avant de remplacer la valeur modifiée ; « Annuler » ne change rien
+    await page.getByRole("button", { name: "Revenir au budget de base" }).click();
+    const dlg = page.getByRole("dialog");
+    await expect(dlg).toContainText("Revenir au budget de base pour Nuxe ?");
+    await expect(dlg).toContainText("passera de 96 h à 88 h");
+    await dlg.getByRole("button", { name: "Annuler" }).click();
+    await expect(dlg).toBeHidden();
+    await expect(page.getByLabel("Budget Nuxe (heures)")).toHaveValue("96");
+    expect(((await j(page, `/periods/${pid}/brands`)) as B[]).find((b) => b.code === "Nuxe")!.budget_minutes).toBe(96 * 60);
+    await page.getByRole("button", { name: "Revenir au budget de base" }).click();
+    await page.getByRole("dialog").getByRole("button", { name: "Remplacer par 88 h" }).click();
+    await expect(page.getByLabel("Budget Nuxe (heures)")).toHaveValue("88");
+    await expect.poll(async () => ((await j(page, `/periods/${pid}/brands`)) as B[]).find((b) => b.code === "Nuxe")!.budget_minutes).toBe(88 * 60);
+    await expect(page.getByTestId("base-Nuxe")).toHaveText("Budget de base : 88 h");
     // autres mois et budget de base inchangés
     expect(((await j(page, `/periods/${nov}/brands`)) as B[]).map((b) => [b.code, b.budget_minutes])).toEqual(novBefore);
     expect(((await j(page, "/catalog")) as { brands: { code: string; base_budget_minutes: number | null }[] }).brands.find((b) => b.code === "Nuxe")!.base_budget_minutes).toBe(88 * 60);

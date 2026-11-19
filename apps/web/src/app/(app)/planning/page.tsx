@@ -12,6 +12,7 @@ import { SundayStrip } from "@/components/planning/SundayCounter";
 import { CompatBanner } from "@/components/planning/CompatBanner";
 import { AddShiftModal } from "@/components/planning/AddShiftModal";
 import { DayShiftsModal, RemoveDialog } from "@/components/planning/DayShiftsModal";
+import { IntegrationTracker } from "@/components/planning/IntegrationTracker";
 import { DuplicateModal, SwapModal } from "@/components/planning/SwapDuplicate";
 import { DeletePlanningModal } from "@/components/planning/DeletePlanning";
 import { EmployeeMonthModal } from "@/components/planning/EmployeeMonth";
@@ -195,6 +196,8 @@ export default function PlanningPage() {
 
       {archived && <Callout kind="info" title={`${period!.name} est archivé`}>Ce planning reste consultable (planning général, plannings individuels, historique, versions) mais n&apos;est plus modifiable. Désarchivez-le pour le modifier.</Callout>}
       {period && all.length > 0 && !archived && <CompatBanner periodId={period.id} periodName={period.name} />}
+      {period && <IntegrationTracker periodId={period.id} stamp={sched.data} emps={emps.data ?? []} canEdit={canEdit}
+        onPick={(emp, day) => { const e = (emps.data ?? []).find((x) => x.id === emp.id); if (e) setPicking({ emp: e, day }); }} onChanged={refresh} />}
       {(confl.data?.hard_violations.length ?? 0) > 0 && (
         <Callout kind="warn" title={`${confl.data!.hard_violations.length} conflit(s) de contraintes dures`}>
           Les cartes concernées sont entourées en orange. <a href="/alerts" style={{ textDecoration: "underline" }}>Voir le détail</a>

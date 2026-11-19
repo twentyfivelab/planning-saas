@@ -362,6 +362,21 @@ class PlanningPeriod(TenantOwned, Base):
     budget_init: Mapped[Any] = mapped_column(JSONB, nullable=True)
 
 
+class PeriodIntegration(TenantOwned, Base):
+    """Intégration d'un ajout (nouvelle marque ou nouveau collaborateur) au planning existant d'un mois : choix fait (recalcul complet ou
+    saisie manuelle), par qui. Le suivi de couverture d'une marque en saisie manuelle est calculé en direct à partir de cette ligne :
+    il reste affiché après actualisation et reconnexion, jusqu'à ce qu'il soit masqué explicitement."""
+    __tablename__ = "period_integrations"
+    period_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("planning_periods.id", ondelete="CASCADE"), index=True)
+    kind: Mapped[str] = mapped_column(String(16))  # brand | employee
+    brand_code: Mapped[Optional[str]] = mapped_column(String(64))
+    employee_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("employees.id", ondelete="CASCADE"))
+    choice: Mapped[str] = mapped_column(String(16))  # recalculate | manual
+    run_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True))
+    chosen_by: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True))
+    dismissed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+
+
 class PeriodEmployee(TenantOwned, Base):
     """Effectif du mois : un collaborateur décoché est exclu de CE mois uniquement (fiche, historique et autres mois intacts)."""
     __tablename__ = "period_employees"

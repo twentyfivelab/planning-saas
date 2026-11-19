@@ -47,6 +47,14 @@ def ensure_frozen(db, period, source: str = "manual") -> None:
         freeze_period(db, period, source)
 
 
+def _version_label(run, when: str) -> str:
+    """Nom des versions d'une génération ; une génération lancée pour intégrer un ajout le dit (versions identifiables et comparables)."""
+    it = (run.config or {}).get("integration") or {}
+    if it.get("name"):
+        return f"Avant intégration de {it['name']}" if when == "before" else f"Planning recalculé avec {it['name']}"
+    return "Avant génération" if when == "before" else "Planning généré"
+
+
 def enqueue(tenant_id: str, run_id: str) -> None:
     if settings.opt_execution == "inline":
         run_optimization(tenant_id, run_id)
@@ -306,7 +314,7 @@ def run_optimization(tenant_id: str, run_id: str) -> None:
                 try:
                     with db.begin_nested():  # enregistrement et vérification du planning enregistré : tout ou rien
                         if prev:  # le planning remplacé reste récupérable
-                            make_version(db, run.tenant_id, period.id, "Avant génération", "safety", run.requested_by)
+                            make_version(db, run.tenant_id, period.id, _version_label(run, "before"), "safety", run.requested_by)
                         persist_result(db, run.tenant_id, period, inp, res, run.id)
                         db.flush()
                         from . import regularize
@@ -315,7 +323,7 @@ def run_optimization(tenant_id: str, run_id: str) -> None:
                         verification["after_save"] = saved
                         if saved["violations"]:
                             raise PlanRejected(saved["violations"])
-                        v_after = make_version(db, run.tenant_id, period.id, "Planning généré", "generated", run.requested_by, run_id=run.id)
+                        v_after = make_version(db, run.tenant_id, period.id, _version_label(run, "after"), "generated", run.requested_by, run_id=run.id)
                         n_after = db.scalar(select(func.count()).select_from(m.Assignment).where(m.Assignment.period_id == period.id)) or 0
                         n_locked = db.scalar(select(func.count()).select_from(m.Assignment).where(m.Assignment.period_id == period.id, m.Assignment.locked.is_(True))) or 0
                         report["save"] = {"outcome": "replaced", "reason_code": "saved", "reason": "Nouveau planning vérifié puis enregistré.",

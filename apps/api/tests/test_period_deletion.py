@@ -203,3 +203,65 @@ def test_brouillon_jamais_genere_supprime_avec_trace_et_recreable(t):
     assert "(brouillon) supprimé : 0 affectation(s)" in ev["lines"][0] and me["id"] in ev["lines"][1] and ev["at_label"]
     again = o.post("/periods/ensure", json={"year": 2027, "month": 1}).json()  # recréation volontaire : identité distincte
     assert again["created"] is True and again["id"] != draft["id"]
+
+
+def _rows(o, pid):
+    return sorted((a["day"], a["start"], a["end"], a["site"], a["employee_id"], bool(a["locked"])) for a in sched(o, pid).json()["assignments"])
+
+
+def test_recuperation_controlee_depuis_l_archive(t):
+    """Récupération d'un planning supprimé : essai à blanc sans effet, mêmes droits et même mot de passe que la suppression ; un NOUVEAU
+    planning reprend les affectations archivées ; le planning supprimé, son archive et la trace restent inchangés ; aucun autre mois touché."""
+    o, pids, dom = t["o"], t["pids"], t["dom"]
+    pid = pids[11]
+    assert o.post("/catalog/sites", json={"code": "GARE", "name": "Gare"}).status_code == 201
+    assert o.put(f"/periods/{pid}/sites/GARE", json={"active": False}).status_code == 200  # réglage propre au mois, repris à l'identique
+    first = sched(o, pid).json()["assignments"][0]
+    assert o.post(f"/assignments/{first['assignment_id']}/lock").status_code in (200, 204)  # une affectation verrouillée reste verrouillée
+    before = _rows(o, pid)
+    oct_before = _rows(o, pids[10])
+    assert o.post(f"/periods/{pid}/delete", json={"password": PW}).status_code == 200
+    from app.db import tenant_session
+    from app import models as m
+    tid = o.get("/auth/me").json()["tenant_id"]
+    with tenant_session(tid) as db:
+        archive_before = db.get(m.PlanningPeriod, uuid.UUID(pid)).deletion_archive
+    periods_before = o.get("/periods").json()
+    hist_before = [i["id"] for i in o.get("/history", params={"limit": 200}).json()["items"]]
+    # essai à blanc : rien n'est créé, rien n'est journalisé
+    pv = o.get(f"/periods/{pid}/recovery-preview").json()
+    assert pv["can_recover"] is True and pv["archived"] == len(before) == pv["restorable"] and pv["archived_locked"] == 1 and pv["missing_employees"] == []
+    assert o.get("/periods").json() == periods_before
+    assert [i["id"] for i in o.get("/history", params={"limit": 200}).json()["items"]] == hist_before
+    # mêmes protections que la suppression
+    for role in ("manager", "planner"):
+        assert o.post("/users", json={"email": f"{role}@{dom}", "name": role.capitalize(), "role": role, "password": PW}).status_code == 201
+        c = login(f"{role}@{dom}")
+        assert c.get(f"/periods/{pid}/recovery-preview").status_code == 403 and c.post(f"/periods/{pid}/recover", json={"password": PW}).status_code == 403
+    bad = o.post(f"/periods/{pid}/recover", json={"password": "pas-le-bon"})
+    assert bad.status_code == 403 and bad.json()["detail"]["code"] == "wrong_password" and o.get("/periods").json() == periods_before
+    assert o.post(f"/periods/{pids[10]}/recover", json={"password": PW}).json()["detail"]["code"] == "not_deleted"
+    # récupération
+    r = o.post(f"/periods/{pid}/recover", json={"password": PW})
+    assert r.status_code == 200, r.text
+    new = r.json()["period_id"]
+    assert new != pid and r.json()["restored"] == len(before)
+    assert _rows(o, new) == before  # mêmes jours, horaires, sites, collaborateurs et verrous
+    with tenant_session(tid) as db:
+        assert [(x.site_code, x.active) for x in db.query(m.PeriodSite).filter(m.PeriodSite.period_id == uuid.UUID(new))] == [("GARE", False)]
+    assert _rows(o, pids[10]) == oct_before  # autre mois intact
+    assert [p["id"] for p in o.get("/periods").json() if p["start_date"] == "2026-11-01"] == [new]
+    assert not any(v["state"] == "published" for v in o.get(f"/periods/{new}/versions").json())  # rien n'est publié
+    # l'ancien reste supprimé, son archive et sa trace inchangées
+    assert sched(o, pid).status_code == 404
+    with tenant_session(tid) as db:
+        old = db.get(m.PlanningPeriod, uuid.UUID(pid))
+        assert old.deleted_at is not None and old.deletion_archive == archive_before
+    ev = o.get("/history", params={"kind": "deletion"}).json()["items"]
+    assert [e["action"] for e in ev] == ["period.recovered", "period.deleted"]
+    assert ev[0]["title"] == "Récupération d'un planning supprimé" and f"{len(before)} affectation(s) sur {len(before)}" in ev[0]["lines"][0] and ev[0]["period_id"] == new
+    # une seconde récupération est refusée : le mois a déjà un planning actif
+    again = o.get(f"/periods/{pid}/recovery-preview").json()
+    assert again["can_recover"] is False and "déjà un planning actif" in again["blocking"][0]
+    assert o.post(f"/periods/{pid}/recover", json={"password": PW}).status_code == 409
+    assert [p["id"] for p in o.get("/periods").json() if p["start_date"] == "2026-11-01"] == [new]

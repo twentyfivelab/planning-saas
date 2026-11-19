@@ -51,6 +51,11 @@ test("ajout d'un collaborateur : fiche complète, message seul, doublon vérifi�
   await expect(page.getByRole("status").filter({ hasText: `Le collaborateur ${full} a été ajouté avec succès.` })).toBeVisible();
   await expect(page.getByTestId("employee-add-form")).toBeHidden();
   const e = ((await j(page, "/employees")) as Emp[]).find((x) => x.name === full)!;
+  // nouveau collaborateur : la fenêtre d'intégration propose les plannings existants concernés ; « Décider plus tard » ne modifie rien
+  if (((await j(page, `/integrations/candidates?employee_id=${e.id}`)) as { periods: unknown[] }).periods.length) {
+    await page.getByTestId("integration-modal").getByRole("button", { name: "Décider plus tard" }).click();
+    await expect(page.getByTestId("integration-modal")).toBeHidden();
+  }
   expect(e).toMatchObject({ first_name: "Camille", last_name: last, address_city: "Genève", min_days_month: 12, max_days_month: 18, time_pref: "matin" });
   // doublon : même prénom et même nom -> confirmation demandée, rien n'est créé
   await page.getByRole("button", { name: "Ajouter un collaborateur" }).click();
