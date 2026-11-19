@@ -224,7 +224,7 @@ Cinq exécutions complètes de la suite API, dont quatre en parallèle de la sui
 - Trace protégée en base : le planning supprimé et l'entrée du journal ne peuvent être ni modifiés ni effacés (déclencheurs), sauf effacement RGPD explicite (qui anonymise aussi l'archive) ou purge de tenants de test.
 - Tests : annulation, mauvais mot de passe, tentatives répétées, accès non autorisé, autre entreprise, compte externe simulé, heures réelles, suppression réussie, autres mois intacts, historique persistant, protection en base (API et navigateur).
 - **Récupération contrôlée** (préparée, non exécutée sur un mois réel) : depuis l'événement « Suppression d'un planning » de l'historique, « Préparer une récupération » (même droit, même mot de passe, mêmes limites de tentatives). Aperçu sans effet (essai à blanc annulé) : affectations archivées, verrouillées, replaçables, collaborateurs introuvables (jamais remplacés par d'autres). La confirmation crée un NOUVEAU planning du mois à partir de l'archive (mêmes jours, horaires, sites, collaborateurs, verrous, effectif et paramètres conservés du mois) ; refusée si le mois a déjà un planning actif ; plafond mensuel appliqué (tout ou rien) ; rien n'est publié. Le planning supprimé, son archive et la trace de suppression restent inchangés ; aucun autre mois lu ni modifié ; entrée « Récupération d'un planning supprimé » au journal (API et navigateur).
-- Avril 2027 (tenant de démonstration, supprimé le 19/11 à 12:16 par le compte propriétaire) : archive de 237 affectations conservée, intacte ; **aucune récupération lancée** — elle se fait sur votre demande, par l'action ci-dessus.
+- Tenant de démonstration, suppressions du 19/11 (essais de l'utilisateur, compte propriétaire, confirmé par lui) : avril 2027 (12:16, 237 affectations archivées), février, janvier 2027, décembre et novembre 2026 (15:27, archives de 0, 0, 242 et 212 affectations), puis décembre 2026 recréé, supprimé, récupéré (15:38) et supprimé de nouveau. **Toutes les archives sont conservées ; aucun mois n'est restauré automatiquement** — une récupération se fait seulement sur demande explicite, par l'action ci-dessus.
 
 **Budget du mois prérempli depuis le budget de base** (migration 0016)
 - Budget de base par marque (heures de travail effectif par mois) dans « Sites et marques » ; vide = non renseigné, rien n'est inventé.
@@ -305,7 +305,32 @@ Cinq exécutions complètes de la suite API, dont quatre en parallèle de la sui
 
 Déjà décidé (rappel) : les 106 tenants douteux et l'ancien tenant e2e de la base de développement sont conservés ; le mode sombre reste optionnel ; le plafond de 176 h, les minimums et maximums de jours et l'indépendance des plannings s'appliquent comme convenu.
 
-## Prochaines étapes (ordre de priorité)
+## Préparation de la mise en production (avant tout déploiement public, décision D1)
 
-1. Moteur : LNS et mesures plus larges.
-2. Propositions de remplacement envoyées aux collaborateurs, avec leur réponse.
+1. Hébergement, région et budget (D1) ; secrets hors du dépôt ; sauvegardes planifiées et restauration vérifiée ; surveillance et alertes.
+2. Plusieurs processus pour l'API (aujourd'hui un seul : les lectures lourdes simultanées se ralentissent entre elles, voir « Lenteurs et échecs intermittents »).
+3. **Validation des performances avec plusieurs managers connectés et des modifications simultanées** (ajoutée le 19/11) :
+   - scénario : N managers (au moins 5, puis 10 et 20) ouvrent le même mois et d'autres mois ; ils attribuent, transfèrent, échangent et retirent des shifts en même temps, consultent conflits, compatibilité et historique, pendant qu'une génération tourne ;
+   - mesures : durée côté serveur (`Server-Timing`) et côté écran de chaque action, médiane et 95e centile ; requêtes lentes journalisées ; nombre de rechargements par modification ;
+   - exactitude sous concurrence : aucune double affectation, conflits identiques à ceux recalculés seuls, refus « modifié par quelqu'un d'autre » quand deux managers touchent le même shift, plafond mensuel jamais dépassé, notifications de couverture envoyées une seule fois ;
+   - critères d'acceptation chiffrés à fixer avec vous (par exemple : une attribution confirmée à l'écran en moins de 2 s au 95e centile avec 10 managers) ;
+   - environnement : la pile de production elle-même (ou identique), jamais la base réelle ; données de test.
+4. Reprise d'un calcul interrompu par un redémarrage ; e-mails (D2) si souhaités.
+
+## Prochaines fonctionnalités : état et ordre proposé (19/11/2026)
+
+| Ordre | Fonctionnalité | Existe déjà | Manque | Ce que cela change pour l'utilisateur |
+|---|---|---|---|---|
+| 1 | Réponse des collaborateurs aux remplacements | Classement expliqué des remplaçants pour un shift (manager) ; demandes des collaborateurs (congé, absence, indisponibilité, échange) avec approbation | Envoi d'une proposition au collaborateur choisi, réponse acceptée / refusée dans « Mon espace », affectation seulement après acceptation et contrôles, relance du suivant en cas de refus | Le manager n'a plus à appeler chacun ; le collaborateur voit et accepte le shift proposé ; le planning se met à jour avec trace |
+| 2 | Tuteur et binôme sur des horaires qui se chevauchent | Tuteur et binôme « même jour, même site » ; « à séparer » avec portée jour ou horaires qui se chevauchent | Portée « horaires qui se chevauchent » pour tuteur et binôme (moteur, contrôles manuels, écran de la fiche) | Un nouveau collaborateur n'est jamais seul sur sa plage horaire : le tuteur doit être présent EN MÊME TEMPS, pas seulement le même jour |
+| 3 | Équité des ouvertures et fermetures sur plusieurs mois | Équilibre ouvertures / fermetures / week-ends dans le mois ; équité sur 3 mois pour week-ends et dimanches | Historique des ouvertures et fermetures des mois précédents pris en compte par le moteur, et affiché | Celui qui a souvent ouvert ou fermé le mois dernier en fait moins ce mois-ci |
+| 4 | Moteur : recherche à large voisinage (LNS) et grands effectifs | Moteur hiérarchique vérifié ; critères non prouvés reportés, jamais perdus ; mesures jusqu'à 150 collaborateurs | Amélioration locale itérative, temps par niveau selon la taille, mesures au-delà de 150 et sur plusieurs mois | Meilleurs plannings dans le même temps de calcul pour les grandes équipes ; moins de « temps insuffisant » |
+| 5 | Préparation de la mise en production | Pile isolée de tests, sauvegardes vérifiées, diagnostics de lenteur | Voir la section ci-dessus (dont la validation à plusieurs managers) ; dépend de D1 | Accès en ligne pour l'équipe, avec des temps de réponse mesurés et garantis |
+| 6 | Temps rémunéré | Pause enregistrée (payée ou non) sur chaque affectation | Pauses payées distinguées dans les compteurs et exports | Heures payées exactes dans les totaux et la paie |
+| 7 | Droits par agence ou équipe, prise en main guidée | Rôles et responsable de marque (périmètre par marque) | Périmètre par agence ou équipe ; parcours de démarrage | Chaque responsable ne voit et ne modifie que son équipe ; démarrage autonome d'un nouveau client |
+| 8 | Intégrations | Exports PDF, Excel, CSV, ICS ; import des collaborateurs | Import de plannings, synchronisation calendrier dans les deux sens, paie et RH, prévisions de charge | Moins de double saisie avec les outils existants |
+
+Remarques :
+- **Solutions multiples** : le moteur peut produire des variantes, mais les simulations ont été retirées de l'interface à votre demande ; rien n'est prévu tant que vous ne souhaitez pas les réafficher.
+- E-mails (notifications, invitations) : dépendent de la décision D2 ; en attendant, tout passe par la page « Notifications ».
+- Toujours exclu sans validation : les règles juridiques non validées (D4) ; la plateforme n'est pas présentée comme commercialisable.
