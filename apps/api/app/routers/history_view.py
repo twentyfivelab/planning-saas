@@ -36,11 +36,13 @@ KIND_OF = {
     "version.restore": "restore", "version.publish": "publish", "version.create": "version", "version.validate": "version",
     "period.deleted": "deletion", "period.recovered": "deletion",
     "integration.chosen": "integration", "shift.placed": "integration",
+    "assignment.replacement": "replace",
+    **{f"replacement.{x}": "proposal" for x in ("requested", "offered", "accepted", "refused", "expired", "cancelled", "invalidated", "exhausted", "skipped")},
 }
 KIND_LABEL = {"add": "Ajout", "remove": "Suppression", "replace": "Remplacement", "swap": "Échange", "bulk": "Modification groupée",
               "hours": "Changement d'horaires", "lock": "Verrouillage", "generation": "Génération", "restore": "Restauration",
               "publish": "Publication", "version": "Version", "deletion": "Suppression d'un planning",
-              "integration": "Intégration d'un ajout"}
+              "integration": "Intégration d'un ajout", "proposal": "Proposition de remplacement"}
 GROUPED = {"assignment.bulk_transfer", "assignment.duplicate", "assignment.mission_release"}  # une opération = plusieurs lignes du journal
 
 
@@ -138,6 +140,20 @@ def _render(r: m.AuditLog, d: dict) -> dict:
                  f"Supprimé par {by.get('name') or NOT_RECORDED} (compte {by.get('id') or NOT_RECORDED})",
                  f"Conservé pour la traçabilité : archive des affectations, {v.get('total', 0)} version(s) et l'historique"]
         return {"title": "Suppression d'un planning", "lines": lines}
+    if kind == "proposal":
+        emp = _name(d.get("employee")) or "—"
+        shift = d.get("shift") or "—"
+        t = {"replacement.requested": ("Proposition de remplacement lancée", [f"Shift : {shift}", f"{d.get('candidates', 0)} candidat(s) dans l'ordre du classement ; délai de réponse : {d.get('response_label') or '—'}",
+                                                                              f"Titulaire actuel conservé pendant l'attente : {d.get('holder') or 'aucun'}"]),
+             "replacement.offered": (f"Proposition envoyée à {emp}", [f"Shift : {shift}", f"Réponse attendue avant le {d.get('deadline_label') or '—'}"]),
+             "replacement.accepted": (f"Proposition acceptée par {emp}", [f"Shift : {shift}", f"Remplace {d.get('holder') or 'aucun titulaire'} ; contraintes revérifiées à l'acceptation"]),
+             "replacement.refused": (f"Proposition refusée par {emp}", [f"Shift : {shift}"] + ([f"Motif : {d['reason']}"] if d.get("reason") else [])),
+             "replacement.expired": (f"Proposition expirée sans réponse ({emp})", [f"Shift : {shift}"]),
+             "replacement.cancelled": ("Proposition de remplacement annulée", [f"Shift : {shift}", "Titulaire actuel conservé"]),
+             "replacement.invalidated": ("Proposition de remplacement devenue caduque", [f"Shift : {shift}", d.get("reason") or "—"]),
+             "replacement.exhausted": ("Aucun remplaçant n'a accepté", [f"Shift : {shift}", d.get("reason") or "—", f"Titulaire conservé : {d.get('holder') or 'aucun'}"]),
+             "replacement.skipped": (f"Candidat non sollicité : {emp}", [f"Shift : {shift}", d.get("reason") or "—"])}[a]
+        return {"title": t[0], "lines": t[1]}
     if a == "integration.chosen":
         what = "la marque" if d.get("kind") == "brand" else "le collaborateur"
         lines = [f"Choix : {d.get('choice_label') or '—'}"]

@@ -27,7 +27,8 @@ export function NotificationsList({ empty }: { empty: string }) {
               <div className="spread"><div><strong>{x.title}</strong>{!x.read && <> <Badge tone="accent">Nouveau</Badge></>}
                 <p className="muted" style={{ margin: 0 }}>{x.body}</p><p className="help" style={{ margin: 0 }}><time dateTime={x.at}>{fmt(x.at)}</time></p></div>
                 <div className="row">
-                  {x.kind.startsWith("coverage_") && x.payload?.month && <Button size="sm" onClick={() => open(x)}>Ouvrir le planning</Button>}
+                  {(x.kind.startsWith("coverage_") || x.kind === "replacement_update") && x.payload?.month && <Button size="sm" onClick={() => open(x)}>Ouvrir le planning</Button>}
+                  {x.kind === "replacement_offer" && <Button size="sm" variant="primary" onClick={() => { if (!x.read) void read(x.id); window.location.assign("/me#propositions"); }}>Voir la proposition</Button>}
                   {!x.read && <Button size="sm" variant="ghost" onClick={() => read(x.id)}>Marquer comme lu</Button>}
                 </div></div>
             </li>))}

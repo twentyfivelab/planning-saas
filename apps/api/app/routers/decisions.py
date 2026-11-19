@@ -54,6 +54,9 @@ def replacements(sid: str, ctx: Ctx = Depends(require("planning.read"))):
     inp, base = _state(ctx, p)
     emps = {e.code: e for e in ctx.db.scalars(select(m.Employee))}
     r = _ranking(ctx, inp, base, sh, emps)
+    linked = set(ctx.db.scalars(select(m.User.employee_id).where(m.User.employee_id.is_not(None), m.User.is_active.is_(True))))
+    for c in r["candidates"]:  # une proposition ne peut être envoyée qu'à un collaborateur dont la fiche est reliée à un compte
+        c["has_account"] = bool(c.get("employee_uuid")) and uuid.UUID(c["employee_uuid"]) in linked
     holder = emps.get(r["holder"]) if r["holder"] else None
     return {**r, "shift_id": str(sh.id), "day": sh.day.isoformat(), "site": sh.site_code, "start": sh.start_time.isoformat()[:5], "end": sh.end_time.isoformat()[:5],
             "holder_name": holder.name if holder else None, "holder_id": str(holder.id) if holder else None, "weights_note": "Score 100 : coût le plus faible parmi les candidats compatibles ; 0 : coût le plus élevé."}

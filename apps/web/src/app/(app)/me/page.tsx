@@ -2,6 +2,7 @@
 import { useApi } from "@/components/hooks";
 import { MyRequests } from "@/components/MyRequests";
 import { NotificationsList } from "@/components/NotificationsList";
+import { MyOffers } from "@/components/planning/ReplacementProposal";
 import { Badge, Card, EmptyState, ErrorState, PageHead, SkeletonCard } from "@/components/ui/primitives";
 import { hourRange, longDate } from "@/lib/reassign";
 import { fmtH } from "@/lib/wfm";
@@ -14,6 +15,7 @@ export default function MyPlanning() {
   return (
     <>
       <PageHead eyebrow={q.data?.employee} title="Mon planning" />
+      <MyOffers />
       <NotificationsList empty="Vous serez prévenu·e lorsqu'un planning vous concernant sera publié." />
       {q.data?.linked && <MyRequests />}
       {q.error ? <ErrorState message={q.error} onRetry={q.reload} /> : q.loading && !q.data ? <SkeletonCard lines={4} /> : !q.data?.linked ? (

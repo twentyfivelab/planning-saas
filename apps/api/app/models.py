@@ -382,6 +382,37 @@ class PeriodIntegration(TenantOwned, Base):
     state_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
 
 
+class ReplacementRequest(TenantOwned, Base):
+    """Remplacement proposé pour UN shift : candidats dans l'ordre du classement, sollicités un par un. L'affectation actuelle reste
+    en place tant qu'aucune proposition n'est acceptée et validée. Une seule demande ouverte par shift (index unique partiel)."""
+    __tablename__ = "replacement_requests"
+    period_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("planning_periods.id", ondelete="CASCADE"), index=True)
+    shift_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("shifts.id", ondelete="SET NULL"), index=True)
+    status: Mapped[str] = mapped_column(String(16), default="open")  # open | filled | exhausted | cancelled | invalidated
+    candidates: Mapped[Any] = mapped_column(JSONB, default=list)  # identifiants des collaborateurs, dans l'ordre du classement
+    response_minutes: Mapped[int] = mapped_column(Integer)
+    fingerprint: Mapped[Any] = mapped_column(JSONB, default=dict)  # shift et titulaire au lancement (une proposition périmée n'est jamais appliquée)
+    shift_label: Mapped[Optional[str]] = mapped_column(String(300))  # « jeudi 3 décembre 2026, 09:00–18:00, Aéroport, Nuxe » figé au lancement
+    created_by: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True))
+    closed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    closed_reason: Mapped[Optional[str]] = mapped_column(String(300))
+
+
+class ReplacementOffer(TenantOwned, Base):
+    """Proposition faite à UN collaborateur. Une seule en attente par shift (index unique partiel) : deux acceptations simultanées ne
+    peuvent pas porter sur deux propositions différentes du même shift."""
+    __tablename__ = "replacement_offers"
+    request_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("replacement_requests.id", ondelete="CASCADE"), index=True)
+    shift_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("shifts.id", ondelete="SET NULL"))
+    employee_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("employees.id", ondelete="CASCADE"), index=True)
+    rank: Mapped[int] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(String(16), default="pending")  # pending | accepted | refused | expired | cancelled | invalidated
+    deadline_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    responded_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    responded_by: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True))
+    reason: Mapped[Optional[str]] = mapped_column(String(500))  # motif du refus, ou explication d'une proposition devenue caduque
+
+
 class PeriodEmployee(TenantOwned, Base):
     """Effectif du mois : un collaborateur décoché est exclu de CE mois uniquement (fiche, historique et autres mois intacts)."""
     __tablename__ = "period_employees"

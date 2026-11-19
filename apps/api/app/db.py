@@ -21,16 +21,21 @@ def tenant_session(tenant_id: Optional[str]) -> Iterator[Session]:
             yield s
 
 
-# Suivi de couverture des marques ajoutées manuellement : repérage des écritures concernées, évaluation juste avant la validation
-# (même transaction : une notification n'existe que si la modification est réellement enregistrée).
+# Évaluations faites juste avant la validation, dans la même transaction (une notification n'existe que si la modification est
+# réellement enregistrée) : couverture des marques ajoutées manuellement ; caducité des propositions de remplacement en attente.
 @event.listens_for(SessionLocal, "after_flush")
-def _coverage_mark(session, _flush_context):
+def _watch_mark(session, _flush_context):
     from .integration_watch import mark
+    from .replacements import mark as mark_replacements
     mark(session)
+    mark_replacements(session)
 
 
 @event.listens_for(SessionLocal, "before_commit")
-def _coverage_evaluate(session):
-    if session.info.get("coverage_dirty") or session.new or session.dirty or session.deleted:
+def _watch_evaluate(session):
+    if session.info.get("coverage_dirty") or session.info.get("replacement_dirty") or session.new or session.dirty or session.deleted:
+        session.flush()
+        from .replacements import evaluate as evaluate_replacements
+        evaluate_replacements(session)  # d'abord : une proposition caduque est close avant le calcul de couverture
         from .integration_watch import evaluate
         evaluate(session)

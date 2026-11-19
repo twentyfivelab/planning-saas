@@ -13,6 +13,7 @@ import { CompatBanner } from "@/components/planning/CompatBanner";
 import { AddShiftModal } from "@/components/planning/AddShiftModal";
 import { DayShiftsModal, RemoveDialog } from "@/components/planning/DayShiftsModal";
 import { IntegrationTracker } from "@/components/planning/IntegrationTracker";
+import { PeriodProposals } from "@/components/planning/ReplacementProposal";
 import { DuplicateModal, SwapModal } from "@/components/planning/SwapDuplicate";
 import { DeletePlanningModal } from "@/components/planning/DeletePlanning";
 import { EmployeeMonthModal } from "@/components/planning/EmployeeMonth";
@@ -197,6 +198,7 @@ export default function PlanningPage() {
 
       {archived && <Callout kind="info" title={`${period!.name} est archivé`}>Ce planning reste consultable (planning général, plannings individuels, historique, versions) mais n&apos;est plus modifiable. Désarchivez-le pour le modifier.</Callout>}
       {period && all.length > 0 && !archived && <CompatBanner periodId={period.id} periodName={period.name} />}
+      {period && <PeriodProposals periodId={period.id} canEdit={canEdit} />}
       {period && <IntegrationTracker periodId={period.id} emps={emps.data ?? []} canEdit={canEdit}
         onPick={(emp, day) => { const e = (emps.data ?? []).find((x) => x.id === emp.id); if (e) setPicking({ emp: e, day }); }} onChanged={refresh} />}
       {(confl.data?.hard_violations.length ?? 0) > 0 && (
