@@ -422,3 +422,38 @@ def test_planning_mensuel_individuel_lecture_seule_et_compteurs_exacts(t):
         assert x["month"] == mo and (mo != "2027-03" or (x["period"] is None and not x["has_plan"]))
     assert len(o.get("/periods").json()) == periods_before
     o.put(f"/employees/{ana['id']}/unavailable-dates", json={"dates": []})
+
+
+def test_impact_identique_au_rapport_complet_de_chaque_mois():
+    """L'impact d'une fiche (calcul allégé, données de référence lues une fois) donne exactement les incompatibilités du rapport
+    complet de chaque planning, filtrées sur ce collaborateur."""
+    import uuid as _uuid
+    from app.seed import seed
+    from tests.conftest import make_client as _mk
+    domain = f"{_uuid.uuid4().hex[:8]}.example"
+    out = seed(domain=domain)
+    c = _mk()
+    r = c.post("/auth/login", json={"email": f"owner@{domain}", "password": out["password"]})
+    c.headers["X-CSRF-Token"] = r.json()["csrf_token"]
+    pids = []
+    for y, mo in ((2026, 11), (2026, 12)):
+        pid = c.post("/periods/ensure", json={"year": y, "month": mo}).json()["id"]
+        assert c.post(f"/periods/{pid}/runs", json={"time_limit_s": 8}, headers={"Idempotency-Key": _uuid.uuid4().hex}).status_code == 202
+        pids.append(pid)
+    emps = c.get("/employees").json()
+    # fiche modifiée après la génération : « plan » et « current » diffèrent pour ce collaborateur
+    e = emps[0]
+    r = c.put(f"/employees/{e['id']}", json={"code": e["code"], "name": e["name"], "max_days_month": 3})
+    assert r.status_code == 200, r.text
+    for emp in emps[:4]:
+        imp = {p["period_id"]: p for p in c.get(f"/employees/{emp['id']}/impact").json()["periods"]}
+        for pid in pids:
+            ref = {}
+            for mode in ("plan", "current"):
+                items = [i for i in c.get(f"/periods/{pid}/compatibility", params={"params": mode}).json()["items"] if i.get("employee_id") == emp["code"]]
+                ref[mode] = (sum(1 for i in items if i["kind"] == "obligatoire"), sum(1 for i in items if i["kind"] != "obligatoire"))
+            got = imp.get(pid)
+            if ref["plan"] == (0, 0) and ref["current"] == (0, 0):
+                assert got is None
+            else:
+                assert (got["hard"], got["soft"]) == ref["plan"] and (got["if_applied"]["hard"], got["if_applied"]["soft"]) == ref["current"], (emp["name"], pid)

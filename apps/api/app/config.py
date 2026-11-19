@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     session_ttl_hours: int = 12
     cors_origins: str = "http://localhost:3000"
     opt_execution: str = "rq"  # rq | inline
+    slow_request_ms: int = 500  # au-delà : requête journalisée (diagnostic des lenteurs)
     demo_password: str = ""
     app_db_user: str = "planning_app"
     app_db_password: str = ""

@@ -86,7 +86,8 @@ test("nouvelle marque : saisie manuelle, suivi de couverture persistant, placeme
     const assigned = page.waitForResponse((r) => r.url().includes(`/periods/${pid}/manual-assign`) && r.request().method() === "POST");
     await day.getByRole("button", { name: new RegExp(code.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")) }).first().click(); // la fenêtre habituelle : contrôles et confirmations
     const res = await assigned;
-    console.log(`[diagnostic] manual-assign : HTTP ${res.status()} en ${Date.now() - t0} ms`);
+    const tm = res.request().timing(); // ms relatives à startTime : attente avant envoi (file du navigateur) puis réponse
+    console.log(`[diagnostic] manual-assign : HTTP ${res.status()} en ${Date.now() - t0} ms ; envoi après ${Math.round(tm.requestStart)} ms d'attente, réponse à ${Math.round(tm.responseStart)} ms (serveur : ${res.headers()["server-timing"] ?? "—"})`);
     const accept = day.getByRole("button", { name: "Accepter quand même" });
     if (await accept.isVisible().catch(() => false)) await accept.click();
     await expect(tracker).toContainText(`${name} : 1 shift attribué sur 4 — 3 restent à compléter.`);
@@ -96,6 +97,43 @@ test("nouvelle marque : saisie manuelle, suivi de couverture persistant, placeme
     await expect(tracker).toContainText(`${name} : 1 shift attribué sur 4 — 3 restent à compléter.`);
     await expect(tracker).toContainText(`Collab ${name} fait partie de l'effectif de ce mois`);
     await expect(tracker).toContainText("1 shift attribué");
+    await expect(page.getByTestId("tracker-remaining")).toHaveText("Reste à attribuer : 3 shifts · 18 h"); // shifts ET heures restants
+    // notifications : aucune tant que la couverture est incomplète ; une seule quand tout est couvert ; une seule quand elle redevient incomplète
+    const cov = async () => ((await j(page, `/periods/${pid}/integrations`)) as { items: { kind: string; id: string; coverage?: { items: { slot_key: string; shift_id: string | null; state: string }[] } }[] }).items.find((i) => i.kind === "brand")!;
+    const coverageNotes = async () => ((await j(page, "/notifications")) as { items: { kind: string; title: string; payload: { brand?: string } }[] }).items.filter((n) => n.kind.startsWith("coverage_") && n.payload.brand === code);
+    expect(await coverageNotes()).toEqual([]);
+    const tr = await cov();
+    for (const x of tr.coverage!.items) { // les 3 derniers besoins, par l'API (mêmes contrôles côté serveur)
+      const sid = x.shift_id ?? (await (await page.request.post(`${API}/periods/${pid}/integrations/${tr.id}/place`, { headers: H, data: { slot_key: x.slot_key } })).json()).shift_id;
+      const r = await page.request.post(`${API}/periods/${pid}/manual-assign`, { headers: H, data: { employee_id: empId, shift_id: sid, force: true, reason: "test e2e" } });
+      expect(r.status(), await r.text()).toBe(200);
+    }
+    await page.goto("/planning"); await page.waitForLoadState("networkidle");
+    await expect(tracker).toContainText(`Tous les shifts de ${name} sont attribués et sans conflit.`);
+    expect((await coverageNotes()).map((n) => n.kind)).toEqual(["coverage_complete"]);
+    await page.goto("/notifications"); await page.waitForLoadState("networkidle");
+    const notif = page.getByTestId("notification").filter({ hasText: `${name} : tous les besoins de novembre 2027 sont couverts` });
+    await expect(notif).toHaveCount(1);
+    await expect(notif).toContainText("Tous les shifts de " + name + " sont attribués et sans conflit (4 shift(s), 24 h).");
+    // une suppression rend la couverture incomplète : nouvelle alerte, une seule fois même après une seconde suppression
+    const nxs = ((await j(page, `/periods/${pid}/schedule`)).assignments as A[]).filter((a) => code in a.allocations);
+    for (const a of nxs.slice(0, 2)) expect((await page.request.delete(`${API}/assignments/${a.assignment_id}?force=true`, { headers: H })).status()).toBe(204);
+    expect((await coverageNotes()).map((n) => n.kind)).toEqual(["coverage_incomplete", "coverage_complete"]);
+    // reconnexion (nouvelle session) : état et notifications conservés
+    const fresh = await page.context().browser()!.newContext({ storageState: { cookies: [], origins: [] } });
+    const p2 = await fresh.newPage();
+    await p2.goto("/login");
+    await p2.getByLabel("E-mail").fill(process.env.E2E_EMAIL!); await p2.getByLabel("Mot de passe").fill(process.env.E2E_PASSWORD!);
+    await p2.getByRole("button", { name: "Se connecter" }).click();
+    await p2.waitForURL((u) => !u.pathname.startsWith("/login"));
+    await p2.goto("/notifications"); await p2.waitForLoadState("networkidle");
+    await expect(p2.getByTestId("notification").filter({ hasText: `${name} : couverture de novembre 2027 de nouveau incomplète` })).toContainText("1 shift(s) (6 h) restent à attribuer : 1 sans collaborateur."); // envoyée à la 1re suppression, pas répétée à la 2e
+    await expect(p2.getByTestId("notification").filter({ hasText: name })).toHaveCount(2);
+    await p2.evaluate(() => { try { localStorage.setItem("planning:month", "2027-11"); } catch { /* ignoré */ } });
+    await p2.goto("/planning"); await p2.waitForLoadState("networkidle");
+    await expect(p2.getByTestId("integration-tracker")).toContainText(`${name} : 2 shifts attribués sur 4 — 2 restent à compléter.`);
+    await expect(p2.getByTestId("tracker-remaining")).toHaveText("Reste à attribuer : 2 shifts · 12 h");
+    await fresh.close();
     // historique : le choix, avec son auteur
     await page.goto("/history?kind=integration"); await page.waitForLoadState("networkidle");
     await expect(page.getByTestId("history-event").filter({ hasText: `Intégration de la marque ${name} au planning de novembre 2027` })).toContainText("Ajouter les shifts manuellement");

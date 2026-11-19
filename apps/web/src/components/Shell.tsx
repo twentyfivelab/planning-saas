@@ -3,8 +3,8 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { Fragment, createContext, useContext, useEffect, useState } from "react";
 import type { ReactNode } from "react";
-import { API_BASE, api, setCsrf } from "@/lib/api";
-import { invalidate } from "@/lib/invalidate";
+import { API_BASE, CLIENT_ID, api, setCsrf } from "@/lib/api";
+import { invalidate, onInvalidate } from "@/lib/invalidate";
 import { useApi, useMonthState } from "./hooks";
 import { STATUS_TONE, periodHref, type PeriodRow } from "@/lib/periods";
 import { t } from "@/lib/i18n";
@@ -21,7 +21,7 @@ export const useMe = () => useContext(MeCtx)!;
 // [adresse, libellé, icône, permission requise]
 const GROUPS: { title: string; items: [string, string, IconName, string][] }[] = [
   // l'essentiel : consulter le planning, générer, modifier, traiter les alertes, consulter l'historique
-  { title: "Planning", items: [["/", "nav.dashboard", "dashboard", "planning.read"], ["/planning", "nav.planning", "calendar", "planning.read"], ["/brand", "nav.brand", "calendar", "planning.brand-only"], ["/generate", "nav.generate", "sparkles", "planning.read"], ["/alerts", "nav.alerts", "bell", "planning.read"], ["/history", "nav.history", "history", "planning.history"], ["/versions", "nav.versions", "history", "planning.read"]] },
+  { title: "Planning", items: [["/", "nav.dashboard", "dashboard", "planning.read"], ["/planning", "nav.planning", "calendar", "planning.read"], ["/brand", "nav.brand", "calendar", "planning.brand-only"], ["/generate", "nav.generate", "sparkles", "planning.read"], ["/alerts", "nav.alerts", "bell", "planning.read"], ["/history", "nav.history", "history", "planning.history"], ["/notifications", "nav.notifications", "bell", "planning.notifications"], ["/versions", "nav.versions", "history", "planning.read"]] },
   // les collaborateurs, leurs disponibilités et leurs demandes
   { title: "Équipe", items: [["/employees", "nav.employees", "users", "employees.read"], ["/requests", "nav.requests", "check", "availability.write"], ["/time", "nav.time", "clock", "planning.brand"]] },
   { title: "Configuration", items: [["/catalog", "nav.catalog", "briefcase", "planning.read"], ["/clients", "nav.clients", "briefcase", "referential.read"], ["/budgets", "nav.budgets", "wallet", "planning.read"], ["/rules", "nav.rules", "shield", "planning.read"], ["/settings", "nav.settings", "sparkles", "planning.read"], ["/import-export", "nav.io", "swap", "planning.read"]] },
@@ -30,6 +30,7 @@ const GROUPS: { title: string; items: [string, string, IconName, string][] }[] =
 const ROLE_LABEL: Record<string, string> = { owner: "Propriétaire", admin: "Administrateur", manager: "Manager", planner: "Planificateur", brand_manager: "Responsable de marque", employee: "Collaborateur", auditor: "Auditeur" };
 const allowed = (me: Me, href: string, perm: string) => {
   if (href === "/me") return me.role === "employee" || !!me.employee_id; // espace personnel : uniquement un compte relié à une fiche
+  if (perm === "planning.notifications") return me.permissions.includes("planning.read") && !(me.role === "employee" || !!me.employee_id); // compte relié à une fiche : « Mon espace »
   if (perm === "planning.history") return me.permissions.includes("planning.read") || me.permissions.includes("planning.brand");
   return perm === "planning.brand-only" ? me.permissions.includes("planning.brand") && !me.permissions.includes("planning.read") : me.permissions.includes(perm);
 };
@@ -143,14 +144,16 @@ export function Shell({ children }: { children: ReactNode }) {
   // moins d'une seconde. Filet de sécurité : empreinte `/revision` interrogée toutes les 6 s seulement si le flux est coupé.
   useEffect(() => {
     if (!me) return;
-    let last: string | null = null, dirty = false, live = false, stop = false;
+    let last: string | null = null, dirty = false, live = false, stop = false, remote = false, localAt = 0;
     // jamais de rechargement sous les yeux de l'utilisateur pendant qu'une fenêtre est ouverte : on attend sa fermeture
-    const flush = () => { if (dirty && !document.querySelector("dialog[open]")) { dirty = false; invalidate(); } };
-    const tick = async () => {
+    const flush = () => { if (dirty && !document.querySelector("dialog[open]")) { dirty = false; remote = true; invalidate(); remote = false; } };
+    // rechargement déclenché par CET onglet (après sa propre modification) : sa propre annonce temps réel ne le relance pas une 2e fois
+    const offLocal = onInvalidate(() => { if (!remote) localAt = Date.now(); });
+    const tick = async (absorb = false) => {
       if (document.hidden || stop) return;
       try {
         const r = await api<{ revision: string }>("/revision");
-        if (last !== null && r.revision !== last) dirty = true;
+        if (last !== null && r.revision !== last && !absorb) dirty = true;
         last = r.revision;
       } catch { /* hors ligne : on réessaie */ }
       flush();
@@ -159,7 +162,12 @@ export function Shell({ children }: { children: ReactNode }) {
     try {
       es = new EventSource(`${API_BASE}/events`, { withCredentials: true });
       es.addEventListener("ready", () => { live = true; });
-      es.addEventListener("change", () => { dirty = true; flush(); void tick(); });
+      es.addEventListener("change", (ev) => {
+        let origin: string | null = null;
+        try { origin = (JSON.parse((ev as MessageEvent).data) as { origin?: string | null }).origin ?? null; } catch { /* ancien format : rechargement */ }
+        if (origin === CLIENT_ID && Date.now() - localAt < 3000) { void tick(true); return; } // déjà rechargé par l'écran lui-même
+        dirty = true; flush(); void tick();
+      });
       es.onerror = () => { live = false; };
     } catch { es = null; }
     void tick();
@@ -167,7 +175,7 @@ export function Shell({ children }: { children: ReactNode }) {
     const closeWatch = setInterval(flush, 500); // applique dès la fermeture d'une fenêtre
     const vis = () => { if (!document.hidden) void tick(); };
     document.addEventListener("visibilitychange", vis);
-    return () => { stop = true; es?.close(); clearInterval(poll); clearInterval(closeWatch); document.removeEventListener("visibilitychange", vis); };
+    return () => { stop = true; offLocal(); es?.close(); clearInterval(poll); clearInterval(closeWatch); document.removeEventListener("visibilitychange", vis); };
   }, [me]);
 
   if (!me) {
@@ -189,7 +197,7 @@ export function Shell({ children }: { children: ReactNode }) {
                 <div className="nav-group">
                   <p className="nav-title">{g.title}</p>
                   {items.map(([href, key, icon]) => (
-                    <Link key={href} href={href} className="nav-link" aria-current={path === href ? "page" : undefined}><Icon name={icon} />{t(key)}{href === "/me" && <UnreadBadge />}</Link>
+                    <Link key={href} href={href} className="nav-link" aria-current={path === href ? "page" : undefined}><Icon name={icon} />{t(key)}{(href === "/me" || href === "/notifications") && <UnreadBadge />}</Link>
                   ))}
                 </div>
                 {i === 0 && me.permissions.includes("planning.read") && <PlanningHistory path={path} canDelete={me.permissions.includes("planning.delete")} />}

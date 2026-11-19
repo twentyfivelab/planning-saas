@@ -1,6 +1,9 @@
 const BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 export const API_BASE = BASE;
 
+/** Identifiant de CET onglet (aléatoire, en mémoire) : joint aux modifications pour que l'onglet reconnaisse sa propre annonce temps réel. */
+export const CLIENT_ID = Math.random().toString(36).slice(2, 12) + Date.now().toString(36);
+
 let csrf = "";
 export function setCsrf(v: string) { csrf = v; try { sessionStorage.setItem("csrf", v); } catch {} }
 function loadCsrf() { if (!csrf) { try { csrf = sessionStorage.getItem("csrf") ?? ""; } catch {} } return csrf; }
@@ -13,7 +16,7 @@ export async function api<T = any>(path: string, init: RequestInit & { json?: un
   const headers: Record<string, string> = { ...(init.headers as Record<string, string>) };
   if (init.json !== undefined) headers["Content-Type"] = "application/json";
   const m = (init.method ?? "GET").toUpperCase();
-  if (m !== "GET") headers["X-CSRF-Token"] = loadCsrf();
+  if (m !== "GET") { headers["X-CSRF-Token"] = loadCsrf(); headers["X-Client-Id"] = CLIENT_ID; }
   let res: Response;
   try { res = await fetch(BASE + path, { ...init, headers, credentials: "include", body: init.json !== undefined ? JSON.stringify(init.json) : init.body }); }
   catch { throw new ApiError(0, "Le serveur est injoignable. Vérifiez votre connexion puis réessayez."); }

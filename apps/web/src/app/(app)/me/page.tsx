@@ -1,29 +1,20 @@
 "use client";
 import { useApi } from "@/components/hooks";
 import { MyRequests } from "@/components/MyRequests";
-import { Badge, Button, Card, EmptyState, ErrorState, PageHead, SkeletonCard } from "@/components/ui/primitives";
-import { api } from "@/lib/api";
-import { invalidate } from "@/lib/invalidate";
+import { NotificationsList } from "@/components/NotificationsList";
+import { Badge, Card, EmptyState, ErrorState, PageHead, SkeletonCard } from "@/components/ui/primitives";
 import { hourRange, longDate } from "@/lib/reassign";
 import { fmtH } from "@/lib/wfm";
 
 type Mine = { linked: boolean; employee?: string; periods: { period_id: string; name: string; version: number; published_at: string; minutes: number; shifts: { day: string; site: string; start: string; end: string; break_minutes: number; effective_minutes: number; allocations: Record<string, number> }[] }[] };
-type Notes = { unread: number; items: { id: string; title: string; body: string | null; read: boolean; at: string }[] };
 
 /** Espace du collaborateur : uniquement les plannings publiés ; un planning en préparation n'est jamais visible ici. */
 export default function MyPlanning() {
   const q = useApi<Mine>("/me/planning");
-  const n = useApi<Notes>("/notifications");
-  async function read(id?: string) { await api(id ? `/notifications/${id}/read` : "/notifications/read-all", { method: "POST" }); n.reload(); invalidate(); }
   return (
     <>
       <PageHead eyebrow={q.data?.employee} title="Mon planning" />
-      <Card title="Notifications" actions={n.data?.unread ? <Button size="sm" onClick={() => read()}>Tout marquer comme lu</Button> : undefined}>
-        {n.error ? <ErrorState message={n.error} onRetry={n.reload} /> : !n.data?.items.length ? <EmptyState icon="bell" title="Aucune notification">Vous serez prévenu·e lorsqu&apos;un planning vous concernant sera publié.</EmptyState> : (
-          <ul className="stack" style={{ listStyle: "none", padding: 0, margin: 0, gap: "var(--sp-2)" }}>
-            {n.data.items.map((x) => <li key={x.id} className="surface" style={{ padding: "var(--sp-3)" }}><div className="spread"><div><strong>{x.title}</strong>{!x.read && <> <Badge tone="accent">Nouveau</Badge></>}<p className="muted" style={{ margin: 0 }}>{x.body}</p></div>{!x.read && <Button size="sm" variant="ghost" onClick={() => read(x.id)}>Marquer comme lu</Button>}</div></li>)}
-          </ul>)}
-      </Card>
+      <NotificationsList empty="Vous serez prévenu·e lorsqu'un planning vous concernant sera publié." />
       {q.data?.linked && <MyRequests />}
       {q.error ? <ErrorState message={q.error} onRetry={q.reload} /> : q.loading && !q.data ? <SkeletonCard lines={4} /> : !q.data?.linked ? (
         <Card><EmptyState icon="users" title="Compte non relié à une fiche">Demandez à votre responsable de relier votre compte à votre fiche collaborateur.</EmptyState></Card>

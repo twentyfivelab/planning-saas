@@ -2,7 +2,7 @@
 from contextlib import contextmanager
 from typing import Iterator, Optional
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, event, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from .config import settings
@@ -19,3 +19,18 @@ def tenant_session(tenant_id: Optional[str]) -> Iterator[Session]:
             # set_config(..., true) = SET LOCAL : valable pour la transaction courante uniquement
             s.execute(text("SELECT set_config('app.tenant_id', :t, true)"), {"t": tenant_id or ""})
             yield s
+
+
+# Suivi de couverture des marques ajoutées manuellement : repérage des écritures concernées, évaluation juste avant la validation
+# (même transaction : une notification n'existe que si la modification est réellement enregistrée).
+@event.listens_for(SessionLocal, "after_flush")
+def _coverage_mark(session, _flush_context):
+    from .integration_watch import mark
+    mark(session)
+
+
+@event.listens_for(SessionLocal, "before_commit")
+def _coverage_evaluate(session):
+    if session.info.get("coverage_dirty") or session.new or session.dirty or session.deleted:
+        from .integration_watch import evaluate
+        evaluate(session)

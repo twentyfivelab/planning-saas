@@ -89,7 +89,8 @@ export default function PlanningPage() {
   const [deleting, setDeleting] = useState(false); const [deletedMsg, setDeletedMsg] = useState("");
   const [duplicating, setDuplicating] = useState<Assignment | null>(null);
   const [empMonth, setEmpMonth] = useState<{ id: string; name: string } | null>(null);
-  const refresh = () => { sched.reload(); confl.reload(); sunday.reload(); regsApi.reload(); invalidate(); };
+  // un seul rechargement : `invalidate` relit en silence toutes les données affichées (planning, conflits, dimanches, rappels…)
+  const refresh = () => invalidate();
   const [adding, setAdding] = useState<{ emp: Emp; day: string } | null>(null);
   const [picking, setPicking] = useState<{ emp: Emp; day: string } | null>(null);
   const [removing, setRemoving] = useState<Assignment | null>(null);
@@ -196,7 +197,7 @@ export default function PlanningPage() {
 
       {archived && <Callout kind="info" title={`${period!.name} est archivé`}>Ce planning reste consultable (planning général, plannings individuels, historique, versions) mais n&apos;est plus modifiable. Désarchivez-le pour le modifier.</Callout>}
       {period && all.length > 0 && !archived && <CompatBanner periodId={period.id} periodName={period.name} />}
-      {period && <IntegrationTracker periodId={period.id} stamp={sched.data} emps={emps.data ?? []} canEdit={canEdit}
+      {period && <IntegrationTracker periodId={period.id} emps={emps.data ?? []} canEdit={canEdit}
         onPick={(emp, day) => { const e = (emps.data ?? []).find((x) => x.id === emp.id); if (e) setPicking({ emp: e, day }); }} onChanged={refresh} />}
       {(confl.data?.hard_violations.length ?? 0) > 0 && (
         <Callout kind="warn" title={`${confl.data!.hard_violations.length} conflit(s) de contraintes dures`}>

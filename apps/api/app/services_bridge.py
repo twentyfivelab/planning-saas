@@ -1,10 +1,11 @@
 """Pont base de données <-> moteur d'optimisation (planning_solver)."""
 import uuid
+from contextlib import contextmanager
 from collections import defaultdict
 from datetime import date, time, timedelta
 from typing import Dict, List, Optional, Tuple
 
-from sqlalchemy import select
+from sqlalchemy import event, select
 from sqlalchemy.orm import Session
 
 from planning_solver.model import (Assignment as SAssign, BrandBudget, Contract, DEFAULT_WEIGHTS,
@@ -46,6 +47,33 @@ def tenant_cap(db: Session, tenant_id) -> Optional[int]:
     return t.monthly_hours_cap_minutes if t is not None else None
 
 
+@contextmanager
+def reference_cache(db: Session):
+    """Pour une requête en LECTURE SEULE qui reconstruit plusieurs fois les données d'un mois (impact d'une fiche sur chaque planning) :
+    les tables de référence de l'entreprise (fiches, contrats, absences, règles…) ne sont lues qu'une fois. Toute écriture pendant le
+    bloc vide le cache (et une écriture en attente le contourne) : jamais de donnée périmée."""
+    db.info["ref_cache"] = {}
+    try:
+        yield
+    finally:
+        db.info.pop("ref_cache", None)
+
+
+def _all(db: Session, model) -> list:
+    cache = db.info.get("ref_cache")
+    if cache is None or db.new or db.dirty or db.deleted:
+        return list(db.scalars(select(model)))
+    if model not in cache:
+        cache[model] = list(db.scalars(select(model)))
+    return cache[model]
+
+
+@event.listens_for(Session, "after_flush")
+def _drop_reference_cache(session, _ctx):
+    if session.info.get("ref_cache"):
+        session.info["ref_cache"] = {}
+
+
 def build_input(db: Session, period: m.PlanningPeriod, cfg_overrides: Optional[dict] = None, toggles: bool = True,
                 capture: Optional[dict] = None) -> SolverInput:
     """`toggles=False` : ignore les marques/sites désactivés pour le mois (sert à afficher les besoins « si activé »).
@@ -55,17 +83,17 @@ def build_input(db: Session, period: m.PlanningPeriod, cfg_overrides: Optional[d
     cfg_overrides = cfg_overrides or {}
     frozen = period.frozen_params if params_mode(period, cfg_overrides) == "frozen" else None
     start, end = period.start_date, period.end_date
-    brands = {b.code: b for b in db.scalars(select(m.Brand))}
-    templates = {t.id: t for t in db.scalars(select(m.ShiftTemplate))}
+    brands = {b.code: b for b in _all(db, m.Brand)}
+    templates = {t.id: t for t in _all(db, m.ShiftTemplate)}
     slots: List[Slot] = []
     d = start
     pid = getattr(period, "id", None) if toggles else None
     off_brands = {x.brand_code for x in db.scalars(select(m.PeriodBrand).where(m.PeriodBrand.period_id == pid, m.PeriodBrand.active.is_(False)))} if pid else set()
     off_sites = {x.site_code for x in db.scalars(select(m.PeriodSite).where(m.PeriodSite.period_id == pid, m.PeriodSite.active.is_(False)))} if pid else set()
     off_brands |= {b.code for b in brands.values() if b.archived_from and b.archived_from <= start}  # archivé à partir d'un mois : les mois antérieurs restent intacts
-    off_sites |= {x.code for x in db.scalars(select(m.Site)) if x.archived_from and x.archived_from <= start}
-    missions = {x.id: x for x in db.scalars(select(m.Mission))}
-    reqs = [r for r in db.scalars(select(m.StaffingRequirement))
+    off_sites |= {x.code for x in _all(db, m.Site) if x.archived_from and x.archived_from <= start}
+    missions = {x.id: x for x in _all(db, m.Mission)}
+    reqs = [r for r in _all(db, m.StaffingRequirement)
             if (r.valid_from is None or r.valid_from <= end) and (r.valid_to is None or r.valid_to >= start)  # version de besoin en vigueur
             and r.site_code not in off_sites and not any(b in off_brands for b in r.allocations)
             and (r.mission_id is None or (r.mission_id in missions and missions[r.mission_id].status in PLANNED_MISSION_STATUSES))]  # mission en brouillon ou annulée : rien à planifier
@@ -92,21 +120,21 @@ def build_input(db: Session, period: m.PlanningPeriod, cfg_overrides: Optional[d
         d += timedelta(days=1)
 
     slots += manual_slots(db, period)
-    skills = {s.id: s.code for s in db.scalars(select(m.Skill))}
+    skills = {s.id: s.code for s in _all(db, m.Skill)}
     emp_skills: Dict[uuid.UUID, set] = defaultdict(set)
-    for es in db.scalars(select(m.EmployeeSkill)):
+    for es in _all(db, m.EmployeeSkill):
         if es.valid_until is None or es.valid_until >= end:  # certification échue pendant le mois : plus admise pour ce mois
             emp_skills[es.employee_id].add(skills.get(es.skill_id))
     contracts: Dict[uuid.UUID, m.EmploymentContract] = {}
-    for c in db.scalars(select(m.EmploymentContract)):
+    for c in _all(db, m.EmploymentContract):
         if (c.start_date is None or c.start_date <= end) and (c.end_date is None or c.end_date >= start):
             contracts[c.employee_id] = c
     avail: Dict[uuid.UUID, set] = defaultdict(set)
-    for a in db.scalars(select(m.Availability)):
+    for a in _all(db, m.Availability):
         avail[a.employee_id].add(a.weekday)
     unav_wd: Dict[uuid.UUID, set] = defaultdict(set)
     unav_dt: Dict[uuid.UUID, set] = defaultdict(set)
-    for u in db.scalars(select(m.Unavailability)):
+    for u in _all(db, m.Unavailability):
         (unav_wd if u.weekday is not None else unav_dt)[u.employee_id].add(u.weekday if u.weekday is not None
                                                                           else u.on_date)
     partial: Dict[uuid.UUID, set] = defaultdict(set)  # absences sur une partie de la journée (données du mois, lues en direct)
@@ -130,15 +158,15 @@ def build_input(db: Session, period: m.PlanningPeriod, cfg_overrides: Optional[d
         while x <= lv.end_date:
             unav_dt[lv.employee_id].add(x)
             x += timedelta(days=1)
-    rules = [c for c in db.scalars(select(m.ConstraintDefinition)) if _active(c, start, end)]
+    rules = [c for c in _all(db, m.ConstraintDefinition) if _active(c, start, end)]
     prefs: Dict[uuid.UUID, list] = defaultdict(list)
-    for p in db.scalars(select(m.EmployeePreference)):
+    for p in _all(db, m.EmployeePreference):
         prefs[p.employee_id].append(p)
-    relationships = list(db.scalars(select(m.RelationshipPreference)))
+    relationships = list(_all(db, m.RelationshipPreference))
     rel = {r.employee_id: r.other_employee_id for r in relationships if r.kind == "opposite_shifts"}
     for a_, b_ in list(rel.items()):  # une relation saisie dans un seul sens vaut pour les deux collaborateurs
         rel.setdefault(b_, a_)
-    codes = {e.id: e.code for e in db.scalars(select(m.Employee))}
+    codes = {e.id: e.code for e in _all(db, m.Employee)}
     # collaborateurs supprimés : seulement s'ils ont des affectations dans ce planning (historique), et plus aucun shift après leur retrait
     in_plan = set(db.scalars(select(m.Assignment.employee_id).where(m.Assignment.period_id == pid))) if pid else set()
 
@@ -148,7 +176,7 @@ def build_input(db: Session, period: m.PlanningPeriod, cfg_overrides: Optional[d
     roster_out = {x.employee_id for x in roster_rows if not x.included}
     roster_in = {x.employee_id for x in roster_rows if x.included}  # inclusion explicite dans l'effectif de ce mois
     all_contracts: Dict[uuid.UUID, list] = defaultdict(list)
-    for c in db.scalars(select(m.EmploymentContract)):
+    for c in _all(db, m.EmploymentContract):
         all_contracts[c.employee_id].append(c)
     # référentiel juridique : plafond hebdomadaire par régime (la version la plus récente en vigueur) ; aucun plafond n'est supposé
     weekly_rules: Dict[Optional[str], int] = {}
@@ -253,7 +281,7 @@ def build_input(db: Session, period: m.PlanningPeriod, cfg_overrides: Optional[d
             cfg.break_rules = [(int(x["over_minutes"]), int(x["break_minutes"])) for x in r.params.get("rules", [])]
     current_cap = tenant_cap(db, getattr(period, "tenant_id", None))
     cfg.monthly_cap_minutes = current_cap
-    travel_now = sorted([t.from_site, t.to_site, t.minutes] for t in db.scalars(select(m.SiteTravel)))
+    travel_now = sorted([t.from_site, t.to_site, t.minutes] for t in _all(db, m.SiteTravel))
     if capture is not None:
         capture.update({"employees": fiches, "config": {**config_of(cfg), "travel_minutes": travel_now}, "names": names})
     travel = travel_now
@@ -307,7 +335,7 @@ def build_input(db: Session, period: m.PlanningPeriod, cfg_overrides: Optional[d
 def _outside_shifts(db: Session, period: m.PlanningPeriod) -> List[OutsideShift]:
     """Shifts déjà planifiés dans les périodes voisines (±7 jours) : semaines à cheval, repos et jours consécutifs."""
     lo, hi = period.start_date - timedelta(days=7), period.end_date + timedelta(days=7)
-    codes = {e.id: e.code for e in db.scalars(select(m.Employee))}
+    codes = {e.id: e.code for e in _all(db, m.Employee)}
     rows = db.execute(
         select(m.Shift, m.Assignment).join(m.Assignment, m.Assignment.shift_id == m.Shift.id)
         .where(m.Shift.period_id != period.id, m.Shift.day >= lo, m.Shift.day <= hi)).all()
@@ -317,7 +345,7 @@ def _outside_shifts(db: Session, period: m.PlanningPeriod) -> List[OutsideShift]
 
 def current_assignments(db: Session, period: m.PlanningPeriod) -> Tuple[Dict[str, str], Dict[str, str]]:
     """(previous, locked) : slot_key -> employee code."""
-    codes = {e.id: e.code for e in db.scalars(select(m.Employee))}
+    codes = {e.id: e.code for e in _all(db, m.Employee)}
     shifts = {s.id: s for s in db.scalars(select(m.Shift).where(m.Shift.period_id == period.id))}
     prev, locked = {}, {}
     for a in db.scalars(select(m.Assignment).where(m.Assignment.period_id == period.id)):
@@ -329,7 +357,7 @@ def current_assignments(db: Session, period: m.PlanningPeriod) -> Tuple[Dict[str
 
 
 def assignments_for_validation(db: Session, inp: SolverInput, period: m.PlanningPeriod) -> List[SAssign]:
-    codes = {e.id: e.code for e in db.scalars(select(m.Employee))}
+    codes = {e.id: e.code for e in _all(db, m.Employee)}
     slots = {s.id: s for s in inp.slots}
     shifts = {s.id: s for s in db.scalars(select(m.Shift).where(m.Shift.period_id == period.id))}
     out = []
@@ -359,7 +387,7 @@ def assignments_for_validation(db: Session, inp: SolverInput, period: m.Planning
 def persist_result(db: Session, tenant_id, period: m.PlanningPeriod, inp: SolverInput, res, run_id) -> None:
     """Applique le résultat par différence : une affectation inchangée reste la même ligne (identifiant et imputations conservés),
     les verrouillées ne bougent jamais, seules les autres sont remplacées."""
-    codes = {e.code: e.id for e in db.scalars(select(m.Employee))}
+    codes = {e.code: e.id for e in _all(db, m.Employee)}
     shifts = {s.slot_key: s for s in db.scalars(select(m.Shift).where(m.Shift.period_id == period.id))}
     existing = list(db.scalars(select(m.Assignment).where(m.Assignment.period_id == period.id)))
     wanted = {a.slot_id: codes[a.employee_id] for a in res.assignments}
@@ -408,13 +436,13 @@ def persist_result(db: Session, tenant_id, period: m.PlanningPeriod, inp: Solver
 def brand_schedules(db: Session) -> Dict[str, list]:
     """Horaires autorisés PAR MARQUE : modèles dont la portée est la boutique de la marque, la marque ou son groupe."""
     brand_sites: Dict[str, list] = defaultdict(list)
-    for r in db.scalars(select(m.StaffingRequirement)):
+    for r in _all(db, m.StaffingRequirement):
         for b in r.allocations:
             if r.site_code not in brand_sites[b]:
                 brand_sites[b].append(r.site_code)
     templates = list(db.scalars(select(m.ShiftTemplate).order_by(m.ShiftTemplate.start_time)))
     out: Dict[str, list] = {}
-    for b in db.scalars(select(m.Brand)):
+    for b in _all(db, m.Brand):
         sites = brand_sites.get(b.code, [])
         keys = set(sites) | {b.code} | ({b.group_code} if b.group_code else set()) | {f"{b.code}@{x}" for x in sites}
         seen, lst = set(), []

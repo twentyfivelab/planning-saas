@@ -1,10 +1,11 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { Badge, Button, Callout, Field, Select } from "@/components/ui/primitives";
 import { Modal } from "@/components/ui/Modal";
 import { useToast } from "@/components/ui/Toast";
 import { useApi } from "@/components/hooks";
 import { api } from "@/lib/api";
+import { invalidate } from "@/lib/invalidate";
 import { dayLabel, fmtHM, timeShort } from "@/lib/schedule";
 import { errText } from "@/lib/wfm";
 
@@ -21,28 +22,27 @@ const STATE: Record<CoverItem["state"], { label: string; tone: "warn" | "info" |
 
 /**
  * Suivi persistant (serveur) des ajouts intégrés « manuellement » au planning du mois : couverture de la marque d'après ses besoins du mois,
- * mise à jour à chaque modification (`stamp`). Un shift affecté en conflit n'est jamais présenté comme couvert ; sans besoins définis :
+ * mise à jour à chaque modification (bus d'invalidation : écran, autre onglet, autre manager). Un shift affecté en conflit n'est jamais présenté comme couvert ; sans besoins définis :
  * « Besoins à renseigner ». Pour attribuer, le choix du collaborateur ouvre la fenêtre habituelle (contrôles, confirmations, rappels).
  */
-export function IntegrationTracker({ periodId, stamp, emps, canEdit, onPick, onChanged }: { periodId: string; stamp: unknown; emps: Emp[]; canEdit: boolean;
+export function IntegrationTracker({ periodId, emps, canEdit, onPick, onChanged }: { periodId: string; emps: Emp[]; canEdit: boolean;
   onPick: (emp: Emp, day: string) => void; onChanged: () => void }) {
   const toast = useToast();
   const q = useApi<{ items: Item[] }>(`/periods/${periodId}/integrations`);
-  useEffect(() => { q.reload(); }, [stamp]); // eslint-disable-line react-hooks/exhaustive-deps
   const [assigning, setAssigning] = useState<{ brand: string; name: string; row: CoverItem } | null>(null);
   const [who, setWho] = useState(""); const [busy, setBusy] = useState(false);
   const items = q.data?.items ?? [];
   if (!items.length) return null;
 
   async function dismiss(id: string) {
-    try { await api(`/periods/${periodId}/integrations/${id}/dismiss`, { method: "POST" }); q.reload(); } catch (e) { toast.push(errText(e), "bad"); }
+    try { await api(`/periods/${periodId}/integrations/${id}/dismiss`, { method: "POST" }); invalidate(); } catch (e) { toast.push(errText(e), "bad"); }
   }
   async function place(it: Extract<Item, { kind: "brand" }>, row: CoverItem) {
     setBusy(true);
     try {
       await api(`/periods/${periodId}/integrations/${it.id}/place`, { method: "POST", json: { slot_key: row.slot_key } });
       toast.push(`Shift ${it.name} placé le ${dayLabel(row.day)} : choisissez maintenant le collaborateur.`, "ok");
-      q.reload(); onChanged(); setWho(""); setAssigning({ brand: it.brand, name: it.name, row });
+      onChanged(); setWho(""); setAssigning({ brand: it.brand, name: it.name, row });
     } catch (e) { toast.push(errText(e), "bad"); } finally { setBusy(false); }
   }
   const allowed = assigning ? emps.filter((e) => e.brands && assigning.brand in e.brands) : [];
@@ -62,15 +62,17 @@ export function IntegrationTracker({ periodId, stamp, emps, canEdit, onPick, onC
           </Callout>);
         if (c.complete) return (
           <Callout key={it.id} kind="ok" title={`Tous les shifts de ${it.name} sont attribués et sans conflit.`}>
-            <span data-testid="tracker-brand">{c.total} shift{c.total > 1 ? "s" : ""} · {fmtHM(c.covered_minutes)} couvertes.</span>
+            <span data-testid="tracker-brand">{c.total} shift{c.total > 1 ? "s" : ""} · {fmtHM(c.covered_minutes)} couvertes. Reste à attribuer : 0 shift · 0 h. Vous serez prévenu·e si la couverture redevient incomplète.</span>
             {canEdit && <div className="row" style={{ marginTop: "var(--sp-1)" }}><Button size="sm" onClick={() => void dismiss(it.id)}>Masquer le suivi</Button></div>}
           </Callout>);
         return (
           <Callout key={it.id} kind="warn" title={`${it.name} : ${c.assigned} shift${c.assigned > 1 ? "s" : ""} attribué${c.assigned > 1 ? "s" : ""} sur ${c.total} — ${c.remaining} reste${c.remaining > 1 ? "nt" : ""} à compléter.`}>
+            <p style={{ margin: 0 }} data-testid="tracker-remaining"><strong>Reste à attribuer : {c.remaining} shift{c.remaining > 1 ? "s" : ""} · {fmtHM(c.remaining_minutes)}</strong></p>
             <p className="help" style={{ margin: 0 }} data-testid="tracker-brand">
               {fmtHM(c.covered_minutes)} couvertes · {fmtHM(c.remaining_minutes)} restantes
               {c.to_place ? ` · ${c.to_place} à placer` : ""}{c.unassigned ? ` · ${c.unassigned} placé${c.unassigned > 1 ? "s" : ""} sans collaborateur` : ""}{c.conflict ? ` · ${c.conflict} en conflit (non compté${c.conflict > 1 ? "s" : ""} comme couvert${c.conflict > 1 ? "s" : ""})` : ""}
             </p>
+            <p className="help" style={{ margin: 0 }}>Une notification vous préviendra lorsque tous les besoins de {it.name} seront couverts sans conflit.</p>
             <details className="history-details" data-testid="tracker-details"><summary>Voir les shifts à compléter ({c.items.length})</summary>
               <ul className="cover-list">{c.items.map((r) => (
                 <li key={r.slot_key} className="cover-row" data-state={r.state}>

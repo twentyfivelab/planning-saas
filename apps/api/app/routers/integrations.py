@@ -20,12 +20,11 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import func, select
 
 from planning_solver.timecalc import shift_hours
-from planning_solver.validator import violations
 
 from .. import models as m
 from ..deps import Ctx, audit, get_or_404, require
 from ..period_state import ensure_editable, statuses
-from ..services_bridge import assignments_for_validation, brand_schedules, build_input
+from ..services_bridge import brand_schedules, build_input
 from .months import MONTHS_FR
 
 router = APIRouter(tags=["intégration d'un ajout au planning"])
@@ -181,6 +180,9 @@ def choose(pid: str, body: ChooseIn, ctx: Ctx = Depends(require("planning.edit")
                              employee_id=ent["employee"].id if ent["kind"] == "employee" else None, choice=body.choice, run_id=run_id, chosen_by=ctx.user.id)
     ctx.db.add(it)
     ctx.db.flush()
+    if ent["kind"] == "brand" and body.choice == "manual":  # état initial : référence des notifications (aucune envoyée au choix lui-même)
+        from ..integration_watch import record
+        record(ctx.db, it, p, ent["name"], _coverage(ctx, p, ent["code"]), notify=False)
     audit(ctx, "integration.chosen", "period", p.id, {"period_id": str(p.id), "period": p.name, "label": _label(p), "kind": ent["kind"], "name": ent["name"],
                                                        "brand": ent.get("code"), "employee_id": ent.get("id"), "choice": body.choice,
                                                        "choice_label": CHOICE_LABEL[body.choice], "run_id": str(run_id) if run_id else None,
@@ -189,37 +191,8 @@ def choose(pid: str, body: ChooseIn, ctx: Ctx = Depends(require("planning.edit")
 
 
 def _coverage(ctx: Ctx, p: m.PlanningPeriod, code: str, inp=None) -> dict:
-    """Couverture des besoins d'une marque ce mois-ci : un shift affecté mais en conflit n'est jamais compté comme couvert."""
-    inp = inp or build_input(ctx.db, p)
-    slots = [s for s in inp.slots if code in s.allocations and not s.id.startswith("MANUAL|")]
-    shifts = {sh.slot_key: sh for sh in ctx.db.scalars(select(m.Shift).where(m.Shift.period_id == p.id))}
-    asg = {a.shift_id: a for a in ctx.db.scalars(select(m.Assignment).where(m.Assignment.period_id == p.id))}
-    names = {e.id: e.name for e in ctx.db.scalars(select(m.Employee))}
-    site_names = {x.code: x.name for x in ctx.db.scalars(select(m.Site))}
-    bad: dict = {}
-    for v in violations(inp, assignments_for_validation(ctx.db, inp, p)):
-        for sid in v.slots:
-            bad.setdefault(sid, []).append(v.text)
-    counts = {"covered": 0, "conflict": 0, "unassigned": 0, "to_place": 0}
-    need_min = covered_min = 0
-    items = []
-    for s in sorted(slots, key=lambda s: (s.day, s.start, s.site, s.id)):
-        mins = s.allocations[code]
-        need_min += mins
-        sh = shifts.get(s.id)
-        a = asg.get(sh.id) if sh else None
-        state = "to_place" if sh is None else "unassigned" if a is None else "conflict" if s.id in bad else "covered"
-        counts[state] += 1
-        if state == "covered":
-            covered_min += mins
-            continue
-        items.append({"slot_key": s.id, "state": state, "day": s.day.isoformat(), "start": s.start.isoformat(), "end": s.end.isoformat(), "site": s.site,
-                      "site_name": site_names.get(s.site, s.site), "minutes": mins, "shift_id": str(sh.id) if sh else None,
-                      "assignment_id": str(a.id) if a else None, "employee": names.get(a.employee_id) if a else None, "conflicts": bad.get(s.id, [])[:3]})
-    total = len(slots)
-    return {"total": total, **counts, "assigned": counts["covered"] + counts["conflict"], "remaining": total - counts["covered"],
-            "need_minutes": need_min, "covered_minutes": covered_min, "remaining_minutes": need_min - covered_min,
-            "needs_missing": total == 0, "complete": total > 0 and counts["covered"] == total, "items": items}
+    from ..coverage import brand_coverage
+    return brand_coverage(ctx.db, p, code, inp)
 
 
 @router.get("/periods/{pid}/integrations")

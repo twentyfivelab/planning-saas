@@ -166,3 +166,76 @@ def test_planning_publie_demande_confirmation_et_droits(t):
     assert r.status_code == 409 and r.json()["detail"]["code"] == "official_version"
     assert o.get(f"/periods/{dec}/integrations").json()["items"] == []  # refus : aucun choix enregistré
     assert not [h for h in o.get("/history", params={"kind": "integration"}).json()["items"]]
+
+
+def notes(o, kind_prefix="coverage_"):
+    return [n for n in o.get("/notifications").json()["items"] if n["kind"].startswith(kind_prefix)]
+
+
+def test_notifications_de_couverture_aux_seuls_changements_d_etat(t):
+    """Complète -> une notification ; modification sans changement d'état -> rien ; suppression -> « de nouveau incomplète » une seule fois ;
+    conflit -> jamais « couvert » ; besoins retirés -> « Besoins à renseigner » ; suivi masqué -> plus rien. Persistant à la reconnexion."""
+    o, dec = t["o"], t["dec"]
+    add_nuxe(o)
+    nuxe_needs(o)  # 4 samedis
+    dan = o.post("/employees", json={"code": "dan", "name": "Dan", "brands": {"Nuxe": "priority"}}).json()
+    eve = o.post("/employees", json={"code": "eve", "name": "Eve", "brands": {"Nuxe": "priority"}}).json()
+    for e in (dan, eve):
+        assert o.post(f"/periods/{dec}/integrations", json={"kind": "employee", "employee_id": e["id"], "choice": "manual"}).status_code == 201
+    iid = o.post(f"/periods/{dec}/integrations", json={"kind": "brand", "brand_code": "Nuxe", "choice": "manual"}).json()["integration_id"]
+    assert notes(o) == []  # le choix lui-même ne notifie pas
+    cov = lambda: next(i for i in o.get(f"/periods/{dec}/integrations").json()["items"] if i["kind"] == "brand")["coverage"]  # noqa: E731
+    items = cov()["items"]
+    aids = []
+    for k, x in enumerate(items):
+        sid = o.post(f"/periods/{dec}/integrations/{iid}/place", json={"slot_key": x["slot_key"]}).json()["shift_id"]
+        r = o.post(f"/periods/{dec}/manual-assign", json={"employee_id": (dan, eve)[k % 2]["id"], "shift_id": sid})
+        assert r.status_code == 200, r.text
+        aids.append(r.json()["assignment_id"])
+        if k < 3:
+            assert notes(o) == []  # 1, 2, 3 sur 4 : toujours incomplète, aucune notification répétée
+    c = cov()
+    assert c["complete"] is True and c["remaining"] == 0
+    n = notes(o)
+    assert [x["kind"] for x in n] == ["coverage_complete"] and n[0]["title"] == "Nuxe : tous les besoins de décembre 2026 sont couverts"
+    assert n[0]["body"] == "Tous les shifts de Nuxe sont attribués et sans conflit (4 shift(s), 24 h)." and n[0]["payload"]["month"] == "2026-12"
+    # modification sans effet sur l'état (verrou d'une affectation Alpha) : aucune nouvelle notification
+    alpha = next(a for a in o.get(f"/periods/{dec}/schedule").json()["assignments"] if "Alpha" in a["allocations"])
+    assert o.post(f"/assignments/{alpha['assignment_id']}/lock").status_code in (200, 204)
+    assert len(notes(o)) == 1
+    # suppression : de nouveau incomplète, une seule fois
+    assert o.delete(f"/assignments/{aids[0]}", params={"force": True}).status_code == 204
+    n = notes(o)
+    assert [x["kind"] for x in n] == ["coverage_incomplete", "coverage_complete"]
+    assert n[0]["title"] == "Nuxe : couverture de décembre 2026 de nouveau incomplète" and n[0]["body"] == "1 shift(s) (6 h) restent à attribuer : 1 sans collaborateur."
+    assert o.delete(f"/assignments/{aids[1]}", params={"force": True}).status_code == 204
+    assert len(notes(o)) == 2  # toujours incomplète : rien de plus
+    c = cov()
+    assert (c["remaining"], c["remaining_minutes"], c["unassigned"]) == (2, 12 * 60, 2)
+    # reconnexion : notifications et état conservés
+    me = o.get("/auth/me").json()
+    o2 = make_client()
+    assert o2.post("/auth/login", json={"email": me["email"], "password": __import__("tests.conftest", fromlist=["PW"]).PW}).status_code == 200
+    assert len(notes(o2)) == 2 and next(i for i in o2.get(f"/periods/{dec}/integrations").json()["items"] if i["kind"] == "brand")["coverage"]["remaining"] == 2
+    # de nouveau complète
+    for k, x in enumerate(c["items"]):
+        assert o.post(f"/periods/{dec}/manual-assign", json={"employee_id": (dan, eve)[k % 2]["id"], "shift_id": x["shift_id"]}).status_code == 200
+    assert [x["kind"] for x in notes(o)][0] == "coverage_complete" and len(notes(o)) == 3
+    # conflit : un collaborateur déjà occupé ce jour-là sur un shift Nuxe -> jamais « couvert »
+    day = c["items"][0]["day"]
+    busy = next(a for a in o.get(f"/periods/{dec}/schedule").json()["assignments"] if a["day"] == day and "Alpha" in a["allocations"])
+    nx = next(a for a in o.get(f"/periods/{dec}/schedule").json()["assignments"] if a["day"] == day and "Nuxe" in a["allocations"])
+    assert o.post(f"/periods/{dec}/manual-assign", json={"employee_id": busy["employee_id"], "shift_id": nx["shift_id"], "force": True, "reason": "test"}).status_code == 200
+    c = cov()
+    assert c["complete"] is False and c["conflict"] == 1
+    n = notes(o)
+    assert len(n) == 4 and n[0]["kind"] == "coverage_incomplete" and "1 en conflit" in n[0]["body"]
+    # besoins retirés (marque archivée à partir de décembre) : « Besoins à renseigner », jamais une confirmation
+    assert o.patch("/catalog/brands/Nuxe", json={"archived_from": "2026-12"}).status_code == 200
+    assert cov()["needs_missing"] is True
+    assert len(notes(o)) == 4  # incomplète -> besoins à renseigner : pas une nouvelle alerte de « perte de couverture »
+    assert o.patch("/catalog/brands/Nuxe", json={"archived_from": ""}).status_code == 200
+    # suivi masqué : plus aucune notification
+    assert o.post(f"/periods/{dec}/integrations/{iid}/dismiss").status_code == 200
+    assert o.delete(f"/assignments/{nx['assignment_id']}", params={"force": True}).status_code == 204
+    assert len(notes(o)) == 4

@@ -375,6 +375,11 @@ class PeriodIntegration(TenantOwned, Base):
     run_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True))
     chosen_by: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True))
     dismissed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    # dernier état de couverture constaté (marque) : une notification n'est envoyée qu'à un CHANGEMENT d'état, jamais répétée
+    last_state: Mapped[Optional[str]] = mapped_column(String(16))  # needs_missing | complete | incomplete
+    last_remaining: Mapped[Optional[int]] = mapped_column(Integer)
+    last_remaining_minutes: Mapped[Optional[int]] = mapped_column(Integer)
+    state_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
 
 
 class PeriodEmployee(TenantOwned, Base):

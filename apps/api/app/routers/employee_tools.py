@@ -148,6 +148,14 @@ def delete_assignment(aid: str, force: bool = False, reason: Optional[str] = Non
     audit(ctx, "assignment.manual_remove", "assignment", aid, detail)
 
 
+def compat_items(ctx: Ctx, p: m.PlanningPeriod, params: str = "plan") -> list:
+    """Mêmes incompatibilités que `compat_report` (mêmes entrées, même calcul), sans les compléments d'affichage (sites, avis du
+    plafond, collaborateurs supprimés, affectations signalées) : pour les résumés qui ne lisent que les lignes (impact d'une fiche)."""
+    flags = {"params": "current", "cap": "current"} if params == "current" else {}
+    inp = build_input(ctx.db, p, flags)
+    return compatibility(inp, assignments_for_validation(ctx.db, inp, p))["items"]
+
+
 def compat_report(ctx: Ctx, p: m.PlanningPeriod, params: str = "plan") -> dict:
     """Incompatibilités du planning avec SES paramètres (params="plan", par défaut) ou avec les paramètres actuels (params="current",
     aperçu avant de les appliquer). Lecture seule : rien n'est modifié."""

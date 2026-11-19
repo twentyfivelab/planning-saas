@@ -5,6 +5,7 @@ opérations réellement enregistrées apparaissent : le journal est écrit dans 
 refusée ou annulée n'y laisse aucune trace. Les informations absentes des anciens événements (marque, auteur…) sont affichées comme
 « non enregistré », jamais déduites. Les noms sont ceux figés au moment de la modification : un collaborateur retiré reste lisible."""
 import uuid
+from types import SimpleNamespace
 from collections import OrderedDict
 from datetime import date, datetime, time, timedelta, timezone
 from typing import Dict, List, Optional
@@ -179,6 +180,16 @@ def _employees(d: dict) -> Dict[str, str]:
     return out
 
 
+def _uuids(ids) -> list:
+    out = []
+    for i in ids:
+        try:
+            out.append(uuid.UUID(str(i)))
+        except ValueError:
+            pass
+    return out
+
+
 @router.get("/history")
 def history(ctx: Ctx = CtxDep, period_id: Optional[str] = None, employee_id: Optional[str] = None, site: Optional[str] = None,
             brand: Optional[str] = None, user_id: Optional[str] = None, kind: Optional[str] = None,
@@ -211,8 +222,13 @@ def history(ctx: Ctx = CtxDep, period_id: Optional[str] = None, employee_id: Opt
     rows = list(ctx.db.scalars(q.limit(3000)))
     users = {u.id: u.name for u in ctx.db.scalars(select(m.User))}
     # faits enregistrés ailleurs (jamais déduits) : planning d'une version, planning et auteur d'une génération
-    versions = {str(v.id): v for v in ctx.db.scalars(select(m.ScheduleVersion))}
-    runs = {str(x.id): x for x in ctx.db.scalars(select(m.OptimizationRun))}
+    # seulement les identifiants utiles, et seulement pour les événements lus : jamais le contenu des versions (instantanés complets)
+    vids = {r.entity_id for r in rows if r.entity == "version" and r.entity_id}
+    rids = {r.entity_id for r in rows if r.entity == "run" and r.entity_id}
+    versions = {str(i): SimpleNamespace(period_id=pid) for i, pid in ctx.db.execute(
+        select(m.ScheduleVersion.id, m.ScheduleVersion.period_id).where(m.ScheduleVersion.id.in_(_uuids(vids))))} if vids else {}
+    runs = {str(i): SimpleNamespace(period_id=pid, requested_by=by) for i, pid, by in ctx.db.execute(
+        select(m.OptimizationRun.id, m.OptimizationRun.period_id, m.OptimizationRun.requested_by).where(m.OptimizationRun.id.in_(_uuids(rids))))} if rids else {}
     # un planning supprimé garde son nom, avec la mention de sa suppression : distinct d'un nouveau planning créé pour le même mois
     periods = {str(p.id): (f"{p.name} (planning supprimé le {p.deleted_at.astimezone(tz):%d/%m/%Y})" if p.deleted_at else p.name)
                for p in ctx.db.scalars(select(m.PlanningPeriod))}

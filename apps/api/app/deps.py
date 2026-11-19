@@ -42,6 +42,9 @@ def get_ctx(request: Request) -> Iterator[Ctx]:
         user = db.get(m.User, row.user_id)
         if user is None or not user.is_active or user.tenant_id != row.tenant_id:
             raise HTTPException(401, "Compte inactif")
+        cid = request.headers.get("x-client-id", "")
+        if cid and len(cid) <= 64 and cid.replace("-", "").isalnum():  # onglet à l'origine de la modification (annonce temps réel)
+            db.info["rt_origin"] = cid
         yield Ctx(db, user, row.tenant_id, row.csrf_token)
 
 

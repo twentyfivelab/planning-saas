@@ -406,21 +406,29 @@ def employee_impact(eid: str, ctx: Ctx = Depends(require("planning.read"))):
     """Après la modification d'un paramètre PERMANENT : effet sur les plannings déjà créés, pour ce collaborateur.
     Un planning qui conserve ses paramètres n'est pas modifié par le changement : on indique ce que donnerait l'application des
     paramètres actuels (action explicite). Rien n'est modifié ici."""
-    from .employee_tools import compat_report
+    from .employee_tools import compat_items
     e = get_or_404(ctx, m.Employee, eid)
     rows = list(ctx.db.scalars(select(m.PlanningPeriod).where(m.PlanningPeriod.archived_at.is_(None), m.PlanningPeriod.deleted_at.is_(None)).order_by(m.PlanningPeriod.start_date)))
     st = statuses(ctx.db, rows)
     out = []
+    from ..services_bridge import reference_cache
+    with reference_cache(ctx.db):  # lecture seule : données de référence lues une fois pour tous les mois (au lieu de 2 fois par mois)
+        out = _impact_rows(ctx, e, rows, st, compat_items)
+    return {"employee": e.name, "employee_code": e.code, "periods": out}
+
+
+def _impact_rows(ctx: Ctx, e, rows, st, compat_items) -> list:
+    out = []
     for p in rows:
         if not st[p.id]["assignments"]:
             continue
-        mine = lambda rep: [i for i in rep["items"] if i.get("employee_id") == e.code]  # noqa: E731
-        own = mine(compat_report(ctx, p, "plan"))
+        mine = lambda items: [i for i in items if i.get("employee_id") == e.code]  # noqa: E731
+        own = mine(compat_items(ctx, p, "plan"))
         frozen = bool(p.frozen_params)
-        cur = mine(compat_report(ctx, p, "current")) if frozen else own
+        cur = mine(compat_items(ctx, p, "current")) if frozen else own
         if own or cur:
             out.append({"period_id": str(p.id), "name": p.name, "status": st[p.id]["status"], "frozen": frozen,
                         "frozen_at": p.frozen_at.isoformat() if p.frozen_at else None,
                         "hard": sum(1 for i in own if i["kind"] == "obligatoire"), "soft": sum(1 for i in own if i["kind"] != "obligatoire"),
                         "if_applied": {"hard": sum(1 for i in cur if i["kind"] == "obligatoire"), "soft": sum(1 for i in cur if i["kind"] != "obligatoire")}})
-    return {"employee": e.name, "employee_code": e.code, "periods": out}
+    return out

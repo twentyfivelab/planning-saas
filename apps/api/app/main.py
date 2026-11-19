@@ -41,6 +41,43 @@ class SecurityHeaders:
 app.add_middleware(SecurityHeaders)
 
 
+class RequestTiming:
+    """Diagnostic des lenteurs : en-tête « Server-Timing: app;dur=… » (durée de traitement côté serveur, lisible par le navigateur et les
+    tests) et journal des requêtes au-delà de SLOW_REQUEST_MS (méthode, modèle de route, durée ; jamais de données ni d'identifiants)."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http" or scope.get("path") == "/events":
+            return await self.app(scope, receive, send)
+        import time
+        t0 = time.perf_counter()
+
+        async def timed(message):
+            if message["type"] == "http.response.start":
+                ms = (time.perf_counter() - t0) * 1000
+                message = {**message, "headers": [*message.get("headers", []), (b"server-timing", f"app;dur={ms:.0f}".encode())]}
+                if ms >= settings.slow_request_ms:
+                    route = getattr(scope.get("route"), "path", "?")
+                    _slow.warning("requête lente : %s %s %.0f ms", scope.get("method"), route, ms)
+            await send(message)
+
+        await self.app(scope, receive, timed)
+
+
+import logging  # noqa: E402
+
+_slow = logging.getLogger("app.slow")
+if not _slow.handlers:  # visible dans les journaux du conteneur, même sans configuration de journalisation globale
+    _h = logging.StreamHandler()
+    _h.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
+    _slow.addHandler(_h)
+    _slow.setLevel(logging.WARNING)
+    _slow.propagate = False
+app.add_middleware(RequestTiming)
+
+
 @app.exception_handler(Exception)
 async def unhandled(request: Request, exc: Exception):  # pas de détails internes ni de données dans la réponse
     return JSONResponse({"detail": "Erreur interne"}, status_code=500)

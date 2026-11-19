@@ -27,10 +27,10 @@ def _redis():
     return _client
 
 
-def publish(tenant_id, actions) -> None:
+def publish(tenant_id, actions, origin=None) -> None:
     """Jamais bloquant pour l'écriture : en cas d'indisponibilité de Redis, les clients se resynchronisent par interrogation."""
     try:
-        _redis().publish(channel(tenant_id), json.dumps({"at": datetime.now(timezone.utc).isoformat(), "actions": sorted(actions)[:20]}))
+        _redis().publish(channel(tenant_id), json.dumps({"at": datetime.now(timezone.utc).isoformat(), "actions": sorted(actions)[:20], "origin": origin}))
     except Exception as exc:  # noqa: BLE001
         log.warning("publication temps réel impossible : %s", type(exc).__name__)
 
@@ -46,7 +46,7 @@ def _collect(session, _ctx):
 def _publish(session):
     changes = session.info.pop("rt_changes", None)
     for tid, actions in (changes or {}).items():
-        publish(tid, actions)
+        publish(tid, actions, session.info.get("rt_origin"))  # l'onglet auteur, déjà rechargé, peut ignorer sa propre annonce
 
 
 @event.listens_for(SessionLocal, "after_rollback")
