@@ -13,6 +13,7 @@ import { CompatBanner } from "@/components/planning/CompatBanner";
 import { AddShiftModal } from "@/components/planning/AddShiftModal";
 import { DayShiftsModal, RemoveDialog } from "@/components/planning/DayShiftsModal";
 import { DuplicateModal, SwapModal } from "@/components/planning/SwapDuplicate";
+import { DeletePlanningModal } from "@/components/planning/DeletePlanning";
 import { EmployeeMonthModal } from "@/components/planning/EmployeeMonth";
 import { WeekView } from "@/components/planning/WeekView";
 import { HistoryPanel } from "@/components/planning/HistoryPanel";
@@ -84,6 +85,7 @@ export default function PlanningPage() {
   const regsApi = useApi<Reg[]>(period ? `/periods/${period.id}/regularizations` : null);
   const regs = regsApi.data ?? [];
   const [swapping, setSwapping] = useState<Assignment | null>(null);
+  const [deleting, setDeleting] = useState(false); const [deletedMsg, setDeletedMsg] = useState("");
   const [duplicating, setDuplicating] = useState<Assignment | null>(null);
   const [empMonth, setEmpMonth] = useState<{ id: string; name: string } | null>(null);
   const refresh = () => { sched.reload(); confl.reload(); sunday.reload(); regsApi.reload(); invalidate(); };
@@ -146,12 +148,15 @@ export default function PlanningPage() {
         {period && canEdit && <a className="btn" href={`/plannings/new?period=${period.id}`}><Icon name="sparkles" size={16} />Paramètres du mois</a>}
         {period && me.permissions.includes("planning.publish") && period.status !== "draft" && (
           <Button icon="history" onClick={async () => { try { await api(`/periods/${period.id}/${archived ? "unarchive" : "archive"}`, { method: "POST" }); reloadPeriods(); invalidate(); toast.push(archived ? `${period.name} désarchivé : il est de nouveau modifiable.` : `${period.name} archivé : consultable, non modifiable.`, "ok"); } catch (e) { toast.push(e instanceof Error ? e.message : "Action impossible", "bad"); } }}>{archived ? "Désarchiver" : "Archiver"}</Button>)}
+        {period && me.permissions.includes("planning.delete") && period.status !== "draft" && (
+          <Button variant="danger" icon="x" onClick={() => setDeleting(true)}>Supprimer ce planning</Button>)}
         <Button icon="undo" disabled={!reassign.canUndo} onClick={reassign.undo}>Annuler</Button>
         <Button icon="redo" disabled={!reassign.canRedo} onClick={reassign.redo}>Rétablir</Button>
         <Button icon="clock" onClick={() => setHistoryOpen(true)} disabled={!period}>Historique</Button>
         {period && canEdit && me.permissions.includes("availability.write") && <Button icon="alert" onClick={() => setAbsence(true)}>Déclarer une absence</Button>}
         {canEdit && <Button variant="primary" icon="history" onClick={saveVersion} disabled={!period}>Enregistrer une version</Button>}
       </PageHead>
+      {deletedMsg && <Callout kind="ok" title={deletedMsg}><span data-testid="deleted-message">La suppression est inscrite dans l&apos;historique, avec votre identité. <a href="/history?kind=deletion" style={{ textDecoration: "underline" }}>Voir l&apos;historique</a></span></Callout>}
 
       <Card>
         <div className="toolbar" role="search" aria-label="Filtres du planning">
@@ -257,6 +262,7 @@ export default function PlanningPage() {
         onReassign={(a, to) => { setSel(null); reassign.request(a, to); }} onLock={toggleLock} onTimes={editTimes} onRemove={(a) => { setSel(null); setRemoving(a); }}
         onExplain={(a) => setExplain(a.assignment_id)} onReplacements={(a) => { setSel(null); setReplace({ shift_id: a.shift_id, label: `${dayLabel(a.day)} · ${a.site} · ${timeShort(a.start)}–${timeShort(a.end)}` }); }}
         onSwap={(a) => { setSel(null); setSwapping(a); }} onDuplicate={(a) => { setSel(null); setDuplicating(a); }} />
+      {period && <DeletePlanningModal periodId={period.id} open={deleting} onClose={() => setDeleting(false)} onDeleted={(msg) => { setDeleting(false); setDeletedMsg(msg); reloadPeriods(); invalidate(); }} />}
       <SwapModal a={swapping} periodId={period?.id ?? ""} all={all} onClose={() => setSwapping(null)} onDone={() => { setSwapping(null); refresh(); }} />
       <DuplicateModal a={duplicating} period={period ?? null} onClose={() => setDuplicating(null)} onDone={() => { setDuplicating(null); refresh(); }} />
       <ExplainModal assignmentId={explain} onClose={() => setExplain(null)} />

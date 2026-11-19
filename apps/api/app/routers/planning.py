@@ -52,7 +52,7 @@ def scope_brands(ctx: Ctx) -> Optional[set]:
 
 @router.get("/periods")
 def periods(ctx: Ctx = Depends(require("self.read"))):  # mois et statuts seulement : aucune donnée de collaborateur
-    rows = list(ctx.db.scalars(select(m.PlanningPeriod).order_by(m.PlanningPeriod.start_date)))
+    rows = list(ctx.db.scalars(select(m.PlanningPeriod).where(m.PlanningPeriod.deleted_at.is_(None)).order_by(m.PlanningPeriod.start_date)))
     st = statuses(ctx.db, rows)
     return [{**serialize(p), **st[p.id]} for p in rows]
 
@@ -147,7 +147,8 @@ def _run_view(ctx: Ctx, run: m.OptimizationRun) -> dict:
 
 @router.get("/runs")
 def runs(ctx: Ctx = Depends(require("planning.read"))):
-    return [_run_view(ctx, r) for r in ctx.db.scalars(select(m.OptimizationRun).where(m.OptimizationRun.simulation.is_(False)).order_by(
+    gone = select(m.PlanningPeriod.id).where(m.PlanningPeriod.deleted_at.is_not(None))
+    return [_run_view(ctx, r) for r in ctx.db.scalars(select(m.OptimizationRun).where(m.OptimizationRun.simulation.is_(False), m.OptimizationRun.period_id.not_in(gone)).order_by(
         m.OptimizationRun.created_at.desc()).limit(50))]
 
 

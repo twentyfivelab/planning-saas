@@ -408,7 +408,7 @@ def employee_impact(eid: str, ctx: Ctx = Depends(require("planning.read"))):
     paramètres actuels (action explicite). Rien n'est modifié ici."""
     from .employee_tools import compat_report
     e = get_or_404(ctx, m.Employee, eid)
-    rows = list(ctx.db.scalars(select(m.PlanningPeriod).where(m.PlanningPeriod.archived_at.is_(None)).order_by(m.PlanningPeriod.start_date)))
+    rows = list(ctx.db.scalars(select(m.PlanningPeriod).where(m.PlanningPeriod.archived_at.is_(None), m.PlanningPeriod.deleted_at.is_(None)).order_by(m.PlanningPeriod.start_date)))
     st = statuses(ctx.db, rows)
     out = []
     for p in rows:

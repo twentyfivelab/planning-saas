@@ -33,10 +33,11 @@ KIND_OF = {
     "assignment.lock": "lock", "assignment.unlock": "lock",
     "optimization.finished": "generation", "simulation.applied": "generation",
     "version.restore": "restore", "version.publish": "publish", "version.create": "version", "version.validate": "version",
+    "period.deleted": "deletion",
 }
 KIND_LABEL = {"add": "Ajout", "remove": "Suppression", "replace": "Remplacement", "swap": "Échange", "bulk": "Modification groupée",
               "hours": "Changement d'horaires", "lock": "Verrouillage", "generation": "Génération", "restore": "Restauration",
-              "publish": "Publication", "version": "Version"}
+              "publish": "Publication", "version": "Version", "deletion": "Suppression d'un planning"}
 GROUPED = {"assignment.bulk_transfer", "assignment.duplicate", "assignment.mission_release"}  # une opération = plusieurs lignes du journal
 
 
@@ -126,6 +127,13 @@ def _render(r: m.AuditLog, d: dict) -> dict:
         return {"title": f"Restauration de la version n° {d.get('number', '—')}", "lines": [f"{d.get('changed', 0)} affectation(s) modifiée(s)" + (f", version de sécurité n° {d['safety_version']}" if d.get("safety_version") else "")]}
     if kind == "publish":
         return {"title": f"Publication de la version n° {d.get('number', '—')}", "lines": [f"{d.get('notifications', 0)} collaborateur(s) prévenu(s)"]}
+    if a == "period.deleted":
+        by = d.get("by") or {}
+        v = d.get("versions") or {}
+        lines = [f"Planning de {d.get('label') or d.get('period') or '—'} supprimé : {d.get('assignments', 0)} affectation(s) retirée(s) des vues actives",
+                 f"Supprimé par {by.get('name') or NOT_RECORDED} (compte {by.get('id') or NOT_RECORDED})",
+                 f"Conservé pour la traçabilité : archive des affectations, {v.get('total', 0)} version(s) et l'historique"]
+        return {"title": "Suppression d'un planning", "lines": lines}
     if a == "version.create":
         return {"title": f"Version n° {d.get('number', '—')} enregistrée", "lines": [d["label"]] if d.get("label") else []}
     return {"title": f"Version n° {d.get('number', '—')} validée", "lines": []}

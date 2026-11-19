@@ -8,11 +8,12 @@ function Inner() {
   const sp = useSearchParams();
   const employee = sp.get("employee") ?? undefined;
   const period = sp.get("period") ?? undefined;
+  const kind = sp.get("kind") ?? undefined;
   return (
     <>
       <PageHead eyebrow="Qui a modifié quoi, et quand" title="Historique des modifications" />
       <Card className="history-page">
-        <HistoryFeed employeeId={employee} periodId={period} />
+        <HistoryFeed employeeId={employee} periodId={period} kind={kind} />
       </Card>
     </>
   );

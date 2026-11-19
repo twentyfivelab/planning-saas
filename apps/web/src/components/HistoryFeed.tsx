@@ -16,8 +16,8 @@ const TONE: Record<string, "ok" | "bad" | "info" | "warn" | "neutral" | "accent"
 
 /** Historique des modifications (journal d'audit, présenté en langage simple). Date de modification en tête, date du shift à part ;
  *  heures dans le fuseau de l'entreprise (fourni par le serveur). Filtres simples ; « Afficher plus » pour remonter dans le temps. */
-export function HistoryFeed({ periodId, employeeId, filters = true, limit = 30 }: { periodId?: string; employeeId?: string; filters?: boolean; limit?: number }) {
-  const [f, setF] = useState<Filters>({ ...EMPTY, employee_id: employeeId ?? "" });
+export function HistoryFeed({ periodId, employeeId, kind, filters = true, limit = 30 }: { periodId?: string; employeeId?: string; kind?: string; filters?: boolean; limit?: number }) {
+  const [f, setF] = useState<Filters>({ ...EMPTY, employee_id: employeeId ?? "", kind: kind ?? "" });
   useEffect(() => { setF((x) => ({ ...x, employee_id: employeeId ?? "" })); }, [employeeId]);
   const qs = useMemo(() => {
     const p = new URLSearchParams({ limit: String(limit) });

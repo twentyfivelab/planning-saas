@@ -23,7 +23,7 @@ def employee_month(eid: str, month: str, ctx: Ctx = Depends(require("planning.re
     except Exception:
         raise HTTPException(422, "Mois invalide (AAAA-MM)")
     last = first.replace(day=_cal.monthrange(first.year, first.month)[1])
-    period = ctx.db.scalar(select(m.PlanningPeriod).where(m.PlanningPeriod.start_date <= last, m.PlanningPeriod.end_date >= first)
+    period = ctx.db.scalar(select(m.PlanningPeriod).where(m.PlanningPeriod.deleted_at.is_(None), m.PlanningPeriod.start_date <= last, m.PlanningPeriod.end_date >= first)
                            .order_by(m.PlanningPeriod.start_date).limit(1))
     site_names = {s.code: s.name for s in ctx.db.scalars(select(m.Site))}
     rows = ctx.db.execute(select(m.Assignment, m.Shift).join(m.Shift, m.Shift.id == m.Assignment.shift_id)

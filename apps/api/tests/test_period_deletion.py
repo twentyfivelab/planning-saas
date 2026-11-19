@@ -1,0 +1,144 @@
+"""Suppression d'un planning généré : droit dédié, aperçu, confirmation par mot de passe (vérifiée côté serveur, tentatives limitées),
+suppression logique en une transaction, trace protégée, rien d'autre modifié. Données entièrement créées par les tests."""
+import uuid
+
+import pytest
+from sqlalchemy import text
+
+from tests.conftest import PW, make_client, register
+
+
+def login(email, pw=PW):
+    c = make_client()
+    r = c.post("/auth/login", json={"email": email, "password": pw})
+    assert r.status_code == 200, r.text
+    c.headers["X-CSRF-Token"] = r.json()["csrf_token"]
+    return c
+
+
+@pytest.fixture
+def t():
+    o = make_client()
+    dom = f"del-{uuid.uuid4().hex[:8]}.example"
+    owner = register(o, "Suppression SA", f"owner@{dom}")
+    assert o.post("/catalog/sites", json={"code": "AERO", "name": "Aéroport"}).status_code == 201
+    assert o.post("/catalog/brands", json={"name": "Alpha"}).status_code == 201
+    assert o.post("/catalog/animations", json={"site_code": "AERO", "brand_code": "Alpha", "start": "09:00", "end": "18:00", "weekdays": [0, 1, 2, 3, 4, 5, 6],
+                                               "headcount": 1, "from_month": "2026-10"}).status_code == 201
+    emps = [o.post("/employees", json={"code": c, "name": c.capitalize(), "brands": {"Alpha": "priority"}}).json() for c in ("ana", "ben", "cleo")]
+    pids = {}
+    for y, mo in ((2026, 10), (2026, 11)):
+        pid = o.post("/periods/ensure", json={"year": y, "month": mo}).json()["id"]
+        assert o.post(f"/periods/{pid}/runs", json={"time_limit_s": 8}, headers={"Idempotency-Key": uuid.uuid4().hex}).status_code == 202
+        pids[mo] = pid
+    assert o.post(f"/periods/{pids[11]}/versions", json={"label": "avant suppression"}).status_code in (200, 201)
+    return dict(o=o, dom=dom, pids=pids, emps=emps, tenant=owner.get("tenant_id"))
+
+
+def sched(o, pid):
+    return o.get(f"/periods/{pid}/schedule")
+
+
+def test_apercu_droits_et_mot_de_passe_incorrect(t):
+    o, pid, dom = t["o"], t["pids"][11], t["dom"]
+    pv = o.get(f"/periods/{pid}/deletion-preview").json()
+    n = len(sched(o, pid).json()["assignments"])
+    assert pv["label"] == "novembre 2026" and pv["assignments"] == n > 0 and pv["versions"]["total"] >= 2 and pv["can_delete"] is True
+    # droit dédié : ni un manager ni un planificateur
+    for role in ("manager", "planner"):
+        assert o.post("/users", json={"email": f"{role}@{dom}", "name": role.capitalize(), "role": role, "password": PW}).status_code == 201
+        c = login(f"{role}@{dom}")
+        assert c.get(f"/periods/{pid}/deletion-preview").status_code == 403
+        assert c.post(f"/periods/{pid}/delete", json={"password": PW}).status_code == 403
+    # mot de passe incorrect : erreur, planning intact ; jamais conservé
+    r = o.post(f"/periods/{pid}/delete", json={"password": "pas-le-bon"})
+    assert r.status_code == 403 and r.json()["detail"]["code"] == "wrong_password"
+    assert len(sched(o, pid).json()["assignments"]) == n
+    assert "pas-le-bon" not in str(o.get("/history").json()) and "pas-le-bon" not in str(o.get(f"/periods/{pid}/deletion-preview").json())
+    # « Annuler » côté écran = aucun appel de suppression : rien ne change tant que la confirmation n'est pas envoyée
+    assert o.get("/periods").status_code == 200 and any(p["id"] == pid for p in o.get("/periods").json())
+
+
+def test_tentatives_repetees_bloquees(t):
+    o, pid = t["o"], t["pids"][11]
+    for _ in range(5):
+        assert o.post(f"/periods/{pid}/delete", json={"password": "faux"}).status_code == 403
+    r = o.post(f"/periods/{pid}/delete", json={"password": PW})  # même le bon mot de passe est refusé pendant le blocage
+    assert r.status_code == 429 and r.json()["detail"]["code"] == "too_many_attempts"
+    assert sched(o, pid).status_code == 200
+
+
+def test_suppression_reussie_trace_persistante_et_rien_d_autre_modifie(t):
+    o, pids, emps = t["o"], t["pids"], t["emps"]
+    pid = pids[11]
+    n = len(sched(o, pid).json()["assignments"])
+    oct_before = sorted((a["assignment_id"], a["employee_id"]) for a in sched(o, pids[10]).json()["assignments"])
+    emps_before = o.get("/employees").json()
+    me = o.get("/auth/me").json()
+    r = o.post(f"/periods/{pid}/delete", json={"password": PW})
+    assert r.status_code == 200, r.text
+    assert r.json()["message"] == "Le planning de novembre 2026 a été supprimé avec succès." and r.json()["assignments"] == n
+    # retiré des vues actives, sans recréation automatique
+    assert all(p["id"] != pid for p in o.get("/periods").json())
+    assert sched(o, pid).status_code == 404 and o.get(f"/periods/{pid}/versions").status_code == 404
+    cal = o.get("/calendar?year=2026&month=11")
+    assert cal.status_code == 200 and all(p["id"] != pid for p in o.get("/periods").json())
+    assert not any(p["start_date"] == "2026-11-01" for p in o.get("/periods").json())  # aucun planning recréé pour novembre
+    # double soumission
+    again = o.post(f"/periods/{pid}/delete", json={"password": PW})
+    assert again.status_code == 409 and again.json()["detail"]["code"] == "already_deleted"
+    # rien d'autre modifié
+    assert sorted((a["assignment_id"], a["employee_id"]) for a in sched(o, pids[10]).json()["assignments"]) == oct_before
+    assert o.get("/employees").json() == emps_before
+    # trace : action, planning, date et heure, nom et identifiant interne, nombre d'affectations — consultable après la suppression
+    ev = o.get("/history", params={"kind": "deletion"}).json()["items"]
+    assert len(ev) == 1
+    e = ev[0]
+    assert e["title"] == "Suppression d'un planning" and e["period"] == "Novembre 2026" and e["by"] == me["name"]
+    assert f"{n} affectation(s)" in e["lines"][0] and me["id"] in e["lines"][1] and me["name"] in e["lines"][1] and e["at_label"]
+    assert o.get("/history", params={"period_id": pid}).json()["items"]  # l'historique du planning supprimé reste consultable
+    # un nouveau planning de novembre peut être créé EXPLICITEMENT, distinct de l'ancien
+    new = o.post("/periods/ensure", json={"year": 2026, "month": 11}).json()["id"]
+    assert new != pid and sched(o, new).json()["assignments"] == []
+    assert emps  # fiches inchangées (vérifié ci-dessus)
+
+
+def test_trace_protegee_en_base(t):
+    o, pid, tenant = t["o"], t["pids"][11], t["tenant"]
+    assert o.post(f"/periods/{pid}/delete", json={"password": PW}).status_code == 200
+    from app.db import tenant_session
+    tid = tenant or o.get("/auth/me").json()["tenant_id"]
+    with pytest.raises(Exception):
+        with tenant_session(tid) as db:
+            db.execute(text("DELETE FROM planning_periods WHERE id = :p"), {"p": pid})
+    with pytest.raises(Exception):
+        with tenant_session(tid) as db:
+            db.execute(text("UPDATE planning_periods SET deleted_at = NULL WHERE id = :p"), {"p": pid})
+    with pytest.raises(Exception):
+        with tenant_session(tid) as db:
+            db.execute(text("DELETE FROM audit_logs WHERE action = 'period.deleted'"))
+    assert o.get("/history", params={"kind": "deletion"}).json()["items"]  # toujours là
+
+
+def test_cloisonnement_compte_externe_et_heures_reelles(t):
+    o, pid, dom, pids = t["o"], t["pids"][11], t["dom"], t["pids"]
+    other = make_client()
+    register(other, "Autre SA", f"autre-{uuid.uuid4().hex[:6]}@example.com")
+    assert other.post(f"/periods/{pid}/delete", json={"password": PW}).status_code == 404  # autre entreprise : invisible
+    # compte sans mot de passe local (connexion externe) : réauthentification demandée, rien de supprimé
+    assert o.post("/users", json={"email": f"ext@{dom}", "name": "Externe", "role": "admin", "password": PW}).status_code == 201
+    ext = login(f"ext@{dom}")
+    from app.db import tenant_session
+    with tenant_session(o.get("/auth/me").json()["tenant_id"]) as db:
+        # aucune connexion externe n'existe aujourd'hui (mot de passe local obligatoire) : compte externe simulé par une empreinte vide
+        db.execute(text("UPDATE users SET password_hash = '' WHERE email = :e"), {"e": f"ext@{dom}"})
+    r = ext.post(f"/periods/{pid}/delete", json={"password": "quelconque"})
+    assert r.status_code == 409 and r.json()["detail"]["code"] == "reauth_required"
+    assert sched(o, pid).status_code == 200
+    # heures réelles saisies : suppression refusée (elles ne seraient plus rattachées à rien)
+    a = sched(o, pids[10]).json()["assignments"][0]
+    assert o.put(f"/shifts/{a['shift_id']}/time-entry", json={"status": "worked", "actual_start": "09:00", "actual_end": "18:00", "actual_break_minutes": 60}).status_code == 200
+    pv = o.get(f"/periods/{pids[10]}/deletion-preview").json()
+    assert pv["can_delete"] is False and "heures réelles" in pv["blocking"][0]
+    r = o.post(f"/periods/{pids[10]}/delete", json={"password": PW})
+    assert r.status_code == 409 and r.json()["detail"]["code"] == "blocked" and sched(o, pids[10]).status_code == 200

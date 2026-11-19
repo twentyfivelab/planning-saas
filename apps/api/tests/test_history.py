@@ -69,7 +69,11 @@ def test_generation_remplacement_horaires_suppression_en_langage_simple(t):
     d = datetime.fromisoformat(x["day"])
     assert ev["shift_days"] == [x["day"]] and ev["shift_day_label"].endswith(f"{d.day} novembre 2026")  # date du shift
     at = datetime.fromisoformat(ev["at"]).astimezone(ZoneInfo("Europe/Zurich"))  # date de modification, fuseau de l'entreprise
-    assert at >= before.astimezone(ZoneInfo("Europe/Zurich")) and ev["at_label"].endswith(f"à {at:%H:%M}") and h["timezone"] == "Europe/Zurich"
+    # l'heure enregistrée vient de l'horloge de la BASE (début de transaction) et `before` de celle de la machine de test : deux horloges
+    # distinctes (écart mesuré : environ 1 ms, base en retard). Comparaison stricte impossible : tolérance explicite d'une seconde.
+    skew = (at - before).total_seconds()
+    assert skew > -1.0, f"modification enregistrée à {at.isoformat()}, avant l'envoi ({before.isoformat()}) de {-skew:.3f} s"
+    assert ev["at_label"].endswith(f"à {at:%H:%M}") and h["timezone"] == "Europe/Zurich"
     # changement d'horaires : ancienne et nouvelle valeur
     y = next(r for r in rows(o, pid) if not r["locked"] and r["site"] == "GARE")
     who = next(e for e in emps.values() if e["id"] == y["employee_id"])

@@ -73,4 +73,6 @@ def get_or_404(ctx: Ctx, model, id_):
     obj = ctx.db.get(model, key)
     if obj is None:
         raise HTTPException(404, "Introuvable")
+    if getattr(model, "__tablename__", "") == "planning_periods" and getattr(obj, "deleted_at", None) is not None:
+        raise HTTPException(404, "Ce planning a été supprimé : il n'est plus consultable ni modifiable (sa trace reste dans l'historique).")
     return obj

@@ -1,0 +1,89 @@
+import { expect, test, type Page } from "@playwright/test";
+import { API, getJson as j } from "./api";
+
+// Suppression d'un planning généré : fenêtre d'aperçu, Annuler, mauvais mot de passe, accès non autorisé, suppression réussie, trace
+// persistante. Mois dédié (juin 2027) : aucun autre test n'en dépend.
+test.skip(!process.env.E2E_EMAIL || !process.env.E2E_PASSWORD, "E2E_EMAIL / E2E_PASSWORD non définis");
+test.describe.configure({ mode: "serial" });
+
+const csrf = async (page: Page) => (await j(page, "/auth/me")).csrf_token as string;
+let pid = "";
+
+test.beforeAll(async ({ browser }) => {
+  const ctx = await browser.newContext({ storageState: "e2e/.auth/state.json" });
+  const page = await ctx.newPage();
+  const token = await csrf(page);
+  const r = await page.request.post(`${API}/periods/ensure`, { headers: { "X-CSRF-Token": token }, data: { year: 2027, month: 6 } });
+  pid = (await r.json()).id;
+  if (!((await j(page, `/periods/${pid}/schedule`)).assignments as unknown[]).length) {
+    const run = await page.request.post(`${API}/periods/${pid}/runs`, { headers: { "X-CSRF-Token": token, "Idempotency-Key": `del-${Date.now()}` }, data: { time_limit_s: 10 } });
+    expect(run.status(), await run.text()).toBe(202);
+    await expect.poll(async () => ((await j(page, `/periods/${pid}/schedule`)).assignments as unknown[]).length, { timeout: 90_000 }).toBeGreaterThan(0);
+  }
+  await ctx.close();
+});
+
+async function openJune(page: Page) {
+  await page.goto("/planning");
+  await page.evaluate(() => { try { localStorage.setItem("planning:month", "2027-06"); } catch { /* ignoré */ } });
+  await page.reload(); await page.waitForLoadState("networkidle");
+}
+
+test("fenêtre d'aperçu, Annuler et mot de passe incorrect : le planning reste intact", async ({ page }) => {
+  const n = ((await j(page, `/periods/${pid}/schedule`)).assignments as unknown[]).length;
+  await openJune(page);
+  await page.getByRole("button", { name: "Supprimer ce planning" }).click();
+  const dlg = page.getByRole("dialog", { name: "Supprimer le planning de juin 2027 ?" });
+  await expect(dlg).toContainText("Ce planning sera retiré des plannings actifs. Cette action sera enregistrée dans l'historique avec votre identité.");
+  const sum = dlg.getByTestId("delete-summary");
+  await expect(sum).toContainText("Juin 2027");
+  await expect(sum).toContainText(String(n));
+  await expect(sum).toContainText("Versions associées");
+  await expect(dlg.getByRole("button", { name: "Confirmer la suppression" })).toBeDisabled(); // mot de passe requis
+  await dlg.getByRole("button", { name: "Annuler" }).click();
+  await expect(dlg).toBeHidden();
+  expect(((await j(page, "/periods")) as { id: string }[]).some((p) => p.id === pid)).toBe(true);
+  // mauvais mot de passe : erreur affichée, rien de supprimé, champ vidé
+  await page.getByRole("button", { name: "Supprimer ce planning" }).click();
+  await dlg.getByLabel("Mot de passe de votre compte").fill("pas-le-bon-mot-de-passe");
+  await dlg.getByRole("button", { name: "Confirmer la suppression" }).click();
+  await expect(dlg.getByTestId("delete-error")).toHaveText("Mot de passe incorrect. Le planning n'a pas été modifié.");
+  await expect(dlg.getByLabel("Mot de passe de votre compte")).toHaveValue("");
+  expect(((await j(page, `/periods/${pid}/schedule`)).assignments as unknown[]).length).toBe(n);
+});
+
+test.describe("accès non autorisé", () => {
+  test.use({ storageState: { cookies: [], origins: [] } });
+  test("un planificateur ne voit pas l'action et le serveur refuse", async ({ page }) => {
+    const r = await page.request.post(`${API}/auth/login`, { data: { email: (process.env.E2E_EMAIL ?? "").replace(/^[^@]+/, "planner"), password: process.env.E2E_PASSWORD } });
+    test.skip(r.status() !== 200, "compte planificateur absent");
+    await openJune(page);
+    await expect(page.getByRole("button", { name: "Supprimer ce planning" })).toHaveCount(0);
+    const token = (await j(page, "/auth/me")).csrf_token as string;
+    const del = await page.request.post(`${API}/periods/${pid}/delete`, { headers: { "X-CSRF-Token": token }, data: { password: process.env.E2E_PASSWORD } });
+    expect(del.status()).toBe(403);
+  });
+});
+
+test("suppression réussie : message, planning retiré, trace dans l'historique après actualisation", async ({ page }) => {
+  const me = (await j(page, "/auth/me")) as { name: string; id: string };
+  const n = ((await j(page, `/periods/${pid}/schedule`)).assignments as unknown[]).length;
+  await openJune(page);
+  await page.getByRole("button", { name: "Supprimer ce planning" }).click();
+  const dlg = page.getByRole("dialog", { name: "Supprimer le planning de juin 2027 ?" });
+  await dlg.getByLabel("Mot de passe de votre compte").fill(process.env.E2E_PASSWORD!);
+  await dlg.getByRole("button", { name: "Confirmer la suppression" }).click();
+  await expect(page.getByTestId("deleted-message")).toBeVisible();
+  await expect(page.getByText("Le planning de juin 2027 a été supprimé avec succès.").first()).toBeVisible();
+  expect(((await j(page, "/periods")) as { id: string }[]).some((p) => p.id === pid)).toBe(false);
+  expect((await page.request.get(`${API}/periods/${pid}/schedule`)).status()).toBe(404);
+  await page.goto("/history?kind=deletion"); await page.waitForLoadState("networkidle");
+  const ev = page.getByTestId("history-event").filter({ hasText: "juin 2027" }).first();
+  await expect(ev).toContainText("Suppression d'un planning");
+  await expect(ev).toContainText(`${n} affectation(s)`);
+  await expect(ev).toContainText(`Supprimé par ${me.name} (compte ${me.id})`);
+  await page.reload(); await page.waitForLoadState("networkidle");
+  await expect(page.getByTestId("history-event").filter({ hasText: "juin 2027" }).first()).toBeVisible(); // persiste
+  await page.setViewportSize({ width: 390, height: 844 });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth)).toBe(false);
+});

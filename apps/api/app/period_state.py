@@ -37,5 +37,7 @@ def has_official_version(db, period_id) -> bool:
 
 def ensure_editable(db, period_id) -> None:
     p = db.get(m.PlanningPeriod, period_id)
+    if p is not None and p.deleted_at is not None:
+        raise HTTPException(404, "Ce planning a été supprimé : il ne peut plus être modifié.")
     if p is not None and p.archived_at is not None:
         raise HTTPException(409, f"{p.name} est archivé : il reste consultable mais n'est plus modifiable. Désarchivez-le pour le modifier.")

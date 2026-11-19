@@ -350,6 +350,12 @@ class PlanningPeriod(TenantOwned, Base):
     frozen_params: Mapped[Any] = mapped_column(JSONB, nullable=True)
     frozen_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     frozen_source: Mapped[Optional[str]] = mapped_column(String(16))  # generation | manual | apply | mise_en_place
+    # suppression logique : le planning disparaît des vues actives ; sa trace (archive des affectations, versions, journal) est conservée
+    # et protégée en base (déclencheur : plus modifiable ni supprimable, sauf effacement RGPD explicite)
+    deleted_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    deleted_by: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True))
+    deleted_by_name: Mapped[Optional[str]] = mapped_column(String(200))  # nom figé au moment de la suppression
+    deletion_archive: Mapped[Any] = mapped_column(JSONB, nullable=True)  # affectations et compteurs au moment de la suppression
 
 
 class PeriodEmployee(TenantOwned, Base):

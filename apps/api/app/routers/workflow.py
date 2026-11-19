@@ -36,6 +36,13 @@ class VersionIn(BaseModel):
     note: Optional[str] = Field(None, max_length=300)
 
 
+
+def _version(ctx: Ctx, vid: str) -> m.ScheduleVersion:
+    """Version d'un planning ACTIF : les versions d'un planning supprimé sont conservées (traçabilité) mais ni consultables ni restaurables."""
+    v = get_or_404(ctx, m.ScheduleVersion, vid)
+    get_or_404(ctx, m.PlanningPeriod, v.period_id)  # 404 si le planning a été supprimé
+    return v
+
 @router.post("/periods/{pid}/versions", status_code=201)
 def create_version(pid: str, body: Optional[VersionIn] = None, label: Optional[str] = None, ctx: Ctx = Depends(require("planning.edit"))):
     p = get_or_404(ctx, m.PlanningPeriod, pid)
@@ -64,7 +71,7 @@ def versions(pid: str, ctx: Ctx = Depends(require("planning.read"))):
 @router.get("/versions/{vid}/conformity")
 def conformity(vid: str, ctx: Ctx = Depends(require("planning.read"))):
     """Détail de la conformité d'une version : aux règles de sa création et aux règles actuelles (datée). Informatif : rien n'est modifié."""
-    v = get_or_404(ctx, m.ScheduleVersion, vid)
+    v = _version(ctx, vid)
     p = ctx.db.get(m.PlanningPeriod, v.period_id)
     out = version_conformity(v, build_input(ctx.db, p, {"params": "current", "cap": "current"}))
     ctx_info = (v.context or {})
@@ -79,7 +86,7 @@ def _ensure_same(ctx: Ctx, v: m.ScheduleVersion, action: str) -> None:
 
 @router.post("/versions/{vid}/submit")
 def submit(vid: str, ctx: Ctx = Depends(require("planning.edit"))):
-    v = get_or_404(ctx, m.ScheduleVersion, vid)
+    v = _version(ctx, vid)
     if v.state != "snapshot":
         raise HTTPException(409, "Seule une copie de travail peut être soumise à validation.")
     _ensure_same(ctx, v, "soumettre")
@@ -91,7 +98,7 @@ def submit(vid: str, ctx: Ctx = Depends(require("planning.edit"))):
 
 @router.post("/versions/{vid}/validate")
 def validate_version(vid: str, ctx: Ctx = Depends(require("planning.validate"))):
-    v = get_or_404(ctx, m.ScheduleVersion, vid)
+    v = _version(ctx, vid)
     if v.state not in ("snapshot", "in_review"):
         raise HTTPException(409, "Cette version est déjà validée, publiée ou remplacée.")
     _ensure_same(ctx, v, "valider")
@@ -148,7 +155,7 @@ class PublishIn(BaseModel):
 def publish(vid: str, body: Optional[PublishIn] = None, ctx: Ctx = Depends(require("planning.publish"))):
     """Acte volontaire du manager. Refusé si le planning repose sur des données incomplètes, s'il a changé depuis la version ou si une
     contrainte stricte n'est pas respectée. Une seule notification par collaborateur concerné, même après de nombreuses modifications."""
-    v = get_or_404(ctx, m.ScheduleVersion, vid)
+    v = _version(ctx, vid)
     if v.state == "superseded":
         raise HTTPException(409, "Cette version a été remplacée : créez-en une nouvelle à partir du planning actuel.")
     if v.published:
@@ -186,7 +193,7 @@ def publish(vid: str, body: Optional[PublishIn] = None, ctx: Ctx = Depends(requi
 
 @router.get("/versions/compare")
 def compare(a: str, b: str, ctx: Ctx = Depends(require("planning.read"))):
-    va, vb = get_or_404(ctx, m.ScheduleVersion, a), get_or_404(ctx, m.ScheduleVersion, b)
+    va, vb = _version(ctx, a), _version(ctx, b)
     A = {x["slot_key"]: x["employee"] for x in va.snapshot}
     B = {x["slot_key"]: x["employee"] for x in vb.snapshot}
     return {"added": sorted(set(B) - set(A)), "removed": sorted(set(A) - set(B)),
@@ -197,7 +204,7 @@ def compare(a: str, b: str, ctx: Ctx = Depends(require("planning.read"))):
 @router.delete("/versions/{vid}", status_code=204)
 def delete_version(vid: str, ctx: Ctx = Depends(require("planning.edit"))):
     """Seule une copie de travail manuelle peut être supprimée : versions générées, copies de sécurité, versions validées ou publiées restent."""
-    v = get_or_404(ctx, m.ScheduleVersion, vid)
+    v = _version(ctx, vid)
     if v.state != "snapshot" or v.kind != "manual":
         raise HTTPException(409, "Seule une copie de travail manuelle peut être supprimée : cette version reste dans l'historique.")
     audit(ctx, "version.delete", "version", v.id, {"number": v.number, "label": v.label})
@@ -207,7 +214,7 @@ def delete_version(vid: str, ctx: Ctx = Depends(require("planning.edit"))):
 @router.post("/versions/{vid}/restore")
 def restore(vid: str, ctx: Ctx = Depends(require("planning.edit"))):
     """Remet le planning dans l'état de cette version, en UNE transaction. L'état actuel est d'abord copié : la restauration est réversible."""
-    v = get_or_404(ctx, m.ScheduleVersion, vid)
+    v = _version(ctx, vid)
     ensure_editable(ctx.db, v.period_id)
     safety = make_version(ctx.db, ctx.tenant_id, v.period_id, f"Avant restauration de la version {v.number}", "safety", ctx.user.id)
     emps_by_id = {str(e.id): e for e in ctx.db.scalars(select(m.Employee))}
@@ -275,7 +282,7 @@ class RetentionIn(BaseModel):
 def _retention_view(ctx: Ctx) -> dict:
     t = ctx.db.get(m.Tenant, ctx.tenant_id)
     months = []
-    for p in ctx.db.scalars(select(m.PlanningPeriod).order_by(m.PlanningPeriod.start_date)):
+    for p in ctx.db.scalars(select(m.PlanningPeriod).where(m.PlanningPeriod.deleted_at.is_(None)).order_by(m.PlanningPeriod.start_date)):
         auto = len(list(ctx.db.scalars(select(m.ScheduleVersion.id).where(m.ScheduleVersion.period_id == p.id, m.ScheduleVersion.kind.in_(AUTOMATIC_KINDS), m.ScheduleVersion.state == "snapshot"))))
         months.append({"period_id": str(p.id), "name": p.name, "automatic": auto, "would_remove": len(retention_candidates(ctx.db, t, p.id)), "archived": p.archived_at is not None})
     return {"keep_per_month": t.version_keep_per_month, "max_age_days": t.version_max_age_days, "months": months}
@@ -300,7 +307,7 @@ def set_retention(body: RetentionIn, ctx: Ctx = Depends(require("planning.admin"
 @router.post("/settings/version-retention/apply")
 def run_retention(ctx: Ctx = Depends(require("planning.admin"))):
     removed = {}
-    for p in ctx.db.scalars(select(m.PlanningPeriod)):
+    for p in ctx.db.scalars(select(m.PlanningPeriod).where(m.PlanningPeriod.deleted_at.is_(None))):
         numbers = apply_retention(ctx.db, ctx.tenant_id, p.id, ctx.user.id)
         if numbers:
             removed[p.name] = numbers
@@ -366,7 +373,7 @@ def my_planning(ctx: Ctx = Depends(require("self.read"))):
         return {"linked": False, "periods": []}
     e = ctx.db.get(m.Employee, eid)
     out = []
-    for p in ctx.db.scalars(select(m.PlanningPeriod).order_by(m.PlanningPeriod.start_date)):
+    for p in ctx.db.scalars(select(m.PlanningPeriod).where(m.PlanningPeriod.deleted_at.is_(None)).order_by(m.PlanningPeriod.start_date)):
         v = ctx.db.scalar(select(m.ScheduleVersion).where(m.ScheduleVersion.period_id == p.id, m.ScheduleVersion.state == "published").order_by(m.ScheduleVersion.number.desc()).limit(1))
         if v is None:
             continue

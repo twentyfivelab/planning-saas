@@ -68,6 +68,7 @@ def main():
             return
         if refs:
             sys.exit("Références croisées détectées : suppression refusée.")
+        conn.execute(text("SELECT set_config('app.tenant_purge', 'on', true)"))  # purge explicite de tenants de TEST : traces de suppression comprises
         conn.execute(text("DELETE FROM sessions WHERE tenant_id = ANY(:ids)"), {"ids": ids})
         n = conn.execute(text("DELETE FROM tenants WHERE id = ANY(:ids)"), {"ids": ids}).rowcount
         print(f"{n} tenant(s) supprimé(s), données rattachées comprises (suppression en cascade).")

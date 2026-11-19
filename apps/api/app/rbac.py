@@ -4,6 +4,7 @@ PERMISSIONS = [
     "employees.write", "contracts.write", "availability.write", "rules.write", "budgets.write",
     "planning.read", "planning.brand", "planning.edit", "planning.optimize", "planning.publish", "planning.validate", "audit.read", "export.run",
     "import.run", "self.read", "time.write", "time.validate", "reports.read", "finance.read", "legal.review", "planning.admin",
+    "planning.delete",  # suppression d'un planning généré (confirmée par mot de passe) : propriétaire et administrateur
 ]
 _RO = {"referential.read", "employees.read", "planning.read", "planning.brand", "audit.read", "export.run", "reports.read"}
 _PLAN = _RO | {"referential.write", "employees.write", "contracts.write", "availability.write", "rules.write",

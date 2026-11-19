@@ -34,7 +34,7 @@ def parse_month(s: str) -> date:
 
 
 def find_period(ctx: Ctx, first: date, last: date) -> Optional[m.PlanningPeriod]:
-    return ctx.db.scalar(select(m.PlanningPeriod).where(m.PlanningPeriod.start_date == first, m.PlanningPeriod.end_date == last)
+    return ctx.db.scalar(select(m.PlanningPeriod).where(m.PlanningPeriod.deleted_at.is_(None), m.PlanningPeriod.start_date == first, m.PlanningPeriod.end_date == last)
                          .order_by(m.PlanningPeriod.created_at))
 
 
@@ -131,7 +131,7 @@ def migrate_legacy_quota(ctx: Ctx, e: m.Employee, exclude: Optional[date] = None
     - tracé dans le journal d'audit (mois copiés, mois déjà renseignés, mois publiés)."""
     if e.sunday_quota is None or e.sunday_quota_migrated_at is not None:
         return None
-    periods = list(ctx.db.scalars(select(m.PlanningPeriod)))
+    periods = list(ctx.db.scalars(select(m.PlanningPeriod).where(m.PlanningPeriod.deleted_at.is_(None))))
     months = sorted({pd.start_date.replace(day=1) for pd in periods})
     keep = [mo for mo in months if mo != exclude]
     before = _effective(ctx, e, keep)

@@ -7,15 +7,15 @@ Une fonctionnalité n'est classée « terminée et vérifiée » que si une vér
 - `docs/identite-visuelle.md` (rose de référence) ;
 - `docs/backup-restore.md`.
 
-## Résultats de tests (18/11/2026)
+## Résultats de tests (19/11/2026)
 
 | Suite | Résultat | Environnement |
 |---|---|---|
 | Moteur, tests de correction (`packages/solver`) | **137 / 137** | local ; aussi **127 / 127 sous forte charge** (charge moyenne 44 sur 10 cœurs) et pendant la suite e2e |
 | Moteur, mesures de performance (marqueur `perf`) | à part : `scripts/ops/perf_engine.sh` | conditions consignées dans `docs/mesures-moteur.md` |
-| API (`apps/api`) | **161 / 161** | base PostgreSQL jetable par session (`planning_test_<pid>`) |
+| API (`apps/api`) | **166 / 166** | base PostgreSQL jetable par session (`planning_test_<pid>`) |
 | Interface, unitaires, dont contrastes WCAG AA | **123 / 123** | Vitest |
-| Navigateur e2e | **75 / 75** | pile Docker isolée (`infra/compose.e2e.yaml`, base `planning_e2e`) |
+| Navigateur e2e | **78 / 78** | pile Docker isolée (`infra/compose.e2e.yaml`, base `planning_e2e`) |
 | ruff, TypeScript, ESLint | sans erreur | |
 
 Fiabilité du moteur (deux échecs observés sous charge, corrigés à la source, sans relance ni délai allongé) :
@@ -46,6 +46,7 @@ Cinq exécutions complètes de la suite API, dont quatre en parallèle de la sui
 \* 160 tests + une sonde temporaire, retirée ensuite.
 
 **Incertitudes restantes (causes non confirmées)**
+- `test_history::test_generation_remplacement…` (19/11) : un échec dans la suite complète, jamais seul. Défaut réel identifié dans le test : il comparait strictement l'heure de la base (début de transaction) à l'horloge de la machine de test, alors qu'un écart d'environ 1 ms (base en retard) a été mesuré. Tolérance explicite d'une seconde et message détaillé ajoutés. Le détail de l'échec n'avait pas été capturé : cause **probable**, non confirmée.
 - `test_demo_flow::test_manual_move_reports_conflicts_immediately` : un échec, le 18/11, dans une suite complète en parallèle des tests navigateur ; jamais reproduit depuis (5 suites complètes, 11 exécutions isolées dont 6 sous forte charge). Cause **probable, non confirmée** : l'ancienne version prenait le premier shift GVA9 et cherchait un seul collègue ce jour-là ; une sonde a montré qu'il ne restait parfois qu'**un** collègue possible (1 fois sur 6 observations), ce qui rend plausible un cas sans candidat selon la solution du moteur. La version actuelle cherche parmi tous les couples possibles (88 à 112 selon les exécutions) ; elle a passé toutes les exécutions depuis. Le mode d'échec exact de l'occurrence initiale n'a pas été enregistré.
 - `test_monthly_setup::test_10` : échec 1 fois sur 5 (exécution 3), même symptôme que le 17/11 (décembre régénéré sans remplacer le planning). La cause du 17/11 (verrou posé par un test précédent, « affectation verrouillée impossible ») est corrigée ; la cause de l'échec du 18/11 n'est **pas confirmée** : une sonde ajoutée ensuite a donné « faisable » ou « optimal » dans les exécutions 4 et 5. Hypothèses : calcul « interrompu » faute de temps sous forte charge (délai de 20 s), ou autre refus. Le test affiche désormais, s'il échoue, le résultat du calcul et ses diagnostics, pour trancher à la prochaine occurrence.
 - `e2e/wizard.spec.ts` (janvier 2027) : échec 1 fois sur 4 en parallèle de la suite API, jamais seul. Cause **probable, non confirmée** : l'attente de l'enregistrement automatique de l'effectif (5 s) dépassée sous charge ; l'effectif enregistré ne contenait ensuite aucune ligne bloquée. Le délai n'a pas été allongé.
@@ -189,6 +190,14 @@ Cinq exécutions complètes de la suite API, dont quatre en parallèle de la sui
 - Retirés de l'interface : « Rentabilité », « Équité », « Simulations », ainsi que leurs cartes (équité et coût/marge du tableau de bord) et raccourcis. Les mécanismes internes restent : optimisation, équilibrage (y compris sur plusieurs mois), contraintes, pondérations, contrôles, aperçus de réoptimisation dans « Déclarer une absence » et pour les missions. Aucune donnée ni règle supprimée.
 - Navigation : Planning (tableau de bord, planning, génération, alertes, historique, versions), Équipe (collaborateurs, demandes, heures réelles), Configuration (sites et marques, clients, budgets, règles, paramètres, import / export).
 - Paramètres : les priorités courantes restent visibles ; la logique d'optimisation, les poids bruts du moteur et l'influence de la dernière génération sont rangés dans « Paramètres avancés ». Aucune valeur n'a été modifiée (vérifié par un test).
+
+**Suppression d'un planning généré** (migration 0015)
+- Action « Supprimer ce planning » dans les options du planning, réservée au droit « planning.delete » (propriétaire et administrateur), vérifié côté serveur, entreprise garantie par la RLS.
+- Fenêtre « Supprimer le planning de [mois année] ? » : mois et année, affectations (dont verrouillées), shifts, versions associées (dont publiées, que les collaborateurs ne verront plus), rappels ; suppression refusée si des heures réelles sont rattachées (archivage possible).
+- Confirmation par le mot de passe du compte connecté, vérifié par le serveur, jamais stocké ni journalisé ; 5 échecs par quart d'heure et par compte au plus (compteur Redis) ; pas de double soumission (bouton désactivé, verrou du planning, « déjà supprimé »). L'application n'a pas de connexion externe aujourd'hui (mot de passe local obligatoire) ; un compte sans mot de passe local recevrait « réauthentification requise ».
+- Suppression logique en une transaction : archive des affectations conservée avec le planning, affectations et shifts retirés des vues actives, versions et calculs conservés mais ni consultables ni restaurables, entrée « Suppression d'un planning » au journal (planning, date et heure, nom et identifiant interne de l'auteur, nombre d'affectations). Rien d'autre modifié ; aucun planning recréé ; un nouveau planning du même mois peut être créé explicitement.
+- Trace protégée en base : le planning supprimé et l'entrée du journal ne peuvent être ni modifiés ni effacés (déclencheurs), sauf effacement RGPD explicite (qui anonymise aussi l'archive) ou purge de tenants de test.
+- Tests : annulation, mauvais mot de passe, tentatives répétées, accès non autorisé, autre entreprise, compte externe simulé, heures réelles, suppression réussie, autres mois intacts, historique persistant, protection en base (API et navigateur).
 
 **SaaS**
 - Rôles, cloisonnement RLS testé, périmètre d'un responsable de marque.
