@@ -6,7 +6,7 @@ from __future__ import annotations
 from collections import defaultdict
 from typing import Dict, Iterable, List, Optional, Tuple
 
-from .context import (Prepared, cost_units, coverage_cost, hours_units, individual_penalty, period_of, prepare,
+from .context import (Prepared, cost_units, coverage_cost, fairness_units, hours_units, individual_penalty, period_of, prepare,
                       preference_checks, relation_pairs, overlaps, history_excess)
 from .model import Assignment, DEFAULT_WEIGHTS, REINFORCE, SECONDARY, Slot, SolverInput
 
@@ -81,7 +81,7 @@ class Evaluator:
                     out["time_pref"] += W["time_pref"] * max(1, e.preference_strength)
             out["individual"] += W["individual"] * individual_penalty(prep, e) * hours_units(s)
         if options:
-            out["fairness"] += W["fairness"] * _ceil_div(abs(tot - prep.targets[eid]), 30)
+            out["fairness"] += W["fairness"] * fairness_units(_ceil_div(abs(tot - prep.targets[eid]), 30))
         by_day: Dict[object, List[Slot]] = defaultdict(list)
         for s in lst:
             by_day[s.day].append(s)

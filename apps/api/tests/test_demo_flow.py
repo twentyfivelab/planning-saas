@@ -88,16 +88,23 @@ def _room(s) -> dict:
 
 
 def test_monthly_cap_refuses_a_manual_move_beyond_176_hours(demo):
-    p = demo["planner"]
+    """Précondition créée explicitement (et non plus supposée du résultat du moteur, désormais équilibré) : le plafond de l'entreprise
+    est fixé aux heures actuelles du collaborateur le plus chargé, puis rétabli à 176 h."""
+    p, o = demo["planner"], demo["owner"]
     s = p.get(f"/periods/{demo['pid']}/schedule").json()
-    room = _room(s)
-    full = [e for e, r in room.items() if r < 480]
-    if not full:
-        pytest.skip("aucun collaborateur au plafond dans ce planning de démonstration")
-    a = next(x for x in s["assignments"] if x["employee_id"] not in full and not x["locked"])
-    r = p.put(f"/assignments/{a['assignment_id']}", json={"employee_id": full[0]})
-    assert r.status_code == 409 and r.json()["detail"]["code"] == "monthly_cap" and "176 h" in r.json()["detail"]["message"]
-    assert next(x for x in p.get(f"/periods/{demo['pid']}/schedule").json()["assignments"] if x["assignment_id"] == a["assignment_id"])["employee_id"] == a["employee_id"]
+    used: dict = {}
+    for x in s["assignments"]:
+        used[x["employee_id"]] = used.get(x["employee_id"], 0) + x["effective_minutes"]
+    top, top_min = max(used.items(), key=lambda kv: kv[1])
+    assert top_min % 60 == 0
+    assert o.put("/settings/monthly-cap", json={"hours": top_min // 60}).status_code == 200
+    try:
+        a = next(x for x in s["assignments"] if x["employee_id"] != top and not x["locked"])
+        r = p.put(f"/assignments/{a['assignment_id']}", json={"employee_id": top})
+        assert r.status_code == 409 and r.json()["detail"]["code"] == "monthly_cap" and f"{top_min // 60} h" in r.json()["detail"]["message"]
+        assert next(x for x in p.get(f"/periods/{demo['pid']}/schedule").json()["assignments"] if x["assignment_id"] == a["assignment_id"])["employee_id"] == a["employee_id"]
+    finally:
+        assert o.put("/settings/monthly-cap", json={"hours": 176}).status_code == 200
 
 
 def test_manual_move_reports_conflicts_immediately(demo):

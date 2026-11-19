@@ -11,7 +11,7 @@ Une fonctionnalité n'est classée « terminée et vérifiée » que si une vér
 
 | Suite | Résultat | Environnement |
 |---|---|---|
-| Moteur, tests de correction (`packages/solver`) | **137 / 137** (19/11, après ce lot) | local ; aussi **127 / 127 sous forte charge** (charge moyenne 44 sur 10 cœurs) et pendant la suite e2e |
+| Moteur, tests de correction (`packages/solver`) | **142 / 142** (19/11, dont 5 tests d'équité des heures) | local ; aussi **127 / 127 sous forte charge** (charge moyenne 44 sur 10 cœurs) et pendant la suite e2e |
 | Moteur, mesures de performance (marqueur `perf`) | à part : `scripts/ops/perf_engine.sh` | conditions consignées dans `docs/mesures-moteur.md` |
 | API (`apps/api`) | **186 / 186** | base PostgreSQL jetable par session (`planning_test_<pid>`) |
 | Interface, unitaires, dont contrastes WCAG AA | **124 / 124** | Vitest |
@@ -29,6 +29,117 @@ Intermittences corrigées à la source :
 - **« mouvement réduit »** : la lecture se faisait en deux allers-retours, et le tableau de bord, rechargé par un événement temps réel, pouvait remplacer la carte entre les deux. Un élément détaché donne une durée vide, d'où NaN. Le test lit désormais toutes les cartes en une seule exécution dans la page : 20 passages sur 20, plus les suites complètes.
 - **Alignement** : la mesure se fait désormais après l'animation d'ouverture.
 - **Dépendance entre tests navigateur (identifiée et corrigée, 19/11)** : le scénario « E. pondérations » recalculait NOVEMBRE avec les paramètres actuels, alors que d'autres scénarios (réaffectation, fiche modifiée, versions) lisent les affectations et les paramètres conservés de novembre ; selon l'ordre, ils voyaient un planning différent. Le scénario utilise désormais un mois dédié (juillet 2027), supprimé à la fin. Cette dépendance est réelle ; elle n'est **pas** établie comme la cause des échecs `reassign`, `team` et `wfm` observés en parallèle de la suite API (voir « Incertitudes ») : ceux-ci restent ouverts.
+
+## Équité des heures mensuelles : analyse et correction du 19/11/2026
+
+Analyse faite sur une **copie** de la base (`planning_copie_equite`, restaurée depuis la sauvegarde `backups/copie-equite-20261119-2009.dump`) : plannings actifs, archives et base réelle non modifiés. « Avant » = plannings réellement enregistrés (archives d'avril 2027 et de décembre 2026, planning actif de février 2027 du compte d'essai) ; « après » = même mois recalculé sur la copie avec le moteur corrigé, mêmes paramètres, 30 s.
+
+**Cause démontrée** (rapports des générations réelles : tous les niveaux PROUVÉS optimaux, en 4 à 11 s sur 30 à 60 s — ce n'était donc pas un manque de temps)
+1. **Priorité automatique par le poids d'allocation** : la cible d'équité était proportionnelle au poids, et le critère « priorité individuelle », actif par défaut, favorisait les poids les plus forts. Les poids de la démonstration (1,25 pour Sahra, Mila, Abdu ; 0,75 pour Yasmine) sont marqués « HYPOTHÈSE NON VALIDÉE » dans les données d'origine : les extrêmes observés (176 h et 24 h) correspondent exactement à ces poids.
+2. **Cibles fausses** : la somme des cibles était nettement inférieure aux heures réellement distribuées (février : ≈ 1 170 h de cibles pour ≈ 1 580 h attribuées), car l'excédent des collaborateurs limités n'était pas redistribué. Au-delà de sa cible, l'écart étant compté en valeur absolue, une heure de plus coûtait autant quel que soit le collaborateur : l'équité ne départageait plus personne, et les autres critères concentraient les heures jusqu'au plafond de 176 h.
+3. **Écart indifférent sous la cible** : quand plusieurs collaborateurs comparables partagent un petit volume (ex. Aziza, Hugo, Simon sur Cailler en décembre), 85 + 5 h d'écart coûtaient autant que 45 + 45 h : tout pouvait aller à l'un, rien à l'autre.
+4. Unités incohérentes (cause latente, non présente dans ces données) : objectif contractuel en minutes mélangé à « poids × jours » pour les autres ; un collaborateur sans objectif aurait été poussé vers 0 h.
+
+**Correction (moteur et évaluateur indépendant, mêmes formules)**
+- Part équitable calculée par remplissage : même proportion de sa référence pour chacun (objectif contractuel s'il est renseigné, sinon jours où il peut réellement travailler × 8 h), dans sa capacité (un shift par jour, jours maximum, plafond mensuel) ; l'excédent des collaborateurs limités revient aux autres. Le poids d'allocation n'intervient plus.
+- Écart progressif : au-delà de 16 h puis de 40 h d'écart, chaque heure coûte davantage ; un manque ou un surplus est réparti entre collaborateurs comparables.
+- Shifts où le collaborateur n'est qu'en renfort : hors part équitable (dernier recours par définition, comme avant).
+- « Priorité individuelle » désactivée par défaut (aucune priorité automatique : ancienneté, mérite) ; activable explicitement dans les pondérations. L'ancienne valeur par défaut n'est plus appliquée, même par un planning qui conserve ses paramètres (aucun planning existant n'est modifié : effet à la prochaine génération).
+- Testé : poids sans effet par défaut (l'ancien moteur donnait 144 h contre 80 h à deux collaborateurs identiques), unités cohérentes, renfort hors part, manque réparti, part redistribuée, évaluateur = moteur. Essai plus fort de l'équité (×5, ×20) écarté : il réduisait la couverture des shifts optionnels sans aider les collaborateurs limités par leurs habilitations.
+
+**Contraintes réellement bloquantes ou paramètres, et non manque de temps** : capacité individuelle (jours disponibles, jours maximum, marques autorisées), niveau d'habilitation (renfort ou secondaire seulement), volume des marques prioritaires (besoins et budgets du mois). Pierre (renfort sur toutes les marques ayant des besoins, prioritaire uniquement sur Lindt et Toblerone, sans besoin ce mois) n'est plus sollicité : si vous souhaitez qu'il fasse partie de la base, passez-le en prioritaire ou secondaire sur des marques qui ont des besoins.
+
+**Temps de calcul** : décembre et février prouvés optimaux (4 à 7 s). Avril : à 30 s, l'optimisation est interrompue faute de temps (solution équilibrée mais non prouvée) ; preuve obtenue à 72 s avec la même répartition (seuls Aziza et Valérie, à coût égal, échangent 88 / 136 h).
+
+**Février (compte d'essai)** : aucun budget n'est saisi ; les shifts optionnels n'ont alors aucun objectif, leur nombre dépendait de l'ancienne cible (42) et dépend maintenant de la nouvelle part équitable (30). Renseigner les budgets du mois fixe ce volume indépendamment de l'équité. Couverture des shifts obligatoires inchangée partout (100 %).
+
+#### Avril 2027 — tenant de démonstration
+
+- Couverture des shifts obligatoires : avant 167/167, après 167/167 — shifts optionnels attribués : avant 70/114, après 70/114 — shifts restants : avant 44, après 44
+- Calcul « après » (30 s) : 30.0 s, couverture prouvé / optimisation non prouvé (temps écoulé)
+- Heures des collaborateurs pouvant travailler : avant 24–176 h, après 0–160 h
+
+| Collaborateur | Poids | Avant (planning enregistré) | Après | Capacité | Raison d'un écart persistant |
+|---|---|---|---|---|---|
+| Pierre CAIGNAN | 1.0 | 80 h | 0 h | 176 h | renfort uniquement sur les marques qui ont des besoins ce mois (prioritaire sur : Lindt 0 shifts / 2 prioritaires, Toblerone 0 shifts / 2 prioritaires) |
+| Chloé DROUARD | 1.0 | 88 h | 64 h | 112 h | 14 jours possibles; volume limité de ses marques prioritaires (Valmont 66 shifts / 2 prioritaires) |
+| Yasmine DUCASTELLE | 0.75 | 24 h | 80 h | 96 h | disponible L-M-M seulement; 12 jours possibles; volume limité de ses marques prioritaires (Ploom GVA3 90 shifts / 9 prioritaires, Ploom GVA9 60 shifts / 9 prioritaires, Ploom Pilar 8 shifts / 9 prioritaires) |
+| Aziza MULAY | 1.0 | 104 h | 88 h | 176 h | volume limité de ses marques prioritaires (Cailler 26 shifts / 2 prioritaires, Lindt 0 shifts / 2 prioritaires, Toblerone 0 shifts / 2 prioritaires) |
+| Ying YANG | 1.0 | 88 h | 112 h | 176 h | volume limité de ses marques prioritaires (Valmont 66 shifts / 2 prioritaires) |
+| Valérie MARTIN | 1.0 | 104 h | 136 h | 176 h | volume limité de ses marques prioritaires (Cailler 26 shifts / 2 prioritaires) |
+| I Jane DON | 1.0 | 144 h | 144 h | 144 h | au maximum de ce qu'il peut faire (18 jours possibles) |
+| Sahra HADJAZ | 1.25 | 176 h | 152 h | 176 h | équilibré avec les collaborateurs comparables |
+| Abdu SEIDI | 1.25 | 176 h | 160 h | 176 h | équilibré avec les collaborateurs comparables |
+| Adam KSIBI | 1.0 | 176 h | 160 h | 176 h | équilibré avec les collaborateurs comparables |
+| Florian ALGRIN | 1.0 | 128 h | 160 h | 176 h | équilibré avec les collaborateurs comparables |
+| Jamilatu DJALO MANE | 1.25 | 176 h | 160 h | 176 h | équilibré avec les collaborateurs comparables |
+| Sabrina LE BLANC | 1.0 | 120 h | 160 h | 176 h | équilibré avec les collaborateurs comparables |
+| Simona DUMITRASCU | 1.0 | 168 h | 160 h | 176 h | équilibré avec les collaborateurs comparables |
+| Zaki Zakaria HATTAB-BEY | 1.0 | 144 h | 160 h | 176 h | équilibré avec les collaborateurs comparables |
+
+Aucun shift possible ce mois (aucune de leurs marques n'a de besoin) : Chloé DAVISTER, Hugo SIMIAN, Paul-Joseph DE ANGELIS, Rebecca Sarah Thomas, Selin AKIN, Simon FERRANTE, Simona AKOPIAN, Sylvain ZHENG, Yanis BENDJOUADI.
+
+#### Décembre 2026 — tenant de démonstration
+
+- Couverture des shifts obligatoires : avant 171/171, après 171/171 — shifts optionnels attribués : avant 71/115, après 71/115 — shifts restants : avant 44, après 44
+- Calcul « après » (30 s) : 6.7 s, couverture prouvé / engagements prouvé / optimisation prouvé
+- Heures des collaborateurs pouvant travailler : avant 0–128 h, après 0–104 h
+
+| Collaborateur | Poids | Avant (planning enregistré) | Après | Capacité | Raison d'un écart persistant |
+|---|---|---|---|---|---|
+| Pierre CAIGNAN | 1.0 | 0 h | 0 h | 176 h | renfort uniquement sur les marques qui ont des besoins ce mois (prioritaire sur : Lindt 0 shifts / 8 prioritaires, Toblerone 0 shifts / 9 prioritaires) |
+| Chloé DAVISTER | 1.0 | 32 h | 24 h | 96 h | 12 jours possibles; secondaire (jamais prioritaire) sur les marques qui ont des besoins; volume limité de ses marques prioritaires (Lindt 0 shifts / 8 prioritaires, Toblerone 0 shifts / 9 prioritaires) |
+| Simona AKOPIAN | 1.0 | 24 h | 32 h | 64 h | 8 jours possibles; secondaire (jamais prioritaire) sur les marques qui ont des besoins; volume limité de ses marques prioritaires (Toblerone 0 shifts / 9 prioritaires) |
+| Sylvain ZHENG | 1.0 | 40 h | 32 h | 104 h | 13 jours possibles; volume limité de ses marques prioritaires (Cailler 27 shifts / 7 prioritaires, Lindt 0 shifts / 8 prioritaires, Toblerone 0 shifts / 9 prioritaires) |
+| Yasmine DUCASTELLE | 0.75 | 32 h | 40 h | 112 h | disponible L-M-M seulement; 14 jours possibles; volume limité de ses marques prioritaires (Ploom GVA3 93 shifts / 12 prioritaires, Ploom GVA9 62 shifts / 12 prioritaires, Ploom Pilar 8 shifts / 12 prioritaires) |
+| Chloé DROUARD | 1.0 | 72 h | 48 h | 104 h | 13 jours possibles; volume limité de ses marques prioritaires (Valmont 66 shifts / 2 prioritaires) |
+| Aziza MULAY | 1.0 | 48 h | 56 h | 176 h | volume limité de ses marques prioritaires (Cailler 27 shifts / 7 prioritaires, Lindt 0 shifts / 8 prioritaires, Toblerone 0 shifts / 9 prioritaires) |
+| Hugo SIMIAN | 1.0 | 56 h | 56 h | 176 h | volume limité de ses marques prioritaires (Cailler 27 shifts / 7 prioritaires, Lindt 0 shifts / 8 prioritaires, Toblerone 0 shifts / 9 prioritaires) |
+| Simon FERRANTE | 1.0 | 8 h | 56 h | 176 h | volume limité de ses marques prioritaires (Cailler 27 shifts / 7 prioritaires, Lindt 0 shifts / 8 prioritaires, Toblerone 0 shifts / 9 prioritaires) |
+| Valérie MARTIN | 1.0 | 96 h | 56 h | 176 h | volume limité de ses marques prioritaires (Cailler 27 shifts / 7 prioritaires) |
+| Zaki Zakaria HATTAB-BEY | 1.0 | 56 h | 64 h | 152 h | 19 jours possibles; volume limité de ses marques prioritaires (Cartier 8 shifts / 2 prioritaires, Ploom GVA3 93 shifts / 12 prioritaires, Ploom GVA9 62 shifts / 12 prioritaires, Ploom Pilar 8 shifts / 12 prioritaires) |
+| I Jane DON | 1.0 | 112 h | 72 h | 136 h | 17 jours possibles; volume limité de ses marques prioritaires (Cellcosmet 22 shifts / 1 prioritaires, Nuxe 22 shifts / 1 prioritaires) |
+| Jamilatu DJALO MANE | 1.25 | 112 h | 88 h | 176 h | équilibré avec les collaborateurs comparables |
+| Paul-Joseph DE ANGELIS | 1.0 | 80 h | 88 h | 176 h | équilibré avec les collaborateurs comparables |
+| Rebecca Sarah Thomas | 1.0 | 64 h | 96 h | 176 h | secondaire (jamais prioritaire) sur les marques qui ont des besoins |
+| Selin AKIN | 1.0 | 72 h | 96 h | 176 h | secondaire (jamais prioritaire) sur les marques qui ont des besoins |
+| Ying YANG | 1.0 | 104 h | 96 h | 176 h | équilibré avec les collaborateurs comparables |
+| Abdu SEIDI | 1.25 | 128 h | 104 h | 176 h | équilibré avec les collaborateurs comparables |
+| Adam KSIBI | 1.0 | 96 h | 104 h | 176 h | équilibré avec les collaborateurs comparables |
+| Anastasia ANIKUTINA | 1.0 | 96 h | 104 h | 176 h | équilibré avec les collaborateurs comparables |
+| Florian ALGRIN | 1.0 | 96 h | 104 h | 176 h | équilibré avec les collaborateurs comparables |
+| Kristina THANASI | 1.0 | 96 h | 104 h | 176 h | équilibré avec les collaborateurs comparables |
+| Sabrina LE BLANC | 1.0 | 96 h | 104 h | 176 h | équilibré avec les collaborateurs comparables |
+| Sahra HADJAZ | 1.25 | 128 h | 104 h | 176 h | équilibré avec les collaborateurs comparables |
+| Simona DUMITRASCU | 1.0 | 96 h | 104 h | 176 h | équilibré avec les collaborateurs comparables |
+| Yanis BENDJOUADI | 1.0 | 96 h | 104 h | 176 h | équilibré avec les collaborateurs comparables |
+
+#### Février 2027 — compte d’essai
+
+- Couverture des shifts obligatoires : avant 156/156, après 156/156 — shifts optionnels attribués : avant 42/104, après 30/104 — shifts restants : avant 62, après 74
+- Calcul « après » (30 s) : 4.6 s, couverture prouvé / optimisation prouvé
+- Heures des collaborateurs pouvant travailler : avant 24–176 h, après 0–112 h
+
+| Collaborateur | Poids | Avant (planning enregistré) | Après | Capacité | Raison d'un écart persistant |
+|---|---|---|---|---|---|
+| Pierre | 1.0 | 72 h | 0 h | 176 h | renfort uniquement sur les marques qui ont des besoins ce mois (prioritaire sur : Lindt 0 shifts / 2 prioritaires, Toblerone 0 shifts / 2 prioritaires) |
+| Chloé | 1.0 | 56 h | 40 h | 96 h | 12 jours possibles; volume limité de ses marques prioritaires (Valmont 60 shifts / 2 prioritaires) |
+| Jane | 1.0 | 64 h | 48 h | 128 h | 16 jours possibles; volume limité de ses marques prioritaires (Cellcosmet 20 shifts / 1 prioritaires, Nuxe 20 shifts / 1 prioritaires) |
+| Yasmine | 0.75 | 24 h | 56 h | 96 h | disponible L-M-M seulement; 12 jours possibles; volume limité de ses marques prioritaires (Ploom GVA3 84 shifts / 11 prioritaires, Ploom GVA9 56 shifts / 11 prioritaires, Ploom Pilar 8 shifts / 11 prioritaires) |
+| Ying | 1.0 | 72 h | 64 h | 176 h | volume limité de ses marques prioritaires (Valmont 60 shifts / 2 prioritaires) |
+| Aziza | 1.0 | 72 h | 80 h | 176 h | volume limité de ses marques prioritaires (Cailler 24 shifts / 2 prioritaires, Lindt 0 shifts / 2 prioritaires, Toblerone 0 shifts / 2 prioritaires) |
+| Valérie | 1.0 | 72 h | 80 h | 176 h | volume limité de ses marques prioritaires (Cailler 24 shifts / 2 prioritaires) |
+| Abdu | 1.25 | 176 h | 112 h | 176 h | équilibré avec les collaborateurs comparables |
+| Adam | 1.0 | 88 h | 112 h | 176 h | équilibré avec les collaborateurs comparables |
+| Florian | 1.0 | 80 h | 112 h | 176 h | équilibré avec les collaborateurs comparables |
+| Kristina | 1.0 | 80 h | 112 h | 176 h | équilibré avec les collaborateurs comparables |
+| Michael | 1.0 | 128 h | 112 h | 176 h | équilibré avec les collaborateurs comparables |
+| Mila | 1.25 | 176 h | 112 h | 176 h | équilibré avec les collaborateurs comparables |
+| Sabrina | 1.0 | 88 h | 112 h | 176 h | équilibré avec les collaborateurs comparables |
+| Sahra | 1.25 | 176 h | 112 h | 176 h | équilibré avec les collaborateurs comparables |
+| Simona D | 1.0 | 80 h | 112 h | 176 h | équilibré avec les collaborateurs comparables |
+| Zaki | 1.0 | 80 h | 112 h | 176 h | équilibré avec les collaborateurs comparables |
+
 
 ## Lenteurs et échecs intermittents : analyse du 19/11/2026
 

@@ -25,6 +25,13 @@ FICHE_FIELDS = ("brands", "skills", "weight", "contract", "legal_weekly_max_minu
 LATE_FICHE = {"work_window": None}
 LATE_CONFIG = {"travel_minutes": []}
 LATE_WEIGHTS = ("history",)
+# ancienne valeur PAR DÉFAUT de la priorité individuelle (poids d'allocation), qui créait une priorité automatique : elle n'est plus
+# appliquée, même par un planning qui conserve ses paramètres (décision du 19/11/2026) ; une autre valeur, choisie explicitement, reste
+RETIRED_DEFAULTS = {"individual": 1}
+
+
+def _retire(w: dict) -> dict:
+    return {**w, **{k: 0 for k, old in RETIRED_DEFAULTS.items() if w.get(k) == old}}
 RELATION_SCOPES = {"day": "même jour, tous sites", "overlap": "horaires qui se chevauchent"}
 # règles de l'entreprise et pondérations UTILISÉES lors de la génération : les conditions de génération restent retrouvables
 CONFIG_FIELDS = ("rest_hours", "max_consecutive_days", "weights", "hierarchical", "break_rules", "monthly_cap_minutes")
@@ -113,7 +120,7 @@ def apply_config(cfg: SolverConfig, d: dict) -> None:
             v = [tuple(x) for x in v or []]
         elif f == "weights":
             # critère apparu après la conservation (équité sur plusieurs mois) : absent du planning conservé = sans effet
-            v = {**cfg.weights, **{k: 0 for k in LATE_WEIGHTS}, **(v or {})}
+            v = _retire({**cfg.weights, **{k: 0 for k in LATE_WEIGHTS}, **(v or {})})
         setattr(cfg, f, v)
 
 
@@ -171,6 +178,8 @@ def differences(frozen: Optional[dict], fiches: Dict[str, dict], cfg: dict, name
     out: List[dict] = []
     old_cfg = frozen.get("config", {})
     for f in CONFIG_FIELDS:
+        if f == "weights" and f in old_cfg:
+            old_cfg = {**old_cfg, f: _retire(old_cfg.get(f) or {})}  # valeur retirée : jamais signalée comme une différence
         if f in old_cfg and old_cfg.get(f) != cfg.get(f):
             if f == "weights":
                 # critère apparu après la conservation : ce n'est pas une modification de l'utilisateur, il n'est pas signalé

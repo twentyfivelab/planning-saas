@@ -12,13 +12,13 @@ from .model import DEFAULT_WEIGHTS
 # clé, libellé, valeur indicative par défaut, poids du moteur concernés, explication
 CRITERIA: List[Tuple[str, str, int, Tuple[str, ...], str]] = [
     ("fairness", "Équité de répartition des heures", 80, ("fairness",),
-     "Rapproche les heures de chacun de sa part équitable (poids d'allocation, objectif contractuel si renseigné). Plus c'est haut, plus les heures sont réparties uniformément."),
+     "Répartit les heures selon ce que chacun peut réellement faire (jours où il peut travailler, ou objectif contractuel si renseigné) : la prochaine heure va à celui qui en a proportionnellement le moins. Le poids d'allocation n'intervient pas. Plus c'est haut, plus la répartition est égale."),
     ("time_pref", "Respect des préférences horaires", 60, ("time_pref", "preference"),
      "Pénalise les shifts hors de la préférence matin / middle / soir (non obligatoire) et des préférences d'horaires individuelles."),
     ("brand_priority", "Priorité d'affectation par marque", 90, ("secondary", "reinforce"),
      "Favorise les collaborateurs « prioritaires » sur une marque ; un collaborateur secondaire ou en renfort n'est utilisé qu'en dernier recours."),
-    ("individual_priority", "Priorité individuelle des collaborateurs", 70, ("individual",),
-     "À couverture égale, privilégie les collaborateurs au plus fort poids d'allocation (fiche collaborateur). Sans effet si tous ont le même poids."),
+    ("individual_priority", "Priorité individuelle des collaborateurs", 0, ("individual",),
+     "Désactivée par défaut : aucune priorité automatique (ancienneté, mérite). Si vous l'activez, privilégie à couverture égale les collaborateurs au plus fort poids d'allocation (fiche collaborateur)."),
     ("hour_targets", "Respect des objectifs horaires", 85, ("budget", "budget_over", "overtime"),
      "Pénalise les heures de budget non planifiées, les dépassements de budget souple et les heures au-delà de l'objectif contractuel."),
     ("sunday_balance", "Équilibrage des dimanches", 75, ("sunday_balance",),
@@ -50,8 +50,15 @@ ADVANCED_MAX = 5000
 _ENGINE_OF = {e: k for k, _l, _d, engs, _x in CRITERIA for e in engs}
 
 
-def scale(default_engine: int, ui: int, default_ui: int) -> int:
-    return 0 if ui <= 0 else max(0, round(default_engine * 2 ** ((ui - default_ui) / 20)))
+ACTIVATION_BASE = {"individual": 1}  # critère désactivé par défaut : poids du moteur quand on l'active (+20 points = double)
+
+
+def scale(default_engine: int, ui: int, default_ui: int, base: int = 0) -> int:
+    if ui <= 0:
+        return 0
+    if default_engine == 0 and base:  # désactivé par défaut : 20 points = base, +20 points = double
+        return max(0, round(base * 2 ** ((ui - 20) / 20)))
+    return max(0, round(default_engine * 2 ** ((ui - default_ui) / 20)))
 
 
 def engine_weights(criteria: Optional[Dict[str, int]] = None, advanced: Optional[Dict[str, int]] = None) -> Dict[str, int]:
@@ -60,7 +67,7 @@ def engine_weights(criteria: Optional[Dict[str, int]] = None, advanced: Optional
     for key, _label, d, engs, _x in CRITERIA:
         ui = (criteria or {}).get(key, d)
         for e in engs:
-            out[e] = scale(DEFAULT_WEIGHTS[e], int(ui), d)
+            out[e] = scale(DEFAULT_WEIGHTS[e], int(ui), d, ACTIVATION_BASE.get(e, 0))
     for k, v in (advanced or {}).items():
         if k in ADVANCED_KEYS:
             out[k] = max(0, min(ADVANCED_MAX, int(v)))

@@ -160,7 +160,7 @@ DEFAULT_WEIGHTS: Dict[str, int] = {
     "secondary": 4,  # par heure sur une marque secondaire
     "reinforce": 12,  # par heure en renfort
     "preference": 10,  # par préférence horaire/tag non respectée (x force)
-    "fairness": 3,  # par demi-heure d'écart à la cible relative
+    "fairness": 3,  # par demi-heure d'écart à la part équitable (context.water_fill)
     "overtime": 20,
     "site_change": 6,
     "balance": 4,
@@ -172,7 +172,9 @@ DEFAULT_WEIGHTS: Dict[str, int] = {
     "time_pref": 20,  # par shift hors préférence horaire souple (x force) : « privilégier »
     "sunday_quota": 500,  # par dimanche manquant d'un objectif exact
     "budget_over": 800,  # par heure au-delà d'un budget non strict
-    "individual": 1,  # par heure et par point d'écart de priorité individuelle (poids d'allocation) avec le collaborateur le plus prioritaire
+    # priorité individuelle (poids d'allocation) : 0 par défaut — ni ancienneté ni mérite ne créent de priorité automatique ; activable
+    # seulement par un choix explicite dans les pondérations (base 1 par heure et par point d'écart)
+    "individual": 0,
     "sunday_balance": 6,  # par dimanche du collaborateur le plus chargé (collaborateurs sans quota)
     "alternation": 3,  # par passage matin -> soir (ou soir -> matin) sur deux jours consécutifs
     "days_balance": 3,  # par jour travaillé du collaborateur le plus chargé en jours

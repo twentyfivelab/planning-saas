@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta
 from typing import Dict, List, Optional, Set, Tuple
 
-from .model import Employee, Slot, SolverInput, site_start_times, slot_category
+from .model import REINFORCE, Employee, Slot, SolverInput, site_start_times, slot_category
 from .sundays import sundays_in
 from .timecalc import shift_bounds
 
@@ -93,7 +93,9 @@ class Prepared:
     eligible: Set[Tuple[str, str]]
     suns: List[date]
     optional_brands: Set[str]
-    targets: Dict[str, int]  # cible d'équité (minutes) par collaborateur
+    targets: Dict[str, int]  # part équitable (minutes) par collaborateur, pour l'affichage et les explications
+    fair_ref: Dict[str, int]  # référence d'équité (minutes) : objectif contractuel, sinon jours où il peut travailler × 8 h
+    fair_cap: Dict[str, int]  # charge maximale atteignable (minutes) : un shift par jour, limites de jours, plafond mensuel
     wmax: float
     category: Dict[str, Optional[str]] = field(default_factory=dict)  # slot -> matin | middle | soir | None
     # mois civils de la période -> jours ; jours et minutes déjà travaillés hors période dans ces mêmes mois (périodes voisines)
@@ -147,22 +149,24 @@ def prepare(inp: SolverInput) -> Prepared:
             o_days[o.employee_id, key].add(o.day)
             o_min[o.employee_id, key] += o.minutes
     optional_brands = {b for s in inp.slots if not s.mandatory for b in s.brands}
-    # Équité relative : cible proportionnelle au poids x disponibilité (ou cible contrat si renseignée)
+    # Équité : référence individuelle en MINUTES pour tous (objectif contractuel s'il est renseigné, sinon jours où le collaborateur peut
+    # réellement travailler × 8 h). Jamais le poids d'allocation : ni ancienneté ni mérite ne créent de priorité automatique.
     supply = sum(s.effective_minutes for s in inp.slots if s.mandatory)
     supply += sum(b.target_minutes for b in inp.budgets if b.brand in optional_brands)
-    raw, caps = {}, {}
+    refs, caps = {}, {}
     for e in inp.employees:
-        avail = sum(1 for d in days if not e.blocked(d))
         c = e.contract
-        raw[e.id] = c.monthly_target_minutes if c and c.monthly_target_minutes else e.weight * avail
-        caps[e.id] = sum(s.effective_minutes for s in by_emp[e.id])
-        if inp.config.monthly_cap_minutes is not None:  # cible d'équité jamais au-delà du plafond mensuel de l'entreprise
+        # habilitations : les shifts où il n'est qu'en renfort (dernier recours par définition) ne comptent pas dans sa part équitable
+        usual = [s for s in by_emp[e.id] if not all(e.brands.get(b) == REINFORCE for b in s.brands)]
+        eligible_days = len({s.day for s in usual})
+        refs[e.id] = c.monthly_target_minutes if c and c.monthly_target_minutes else eligible_days * FAIR_DAY_MINUTES
+        caps[e.id] = max_load_minutes(usual, e)
+        if inp.config.monthly_cap_minutes is not None:  # jamais au-delà du plafond mensuel de l'entreprise
             caps[e.id] = min(caps[e.id], sum(max(0, inp.config.monthly_cap_minutes - o_min.get((e.id, k), 0)) for k in months))
-    wsum = sum(raw.values()) or 1
-    targets = {e.id: min(int(supply * raw[e.id] / wsum), caps[e.id]) for e in inp.employees}
+    targets = water_fill(supply, refs, caps)  # part équitable affichée : même proportion de sa référence pour chacun, dans sa capacité
     return Prepared(inp=inp, slots={s.id: s for s in inp.slots}, emps={e.id: e for e in inp.employees}, days=days,
                     starts_by_site=starts_by_site, outside=dict(outside), by_emp=by_emp, eligible=eligible, suns=sundays_in(inp),
-                    optional_brands=optional_brands, targets=targets, wmax=max((e.weight for e in inp.employees), default=0),
+                    optional_brands=optional_brands, targets=targets, fair_ref=refs, fair_cap=caps, wmax=max((e.weight for e in inp.employees), default=0),
                     category={s.id: slot_category(s, starts_by_site) for s in inp.slots}, months=dict(months),
                     outside_month_days=dict(o_days), outside_month_minutes=dict(o_min))
 
@@ -251,6 +255,52 @@ def scoped_avoid_pairs(prep: Prepared, eid: str, others: List[str], scope: str):
                     for b in theirs.get(dd, ()):
                         if overlaps(a, b):
                             yield a.day, a, o, b
+
+
+FAIR_DAY_MINUTES = 480  # 8 h : unité de la référence « jours où il peut travailler »
+FAIR_TIERS = (32, 80)  # écart (demi-heures) au-delà duquel chaque demi-heure coûte une unité de plus : 16 h, puis 40 h
+
+
+def fairness_units(dev_half_hours: int) -> int:
+    """Coût d'un écart à la part équitable : progressif (au-delà de 16 h puis de 40 h), si bien qu'entre collaborateurs comparables
+    un manque (ou un surplus) est réparti au lieu d'être concentré sur l'un d'eux."""
+    return dev_half_hours + sum(max(0, dev_half_hours - t) for t in FAIR_TIERS)
+
+
+def max_load_minutes(slots, e) -> int:
+    """Charge maximale atteignable : un shift par jour (le plus long éligible), limites de jours par semaine ou par mois."""
+    per_day: Dict[date, int] = {}
+    for s in slots:
+        per_day[s.day] = max(per_day.get(s.day, 0), s.effective_minutes)
+    if e.max_days_count and e.max_days_period == "week":
+        weeks: Dict[tuple, List[int]] = defaultdict(list)
+        for d, mi in per_day.items():
+            weeks[d.isocalendar()[:2]].append(mi)
+        vals = [x for v in weeks.values() for x in sorted(v, reverse=True)[: e.max_days_count]]
+    else:
+        vals = list(per_day.values())
+    vals.sort(reverse=True)
+    lims = [x for x in (e.max_days_month, e.max_days_count if e.max_days_period == "month" else None) if x]
+    return sum(vals[: min(lims)] if lims else vals)
+
+
+def water_fill(supply: int, refs: Dict[str, int], caps: Dict[str, int]) -> Dict[str, int]:
+    """Part équitable : la même proportion λ de sa référence pour chacun, sans dépasser sa capacité ; l'excédent de ceux qui sont limités
+    revient aux autres (répartition max-min). Total = min(offre, somme des capacités)."""
+    ids = [i for i in refs if refs[i] > 0 and caps.get(i, 0) > 0]
+    if not ids:
+        return {i: 0 for i in refs}
+    lo, hi = 0.0, max(caps[i] / refs[i] for i in ids)
+    for _ in range(60):
+        mid = (lo + hi) / 2
+        if sum(min(caps[i], mid * refs[i]) for i in ids) < supply:
+            lo = mid
+        else:
+            hi = mid
+    out = {i: 0 for i in refs}
+    for i in ids:
+        out[i] = int(min(caps[i], hi * refs[i]))
+    return out
 
 
 def individual_penalty(prep: Prepared, e: Employee) -> int:

@@ -14,7 +14,7 @@ from typing import Callable, Dict, List, Optional
 
 from ortools.sat.python import cp_model
 
-from .context import (cost_units, coverage_cost, hours_units, individual_penalty, ineligibility, min_days_need, period_of, prepare,
+from .context import (FAIR_TIERS, cost_units, coverage_cost, hours_units, individual_penalty, ineligibility, min_days_need, period_of, prepare,
                       preference_checks, relation_pairs, scoped_avoid_pairs, history_excess)
 from .diagnostics import diagnose_uncovered, min_days_blockers, min_days_core_issue, min_days_group_conflicts, missing_data, core_issue
 from .metrics import plan_metrics
@@ -336,7 +336,9 @@ def solve(inp: SolverInput, cancel: Optional[threading.Event] = None, progress: 
                 if cat is not None and cat != e.time_pref:
                     terms["time_pref"].append(W["time_pref"] * max(1, e.preference_strength) * x[e.id, s.id])
 
-    # Équité relative : cible proportionnelle au poids x disponibilité (ou cible contrat si renseignée)
+    # Équité : écart à la part équitable de chacun (context.water_fill) — même proportion de sa référence pour tous (objectif contractuel,
+    # sinon jours où il peut travailler), dans sa capacité ; l'excédent des collaborateurs limités revient aux autres. Aucun poids
+    # d'allocation : à disponibilités, habilitations et objectifs comparables, la cible est la même.
     for e in inp.employees:
         tgt = prep.targets[e.id]
         if not by_emp[e.id]:
@@ -346,6 +348,10 @@ def solve(inp: SolverInput, cancel: Optional[threading.Event] = None, progress: 
         m.Add(30 * dev >= tot - tgt)
         m.Add(30 * dev >= tgt - tot)
         terms["fairness"].append(dev)
+        for t in FAIR_TIERS:  # progressif : même calcul que context.fairness_units
+            extra = m.NewIntVar(0, 100000, f"dev_{e.id}_{t}")
+            m.Add(extra >= dev - t)
+            terms["fairness"].append(extra)
 
     # Changements de site
     for e in inp.employees:
