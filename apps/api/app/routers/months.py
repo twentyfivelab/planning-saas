@@ -55,6 +55,8 @@ def ensure_period(body: MonthIn, ctx: Ctx = Depends(require("planning.edit"))):
         ctx.db.add(p)
         ctx.db.flush()
         audit(ctx, "period.create", "period", p.id, {"month": first.isoformat()})
+    from ..budgets import init_budgets_from_base
+    init_budgets_from_base(ctx.db, ctx.tenant_id, p, ctx.user.id)  # nouveau mois : budgets de base préremplis (jamais un ajustement écrasé)
     return {**serialize(p), "created": created}
 
 

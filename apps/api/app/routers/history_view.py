@@ -130,7 +130,8 @@ def _render(r: m.AuditLog, d: dict) -> dict:
     if a == "period.deleted":
         by = d.get("by") or {}
         v = d.get("versions") or {}
-        lines = [f"Planning de {d.get('label') or d.get('period') or '—'} supprimé : {d.get('assignments', 0)} affectation(s) retirée(s) des vues actives",
+        status = f" ({d['status_label'].lower()})" if d.get("status_label") else ""
+        lines = [f"Planning de {d.get('label') or d.get('period') or '—'}{status} supprimé : {d.get('assignments', 0)} affectation(s) retirée(s) des vues actives",
                  f"Supprimé par {by.get('name') or NOT_RECORDED} (compte {by.get('id') or NOT_RECORDED})",
                  f"Conservé pour la traçabilité : archive des affectations, {v.get('total', 0)} version(s) et l'historique"]
         return {"title": "Suppression d'un planning", "lines": lines}

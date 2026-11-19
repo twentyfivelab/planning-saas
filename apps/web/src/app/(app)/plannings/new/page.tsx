@@ -14,7 +14,7 @@ import { Icon } from "@/components/ui/Icon";
 import { Modal } from "@/components/ui/Modal";
 import { Badge, Button, Callout, Card, EmptyState, Input, PageHead, SearchInput, Select } from "@/components/ui/primitives";
 import { useToast } from "@/components/ui/Toast";
-import { api } from "@/lib/api";
+import { api, ApiError } from "@/lib/api";
 import { ParamsChoice, RunFailure, RunProgress, SaveOutcome, TimeLimitField, type ParamsMode, type RunView } from "@/components/planning/RunStatus";
 import { brandColor } from "@/lib/brand";
 import { summarize } from "@/lib/employeeRules";
@@ -27,7 +27,7 @@ const STEPS = ["Période", "Collaborateurs", "Paramètres individuels", "Marques
 type RosterRow = { employee_id: string; code: string; name: string; state: "included" | "excluded" | "inactive" | "contract_ended"; included: boolean; selectable: boolean; reason: string | null; contract_end: string | null };
 type Roster = { employees: RosterRow[]; included: number; total: number };
 type Check = { level: "warning" | "info" | "blocking"; text: string };
-type BrandRow = { code: string; name: string; group_code: string | null; archived: boolean; active: boolean; budget_minutes: number | null; strict: boolean; reference_minutes: number | null; reference_month: string;
+type BrandRow = { code: string; base_minutes?: number | null; name: string; group_code: string | null; archived: boolean; active: boolean; budget_minutes: number | null; strict: boolean; reference_minutes: number | null; reference_month: string;
   need_mandatory_minutes: number; need_optional_minutes: number; shifts: number; animation_days: number; sites: { code: string; name: string }[]; schedules: string[]; checks: Check[] };
 type SiteRow = { code: string; name: string; archived: boolean; active: boolean; shifts: number; minutes: number; brands: { code: string; name: string }[] };
 type Readiness = { period: PeriodRow; days: number; sundays: number; saturdays: number; employees: { included: number; excluded: string[]; contract_ended: string[]; inactive: string[] };
@@ -50,6 +50,10 @@ function Wizard() {
   const current = periods.find((p) => p.id === pid) as (Period & PeriodRow) | undefined;
   const existing = periods.find((p) => p.start_date === `${month}-01`) as (Period & PeriodRow) | undefined;
   const canEdit = me.permissions.includes("planning.edit");
+  // brouillon supprimé (dans un autre onglet, ou lien ancien) : plus aucune étape ni enregistrement, retour à la liste
+  const seen = useRef(new Set<string>());
+  for (const p of periods) seen.current.add(p.id);
+  const gone = !!pid && !loading && !periods.some((p) => p.id === pid) && (seen.current.has(pid) || search.get("period") === pid);
 
   useEffect(() => { // reprise d'un brouillon : mois et étape enregistrés
     if (init.current || loading || !pid) return;
@@ -70,6 +74,18 @@ function Wizard() {
     } catch (e) { toast.push(err(e), "bad"); }
   }
   const label = monthLabel(month);
+  if (gone) return (
+    <>
+      <PageHead eyebrow="Assistant" title="Générer un nouveau planning" />
+      <Callout kind="warn" title="Ce planning a été supprimé">
+        <p style={{ margin: 0 }} data-testid="wizard-deleted">Il n&apos;est plus modifiable et rien n&apos;y est enregistré. Vous pouvez créer volontairement un nouveau planning pour ce mois : il aura sa propre identité.</p>
+        <div className="row" style={{ marginTop: "var(--sp-2)" }}>
+          <Button variant="primary" onClick={() => { setPid(null); setStep(1); router.replace("/plannings/new"); }}>Revenir au choix du mois</Button>
+          <Button onClick={() => router.push("/planning")}>Ouvrir le planning</Button>
+        </div>
+      </Callout>
+    </>
+  );
   return (
     <>
       <PageHead eyebrow={step > 1 ? label : "Assistant"} title="Générer un nouveau planning">
@@ -145,7 +161,7 @@ function StepRoster({ pid, canEdit }: { pid: string; canEdit: boolean }) {
     const res = await api<Roster>(`/periods/${pid}/roster`, { method: "PUT", json: { employees: [...batch].map(([employee_id, included]) => ({ employee_id, included })) } });
     if (!queue.current!.unsaved) { r.mutate(res); setRows(res.employees); } // une réponse ne remplace jamais des modifications plus récentes à l'écran
     invalidate();
-  }, () => rerender((x) => x + 1));
+  }, () => rerender((x) => x + 1), 350, (e) => e instanceof ApiError && (e.status === 404 || e.status === 410)); // planning supprimé entre-temps : arrêt définitif
   useEffect(() => () => queue.current?.dispose(), []);
   useEffect(() => { if (r.data && !queue.current?.unsaved) setRows(r.data.employees); }, [r.data]);
   function toggle(ids: string[], included: boolean) {
@@ -217,7 +233,9 @@ function StepBrands({ pid, month, canEdit, canCatalog }: { pid: string; month: s
     try { const r = await api<SiteRow>(`/periods/${pid}/sites/${encodeURIComponent(code)}`, { method: "PUT", json: { active } }); sites.mutate((sites.data ?? []).map((s) => (s.code === code ? r : s))); brands.reload(); invalidate(); }
     catch (e) { toast.push(err(e), "bad"); }
   }
-  const total = useMemo(() => (brands.data ?? []).filter((b) => b.active).reduce((s, b) => s + (b.budget_minutes ?? 0), 0), [brands.data]);
+  // total recalculé pendant la saisie (valeur en cours de frappe), avant même l'enregistrement
+  const [drafts, setDrafts] = useState<Record<string, number | null>>({});
+  const total = useMemo(() => (brands.data ?? []).filter((b) => b.active).reduce((s, b) => s + ((b.code in drafts ? drafts[b.code] : b.budget_minutes) ?? 0), 0), [brands.data, drafts]);
   return (
     <div className="stack">
       <Card title={`Marques et budgets horaires — ${monthLabel(month)}`} eyebrow={`Budget total actif : ${fmtHM(total)}`} actions={canCatalog ? <Button icon="briefcase" onClick={() => setEditor(true)}>Ajouter ou modifier des sites et marques</Button> : undefined}>
@@ -225,7 +243,7 @@ function StepBrands({ pid, month, canEdit, canCatalog }: { pid: string; month: s
         {!brands.data ? <div className="skeleton" style={{ height: "12rem" }} aria-hidden="true" /> : (
           <div className="table-wrap"><table className="table table-cards" aria-label="Marques du mois">
             <thead><tr><th>Active</th><th>Marque</th><th>Budget du mois</th><th>Besoins de couverture</th><th>Horaires et sites</th></tr></thead>
-            <tbody>{brands.data.map((b) => <BrandLine key={b.code} b={b} canEdit={canEdit && !b.archived} onPut={(body) => put(b.code, body)} />)}</tbody>
+            <tbody>{brands.data.map((b) => <BrandLine key={b.code} b={b} canEdit={canEdit && !b.archived} onPut={(body) => put(b.code, body)} onDraft={(v) => setDrafts((d) => ({ ...d, [b.code]: v }))} />)}</tbody>
           </table></div>
         )}
       </Card>
@@ -251,22 +269,40 @@ function StepBrands({ pid, month, canEdit, canCatalog }: { pid: string; month: s
   );
 }
 
-function BrandLine({ b, canEdit, onPut }: { b: BrandRow; canEdit: boolean; onPut: (body: Record<string, unknown>) => Promise<void> }) {
+function BrandLine({ b, canEdit, onPut, onDraft }: { b: BrandRow; canEdit: boolean; onPut: (body: Record<string, unknown>) => Promise<void>; onDraft: (minutes: number | null) => void }) {
   const [h, setH] = useState(b.budget_minutes === null ? "" : String(b.budget_minutes / 60));
   useEffect(() => setH(b.budget_minutes === null ? "" : String(b.budget_minutes / 60)), [b.budget_minutes]);
-  const commit = () => { const v = h.trim(); if (v === "" && b.budget_minutes !== null) void onPut({ clear_budget: true }); else if (v !== "" && Math.round(Number(v) * 60) !== b.budget_minutes && Number(v) >= 0) void onPut({ budget_minutes: Math.round(Number(v) * 60) }); };
+  const timer = useRef<ReturnType<typeof setTimeout>>(undefined);
+  useEffect(() => () => clearTimeout(timer.current), []);
+  const commit = (raw = h) => {
+    clearTimeout(timer.current);
+    const v = raw.trim();
+    if (v === "" && b.budget_minutes !== null) void onPut({ clear_budget: true });
+    else if (v !== "" && Number(v) >= 0 && Math.round(Number(v) * 60) !== b.budget_minutes) void onPut({ budget_minutes: Math.round(Number(v) * 60) });
+  };
+  // enregistrement automatique (petites flèches comprises) : peu après la dernière modification, et immédiatement en quittant le champ
+  const change = (v: string) => {
+    setH(v); onDraft(v.trim() === "" ? null : Math.round(Number(v) * 60));
+    clearTimeout(timer.current); timer.current = setTimeout(() => commit(v), 700);
+  };
+  const base = b.base_minutes ?? null;
   return (
     <tr data-active={b.active}>
       <td><input type="checkbox" aria-label={`${b.name} active ce mois`} checked={b.active} disabled={!canEdit} onChange={(e) => onPut({ active: e.target.checked })} /></td>
       <td className="cell-main"><span className="row" style={{ flexWrap: "nowrap" }}><i className="dot" style={{ ["--c" as string]: brandColor(b.code) }} /><strong>{b.name}</strong></span>{b.archived && <Badge>Archivée</Badge>}{!b.active && !b.archived && <Badge>Inactive ce mois</Badge>}</td>
       <td data-label="Budget"><div className="stack" style={{ gap: "var(--sp-1)" }}>
         <div className="row" style={{ flexWrap: "nowrap" }}>
-          <Input aria-label={`Budget ${b.name} (heures)`} type="number" min={0} step={0.5} value={h} disabled={!canEdit} placeholder="—" onChange={(e) => setH(e.target.value)} onBlur={commit} onKeyDown={(e) => { if (e.key === "Enter") commit(); }} style={{ width: "7rem" }} />
+          <Input aria-label={`Budget ${b.name} (heures)`} type="number" min={0} step={0.5} value={h} disabled={!canEdit} placeholder="—" onChange={(e) => change(e.target.value)} onBlur={() => commit()} onKeyDown={(e) => { if (e.key === "Enter") commit(); }} style={{ width: "7rem" }} />
           <span className="faint">h</span>
           <Select aria-label={`Nature du budget ${b.name}`} value={b.strict ? "strict" : "soft"} disabled={!canEdit || b.budget_minutes === null} onChange={(e) => onPut({ strict: e.target.value === "strict" })} style={{ width: "auto" }}>
             <option value="strict">Plafond strict</option><option value="soft">Objectif souple</option>
           </Select>
         </div>
+        {base !== null ? (
+          <span className="help" data-testid={`base-${b.code}`}>{b.budget_minutes === base ? <>Budget de base : {fmtHM(base)}</> : <>Ajusté pour ce mois · budget de base : {fmtHM(base)}{canEdit && <> · <button type="button" className="link-btn" onClick={() => { onDraft(base); void onPut({ budget_minutes: base }); }}>Revenir au budget de base</button></>}</>}</span>
+        ) : b.budget_minutes === null && !b.archived ? (
+          <span className="help warn-text" data-testid={`base-${b.code}`}>Aucun budget de base pour {b.name} : renseignez-le dans « Sites et marques », ou saisissez le budget de ce mois.</span>
+        ) : null}
         {b.reference_minutes !== null && <span className="help">Référence {monthLabel(b.reference_month.slice(0, 7))} : {fmtHM(b.reference_minutes)}{canEdit && b.budget_minutes !== b.reference_minutes && <> · <button type="button" className="link-btn" onClick={() => onPut({ budget_minutes: b.reference_minutes })}>Reprendre</button></>}</span>}
       </div></td>
       <td data-label="Besoins"><span className="num">{fmtHM(b.need_mandatory_minutes)}</span> <span className="faint">obligatoires</span>{b.need_optional_minutes > 0 && <> + <span className="num">{fmtHM(b.need_optional_minutes)}</span> <span className="faint">optionnelles</span></>}

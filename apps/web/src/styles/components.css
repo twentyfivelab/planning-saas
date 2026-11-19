@@ -513,3 +513,18 @@ details.advanced[open] > summary { margin-bottom: var(--sp-2); }
 .save-status { gap: var(--sp-2); font-size: var(--text-sm, .875rem); }
 .save-status .ok-text { color: var(--ok); display: inline-flex; align-items: center; gap: 4px; font-weight: 600; }
 .save-status .bad-text { color: var(--bad); font-weight: 600; }
+
+/* Menu « ⋯ » des mois de l'historique : toujours visible (mobile compris) ; s'ouvre sous la ligne (la liste défile, rien n'est coupé) */
+.nav-period-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 2px; }
+.nav-period-row > .nav-period { min-width: 0; }
+.nav-menu { display: contents; }
+.nav-menu-btn { width: 2rem; height: 2rem; border-radius: var(--radius-sm); border: 1px solid transparent; background: transparent; color: var(--ink-2, inherit);
+  font-size: 1.1rem; line-height: 1; cursor: pointer; }
+.nav-menu-btn:hover, .nav-menu-btn[aria-expanded="true"] { background: var(--glass-pink); border-color: var(--line); }
+.nav-menu-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.nav-menu-pop { grid-column: 1 / -1; display: grid; padding: 4px; border-radius: var(--radius-md); border: 1px solid var(--line); margin: 2px 0 4px; }
+.nav-menu-item { display: flex; align-items: center; gap: var(--sp-2); padding: var(--sp-2) var(--sp-3); border: 0; background: transparent; border-radius: var(--radius-sm);
+  font: inherit; text-align: left; cursor: pointer; min-height: 2.5rem; }
+.nav-menu-item.danger { color: var(--bad); font-weight: 600; }
+.nav-menu-item:hover, .nav-menu-item:focus-visible { background: var(--bad-soft); outline: none; }
+.warn-text { color: var(--warn); font-weight: 600; }

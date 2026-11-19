@@ -19,6 +19,7 @@ from .. import models as m
 from ..config import settings
 from ..deps import Ctx, audit, require
 from ..security import verify_password
+from ..period_state import statuses
 from .months import MONTHS_FR
 
 router = APIRouter(tags=["suppression d'un planning"])
@@ -99,13 +100,13 @@ def _preview(ctx: Ctx, p: m.PlanningPeriod) -> dict:
         "time_entries": count(m.TimeEntry, m.TimeEntry.period_id == p.id),
         "reminders": count(m.Regularization, m.Regularization.period_id == p.id, m.Regularization.resolved_at.is_(None)),
     }
+    st = statuses(ctx.db, [p])[p.id]
+    out["status"], out["status_label"] = st["status"], st["status_label"]
     blocking = []
     if out["time_entries"]:
         blocking.append(f"{out['time_entries']} saisie(s) d'heures réelles sont rattachées à ce planning : il ne peut pas être supprimé (il peut être archivé).")
     out["blocking"] = blocking
-    out["can_delete"] = not blocking and out["assignments"] + out["shifts"] + out["versions"]["total"] + out["runs"] > 0
-    if not out["can_delete"] and not blocking:
-        out["blocking"] = ["Ce planning n'a encore rien de généré : supprimez le brouillon depuis l'assistant."]
+    out["can_delete"] = not blocking  # brouillon jamais généré compris : même confirmation, même suppression logique, même trace
     return out
 
 
@@ -154,6 +155,7 @@ def delete_period(pid: str, body: DeleteIn, ctx: Ctx = Depends(require("planning
     p.deleted_at, p.deleted_by, p.deleted_by_name, p.deletion_archive, p.wizard_step = now, ctx.user.id, ctx.user.name, archive, None
     # 4) trace, dans la même transaction : identité de la personne (nom et identifiant interne), planning, nombre d'affectations
     audit(ctx, "period.deleted", "period", p.id, {"period_id": str(p.id), "period": p.name, "month": p.start_date.strftime("%Y-%m"), "label": pv["label"],
+                                                   "status": pv["status"], "status_label": pv["status_label"],
                                                    "by": {"id": str(ctx.user.id), "name": ctx.user.name}, "assignments": pv["assignments"],
                                                    "locked": pv["locked"], "shifts": pv["shifts"], "versions": pv["versions"], "runs": pv["runs"]})
     ctx.db.flush()

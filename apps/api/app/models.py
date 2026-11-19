@@ -145,6 +145,8 @@ class Brand(TenantOwned, Base):
     active_weekdays: Mapped[Any] = mapped_column(JSONB, default=list)  # jours de fonctionnement
     group_code: Mapped[Optional[str]] = mapped_column(String(64))  # ex. COSMETIQUE
     archived_from: Mapped[Optional[date]] = mapped_column(Date)  # code stable ; archivage à partir d'un mois, historique conservé
+    # budget de base (travail effectif par mois) : prérempli dans le budget de chaque NOUVEAU mois, ajustable mois par mois ; NULL = non renseigné
+    base_budget_minutes: Mapped[Optional[int]] = mapped_column(Integer)
     client_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("clients.id", ondelete="SET NULL"))
     billing_rate_cents: Mapped[Optional[int]] = mapped_column(Integer)  # tarif horaire propre à la marque (prime sur celui du client)
     __table_args__ = (UniqueConstraint("tenant_id", "code"),)
@@ -356,6 +358,8 @@ class PlanningPeriod(TenantOwned, Base):
     deleted_by: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True))
     deleted_by_name: Mapped[Optional[str]] = mapped_column(String(200))  # nom figé au moment de la suppression
     deletion_archive: Mapped[Any] = mapped_column(JSONB, nullable=True)  # affectations et compteurs au moment de la suppression
+    # marques dont le budget du mois a déjà été prérempli depuis leur budget de base (une seule fois : un ajustement n'est jamais écrasé)
+    budget_init: Mapped[Any] = mapped_column(JSONB, nullable=True)
 
 
 class PeriodEmployee(TenantOwned, Base):

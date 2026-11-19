@@ -44,4 +44,16 @@ describe("enregistrement automatique", () => {
     expect([...calls[0]]).toEqual([["ana", false]]);
     vi.useRealTimers();
   });
+
+  it("arrêt définitif (ressource supprimée entre-temps) : plus aucun envoi, ni nouvel essai", async () => {
+    vi.useFakeTimers();
+    let calls = 0;
+    const q = new SaveQueue<string, boolean>(async () => { calls += 1; throw new Error("Ce planning a été supprimé"); }, () => {}, 100, (e) => String(e).includes("supprimé"));
+    q.set("ana", true);
+    await vi.advanceTimersByTimeAsync(100);
+    expect(q.state).toBe("stopped"); expect(q.unsaved).toBe(false);
+    q.set("ben", true); q.retry(); await vi.advanceTimersByTimeAsync(500);
+    expect(calls).toBe(1); expect(q.state).toBe("stopped");
+    vi.useRealTimers();
+  });
 });

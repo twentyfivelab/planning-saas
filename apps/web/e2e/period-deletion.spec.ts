@@ -59,6 +59,7 @@ test.describe("accès non autorisé", () => {
     test.skip(r.status() !== 200, "compte planificateur absent");
     await openJune(page);
     await expect(page.getByRole("button", { name: "Supprimer ce planning" })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: /^Options de / })).toHaveCount(0); // ni le menu « ⋯ » du menu latéral
     const token = (await j(page, "/auth/me")).csrf_token as string;
     const del = await page.request.post(`${API}/periods/${pid}/delete`, { headers: { "X-CSRF-Token": token }, data: { password: process.env.E2E_PASSWORD } });
     expect(del.status()).toBe(403);
@@ -102,4 +103,57 @@ test("après suppression : nouveau planning du même mois, distinct, l'ancien re
   await page.goto("/history?kind=deletion"); await page.waitForLoadState("networkidle");
   await expect(page.getByTestId("history-event").filter({ hasText: "juin 2027" }).first()).toContainText("Planning : Juin 2027 (planning supprimé le ");
   pid = fresh.id; // pour une exécution suivante du fichier
+});
+
+test("menu latéral : supprimer un brouillon jamais généré, le mois disparaît, redirection, trace", async ({ page }) => {
+  const token = await csrf(page);
+  const draft = await (await page.request.post(`${API}/periods/ensure`, { headers: { "X-CSRF-Token": token }, data: { year: 2027, month: 8 } })).json();
+  await page.goto("/planning");
+  await page.evaluate(() => { try { localStorage.setItem("planning:month", "2027-08"); } catch { /* ignoré */ } }); // le brouillon est consulté
+  await page.reload(); await page.waitForLoadState("networkidle");
+  const nav = page.getByRole("navigation", { name: "Navigation principale" });
+  const row = nav.getByTestId("period-row").filter({ hasText: "Août 2027" });
+  await expect(row).toContainText("Brouillon");
+  await row.getByRole("button", { name: "Options de Août 2027" }).click();
+  await row.getByRole("menuitem", { name: "Supprimer ce planning" }).click();
+  const dlg = page.getByRole("dialog", { name: "Supprimer le planning de août 2027 ?" });
+  await expect(dlg.getByTestId("delete-summary")).toContainText("Brouillon");
+  await dlg.getByRole("button", { name: "Annuler" }).click(); // annulation : rien ne change
+  await expect(row).toBeVisible();
+  await row.getByRole("button", { name: "Options de Août 2027" }).click();
+  await row.getByRole("menuitem", { name: "Supprimer ce planning" }).click();
+  await dlg.getByLabel("Mot de passe de votre compte").fill(process.env.E2E_PASSWORD!);
+  await dlg.getByRole("button", { name: "Confirmer la suppression" }).click();
+  await expect(page.getByText("Le planning de août 2027 a été supprimé avec succès.").first()).toBeVisible();
+  await expect(nav.getByTestId("period-row").filter({ hasText: "Août 2027" })).toHaveCount(0); // disparaît immédiatement du menu
+  await expect(page).toHaveURL(/\/planning$/);
+  expect(await page.evaluate(() => localStorage.getItem("planning:month"))).not.toBe("2027-08"); // redirigé vers un autre mois
+  expect(((await j(page, "/periods")) as { id: string }[]).some((p) => p.id === draft.id)).toBe(false);
+  // un ancien onglet qui enregistre encore : refusé, rien de recréé
+  expect((await page.request.put(`${API}/periods/${draft.id}/roster`, { headers: { "X-CSRF-Token": token }, data: { employees: [] } })).status()).toBe(404);
+  expect(((await j(page, "/periods")) as { start_date: string }[]).some((p) => p.start_date === "2027-08-01")).toBe(false);
+  // trace : y compris pour un brouillon sans affectation
+  const me = (await j(page, "/auth/me")) as { name: string; id: string };
+  await page.goto("/history?kind=deletion"); await page.waitForLoadState("networkidle");
+  const ev = page.getByTestId("history-event").filter({ hasText: "août 2027" }).first();
+  await expect(ev).toContainText("(brouillon) supprimé : 0 affectation(s)");
+  await expect(ev).toContainText(`Supprimé par ${me.name} (compte ${me.id})`);
+});
+
+test("menu latéral sur mobile : le bouton « ⋯ » est accessible", async ({ page }) => {
+  const token = await csrf(page);
+  const draft = await (await page.request.post(`${API}/periods/ensure`, { headers: { "X-CSRF-Token": token }, data: { year: 2027, month: 9 } })).json();
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/"); await page.waitForLoadState("networkidle");
+  await page.getByRole("button", { name: "Menu" }).click();
+  const row = page.getByRole("navigation", { name: "Navigation principale" }).getByTestId("period-row").filter({ hasText: "Septembre 2027" });
+  await row.scrollIntoViewIfNeeded();
+  await row.getByRole("button", { name: "Options de Septembre 2027" }).click();
+  await row.getByRole("menuitem", { name: "Supprimer ce planning" }).click();
+  const dlg = page.getByRole("dialog", { name: "Supprimer le planning de septembre 2027 ?" });
+  await dlg.getByLabel("Mot de passe de votre compte").fill(process.env.E2E_PASSWORD!);
+  await dlg.getByRole("button", { name: "Confirmer la suppression" }).click();
+  await expect(page.getByText("Le planning de septembre 2027 a été supprimé avec succès.").first()).toBeVisible();
+  expect(((await j(page, "/periods")) as { id: string }[]).some((p) => p.id === draft.id)).toBe(false);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth)).toBe(false);
 });

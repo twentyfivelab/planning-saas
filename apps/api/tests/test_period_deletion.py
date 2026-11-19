@@ -182,3 +182,24 @@ def test_nouveau_planning_du_meme_mois_apres_suppression_identite_distincte(t):
     new_hist = o.get("/history", params={"period_id": new["id"]}).json()["items"]
     assert new_hist and all(i["period"] == "Novembre 2026" for i in new_hist) and not any(i["kind"] == "deletion" for i in new_hist)
     assert all(i["period"].startswith("Novembre 2026 (planning supprimé le ") for i in old_hist)
+
+
+def test_brouillon_jamais_genere_supprime_avec_trace_et_recreable(t):
+    """Brouillon sans affectation ni calcul : même fenêtre (statut), même mot de passe, même suppression logique, même trace."""
+    o = t["o"]
+    draft = o.post("/periods/ensure", json={"year": 2027, "month": 1}).json()
+    pv = o.get(f"/periods/{draft['id']}/deletion-preview").json()
+    assert (pv["label"], pv["status"], pv["status_label"], pv["assignments"], pv["can_delete"]) == ("janvier 2027", "draft", "Brouillon", 0, True)
+    assert o.post(f"/periods/{draft['id']}/delete", json={"password": "faux"}).status_code == 403
+    r = o.post(f"/periods/{draft['id']}/delete", json={"password": PW})
+    assert r.status_code == 200 and r.json()["message"] == "Le planning de janvier 2027 a été supprimé avec succès."
+    assert all(p["id"] != draft["id"] for p in o.get("/periods").json())
+    # un ancien onglet qui enregistre encore : refusé, rien n'est recréé
+    assert o.put(f"/periods/{draft['id']}/roster", json={"employees": []}).status_code == 404
+    assert o.put(f"/periods/{draft['id']}/brands/Alpha", json={"budget_minutes": 600}).status_code == 404
+    assert not any(p["start_date"] == "2027-01-01" for p in o.get("/periods").json())
+    ev = next(i for i in o.get("/history", params={"kind": "deletion"}).json()["items"] if i["period_id"] == draft["id"])
+    me = o.get("/auth/me").json()
+    assert "(brouillon) supprimé : 0 affectation(s)" in ev["lines"][0] and me["id"] in ev["lines"][1] and ev["at_label"]
+    again = o.post("/periods/ensure", json={"year": 2027, "month": 1}).json()  # recréation volontaire : identité distincte
+    assert again["created"] is True and again["id"] != draft["id"]

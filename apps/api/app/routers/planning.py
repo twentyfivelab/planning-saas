@@ -112,6 +112,8 @@ def start_run(pid: str, body: RunIn, ctx: Ctx = Depends(require("planning.optimi
     cfg = {"time_limit_s": body.time_limit_s, "strict_coverage": body.strict_coverage, "weights": body.weights}
     if body.params:
         cfg["params"] = body.params
+    from ..budgets import init_budgets_from_base
+    init_budgets_from_base(ctx.db, ctx.tenant_id, p, ctx.user.id)  # première génération d'un brouillon : budgets de base des marques sans budget
     run = m.OptimizationRun(tenant_id=ctx.tenant_id, period_id=p.id, kind=body.kind, config=cfg,
                             idempotency_key=idempotency_key, requested_by=ctx.user.id)
     ctx.db.add(run)

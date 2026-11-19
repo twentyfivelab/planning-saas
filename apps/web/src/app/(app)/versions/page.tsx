@@ -60,7 +60,7 @@ export default function Versions() {
                       {(x.state === "snapshot" || x.state === "in_review") && can("planning.validate") && x.same_as_current && <Button size="sm" onClick={() => act(() => api(`/versions/${x.id}/validate`, { method: "POST" }), "Version validée.")}>Valider</Button>}
                       {x.state !== "published" && x.state !== "superseded" && can("planning.publish") && x.same_as_current && <Button size="sm" variant="primary" onClick={() => { setNotify(true); setPublishing(x); }}>Publier</Button>}
                       {can("planning.edit") && !x.same_as_current && <Button size="sm" onClick={() => setRestoring(x)}>Restaurer</Button>}
-                      {can("planning.edit") && x.state === "snapshot" && x.kind === "manual" && <Button size="sm" variant="ghost" onClick={() => act(() => api(`/versions/${x.id}`, { method: "DELETE" }), "Copie de travail supprimée.")} aria-label={`Supprimer la version ${x.number}`}>Supprimer</Button>}
+                      {can("planning.edit") && x.state === "snapshot" && x.kind === "manual" && <Button size="sm" variant="ghost" onClick={() => act(async () => { await api(`/versions/${x.id}`, { method: "DELETE" }); v.mutate((v.data ?? []).filter((y) => y.id !== x.id)); }, "Copie de travail supprimée.")} aria-label={`Supprimer la version ${x.number}`}>Supprimer</Button>}
                     </div></td></tr>))}</tbody></table></div>
             )}
           </Card>

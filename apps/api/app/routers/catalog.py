@@ -62,7 +62,7 @@ def catalog(month: Optional[str] = None, ctx: Ctx = Depends(require("referential
               "animations": sorted(anim.get(s.code, []), key=lambda a: (a["brands"][0]["name"] if a["brands"] else "", a["start"]))}
              for s in ctx.db.scalars(select(m.Site).order_by(m.Site.name))]
     return {"month": first.isoformat() if first else None, "sites": sites,
-            "brands": [{"code": b.code, "name": b.name, "group_code": b.group_code, "archived_from": b.archived_from.isoformat() if b.archived_from else None,
+            "brands": [{"code": b.code, "name": b.name, "group_code": b.group_code, "base_budget_minutes": b.base_budget_minutes, "archived_from": b.archived_from.isoformat() if b.archived_from else None,
                         "archived": bool(b.archived_from and first and b.archived_from <= first), "authorized_employees": n_auth.get(b.code, 0)}
                        for b in sorted(brands.values(), key=lambda x: (x.group_code or "~", x.name))]}
 
@@ -110,6 +110,7 @@ class BrandIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
     name: str = Field(min_length=1, max_length=200)
     group_code: Optional[str] = Field(None, max_length=64)
+    base_budget_hours: Optional[float] = Field(None, ge=0, le=10000)  # budget de base par mois (heures de travail effectif)
 
 
 @router.post("/catalog/brands", status_code=201)
@@ -117,11 +118,12 @@ def create_brand(body: BrandIn, ctx: Ctx = Depends(require("referential.write"))
     code = body.name.strip()[:64]
     if ctx.db.scalar(select(m.Brand).where(m.Brand.code == code)) is not None:
         raise HTTPException(409, f"La marque {code} existe déjà.")
-    b = m.Brand(tenant_id=ctx.tenant_id, code=code, name=body.name.strip(), group_code=(body.group_code or None), active_weekdays=[])
+    b = m.Brand(tenant_id=ctx.tenant_id, code=code, name=body.name.strip(), group_code=(body.group_code or None), active_weekdays=[],
+                base_budget_minutes=round(body.base_budget_hours * 60) if body.base_budget_hours is not None else None)
     ctx.db.add(b)
     ctx.db.flush()
-    audit(ctx, "catalog.brand_create", "brand", b.id, {"code": code, "group": b.group_code})
-    return {"code": b.code, "name": b.name, "group_code": b.group_code}
+    audit(ctx, "catalog.brand_create", "brand", b.id, {"code": code, "group": b.group_code, "base_budget_minutes": b.base_budget_minutes})
+    return {"code": b.code, "name": b.name, "group_code": b.group_code, "base_budget_minutes": b.base_budget_minutes}
 
 
 class BrandPatch(BaseModel):
@@ -129,6 +131,8 @@ class BrandPatch(BaseModel):
     name: Optional[str] = Field(None, min_length=1, max_length=200)
     group_code: Optional[str] = Field(None, max_length=64)
     archived_from: Optional[str] = None
+    base_budget_hours: Optional[float] = Field(None, ge=0, le=10000)
+    clear_base_budget: bool = False
 
 
 @router.patch("/catalog/brands/{code}")
@@ -136,7 +140,12 @@ def patch_brand(code: str, body: BrandPatch, ctx: Ctx = Depends(require("referen
     b = ctx.db.scalar(select(m.Brand).where(m.Brand.code == code))
     if b is None:
         raise HTTPException(404, "Marque inconnue")
-    before = {"name": b.name, "group_code": b.group_code, "archived_from": b.archived_from.isoformat() if b.archived_from else None}
+    before = {"name": b.name, "group_code": b.group_code, "archived_from": b.archived_from.isoformat() if b.archived_from else None,
+              "base_budget_minutes": b.base_budget_minutes}
+    if body.clear_base_budget:
+        b.base_budget_minutes = None
+    elif body.base_budget_hours is not None:
+        b.base_budget_minutes = round(body.base_budget_hours * 60)  # budget de base : les mois déjà créés ne changent pas
     if body.name is not None:
         b.name = body.name.strip()
     if body.group_code is not None:
@@ -144,7 +153,7 @@ def patch_brand(code: str, body: BrandPatch, ctx: Ctx = Depends(require("referen
     if body.archived_from is not None:
         b.archived_from = parse_month(body.archived_from) if body.archived_from else None
     audit(ctx, "catalog.brand_update", "brand", b.id, {"code": code, "before": before, "after": body.model_dump(exclude_none=True)})
-    return {"code": b.code, "name": b.name, "group_code": b.group_code}
+    return {"code": b.code, "name": b.name, "group_code": b.group_code, "base_budget_minutes": b.base_budget_minutes}
 
 
 def _tag(start: time, end: time) -> str:

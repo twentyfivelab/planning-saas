@@ -11,6 +11,7 @@ from sqlalchemy import delete, func, select
 
 from .. import models as m
 from ..deps import Ctx, audit, get_or_404, require
+from ..rbac import has_permission
 from ..period_state import ensure_editable, statuses
 from ..services_bridge import assignments_for_validation, brand_schedules, build_input
 from .crud import serialize
@@ -105,14 +106,10 @@ def reset_period(pid: str, body: ResetIn, ctx: Ctx = Depends(require("planning.a
 
 @router.delete("/periods/{pid}", status_code=204)
 def delete_draft(pid: str, ctx: Ctx = Depends(require("planning.edit"))):
-    """Seul un BROUILLON (aucune affectation, aucune version) peut être supprimé ; un planning généré se garde ou s'archive."""
-    p = _period(ctx, pid)
-    if statuses(ctx.db, [p])[p.id]["status"] != "draft" or ctx.db.scalar(select(func.count()).select_from(m.ScheduleVersion).where(m.ScheduleVersion.period_id == p.id)):
-        raise HTTPException(409, "Seul un brouillon sans affectation ni version peut être supprimé. Un planning généré peut être archivé.")
-    if ctx.db.scalar(select(func.count()).select_from(m.OptimizationRun).where(m.OptimizationRun.period_id == p.id)):
-        raise HTTPException(409, "Ce planning a déjà été calculé : il ne peut pas être supprimé, seulement archivé.")
-    audit(ctx, "period.delete_draft", "period", p.id, {"name": p.name})
-    ctx.db.delete(p)
+    """Ancienne suppression définitive d'un brouillon, sans mot de passe ni trace conservée : retirée. Toute suppression passe désormais
+    par la suppression protégée (droit dédié, mot de passe, suppression logique, historique)."""
+    _period(ctx, pid)
+    raise HTTPException(410, "Utilisez « Supprimer ce planning » : la suppression est confirmée par votre mot de passe et inscrite dans l'historique.")
 
 
 # ---------- étape 2 : effectif du mois ----------
@@ -233,6 +230,9 @@ def _budget_check(target: Optional[int], need: dict, strict: bool) -> List[dict]
 @router.get("/periods/{pid}/brands")
 def period_brands(pid: str, ctx: Ctx = Depends(require("planning.read"))):
     p = _period(ctx, pid)
+    if has_permission(ctx.user.role, "budgets.write") and p.archived_at is None:
+        from ..budgets import init_budgets_from_base
+        init_budgets_from_base(ctx.db, ctx.tenant_id, p, ctx.user.id)  # brouillon : marques sans budget ce mois-ci, une seule fois
     first = p.start_date.replace(day=1)
     prev = (first - timedelta(days=1)).replace(day=1)
     toggles = {r.brand_code: r.active for r in ctx.db.scalars(select(m.PeriodBrand).where(m.PeriodBrand.period_id == p.id))}
@@ -246,7 +246,7 @@ def period_brands(pid: str, ctx: Ctx = Depends(require("planning.read"))):
         archived = bool(b.archived_from and b.archived_from <= first)
         n = need.get(b.code, {"mandatory_minutes": 0, "optional_minutes": 0, "shifts": 0, "days": set(), "sites": set()})
         bud = budgets.get(b.code)
-        out.append({"code": b.code, "name": b.name, "group_code": b.group_code, "archived": archived,
+        out.append({"code": b.code, "name": b.name, "group_code": b.group_code, "archived": archived, "base_minutes": b.base_budget_minutes,
                     "active": (not archived) and toggles.get(b.code, True),
                     "budget_minutes": bud.target_minutes if bud else None, "strict": bud.strict if bud else True,
                     "reference_minutes": ref[b.code].target_minutes if b.code in ref else None, "reference_month": prev.isoformat(),

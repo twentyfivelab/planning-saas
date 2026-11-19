@@ -1,5 +1,5 @@
 "use client";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Badge, Button, Callout, Card, EmptyState, Field, Input, Select } from "@/components/ui/primitives";
 import { Modal } from "@/components/ui/Modal";
 import { useToast } from "@/components/ui/Toast";
@@ -11,7 +11,7 @@ import { monthLabel } from "@/lib/months";
 
 type Animation = { id: string; code: string; brands: { code: string; name: string }[]; start: string; end: string; break_minutes: number; weekdays: number[]; headcount: number; mandatory: boolean; valid_from: string | null; valid_to: string | null; shared_schedule: boolean; hypothesis: boolean };
 type SiteRow = { code: string; name: string; archived: boolean; archived_from: string | null; animations: Animation[] };
-type BrandRow = { code: string; name: string; group_code: string | null; archived: boolean; archived_from: string | null; authorized_employees: number };
+type BrandRow = { code: string; name: string; group_code: string | null; archived: boolean; archived_from: string | null; authorized_employees: number; base_budget_minutes?: number | null };
 type Catalog = { month: string | null; sites: SiteRow[]; brands: BrandRow[] };
 type Emp = { id: string; name: string; active: boolean; brands: Record<string, string> };
 const DOW = ["Lun", "Mar", "Mer", "Jeu", "Ven", "Sam", "Dim"];
@@ -56,11 +56,12 @@ export function SitesEditor({ month, canEdit }: { month: string; canEdit: boolea
           {cat.data.sites.map((s) => <SiteCard key={s.code} site={s} month={month} brands={cat.data!.brands} canEdit={canEdit} run={run} />)}
           <Card title="Marques et collaborateurs autorisés">
             <div className="table-wrap"><table className="table table-cards">
-              <thead><tr><th>Marque</th><th>Groupe</th><th>Collaborateurs autorisés</th><th>Statut</th><th><span className="sr-only">Actions</span></th></tr></thead>
+              <thead><tr><th>Marque</th><th>Groupe</th><th>Budget de base (h / mois)</th><th>Collaborateurs autorisés</th><th>Statut</th><th><span className="sr-only">Actions</span></th></tr></thead>
               <tbody>{cat.data.brands.map((b) => (
                 <tr key={b.code}>
                   <td className="cell-main"><span className="row" style={{ flexWrap: "nowrap" }}><i className="dot" style={{ ["--c" as string]: brandColor(b.code) }} /><strong>{b.name}</strong></span></td>
                   <td data-label="Groupe">{b.group_code ?? "—"}</td>
+                  <td data-label="Budget de base"><BaseBudget b={b} canEdit={canEdit && !b.archived} run={run} /></td>
                   <td data-label="Autorisés" className="num">{b.authorized_employees}</td>
                   <td data-label="Statut">{b.archived ? <Badge>Archivée depuis {monthLabel(b.archived_from!.slice(0, 7))}</Badge> : <Badge tone="ok">Active</Badge>}</td>
                   <td>{canEdit && <div className="row" style={{ flexWrap: "nowrap" }}>
@@ -179,5 +180,27 @@ function AuthorizeModal({ brand, onClose, onDone }: { brand: BrandRow | null; on
         <div className="row modal-actions"><Button onClick={onClose} disabled={busy}>Annuler</Button><Button variant="primary" onClick={save} disabled={busy || !sel.length}>Autoriser {sel.length || ""}</Button></div>
       </div>}
     </Modal>
+  );
+}
+
+
+/** Budget de base d'une marque (heures de travail effectif par mois) : prérempli dans le budget de chaque NOUVEAU mois, ajustable mois par
+ *  mois. Le modifier ne change jamais un mois déjà créé. Vide = non renseigné (rien n'est inventé). */
+function BaseBudget({ b, canEdit, run }: { b: BrandRow; canEdit: boolean; run: (f: () => Promise<unknown>, msg: string) => Promise<void> }) {
+  const cur = b.base_budget_minutes ?? null;
+  const [h, setH] = useState(cur === null ? "" : String(cur / 60));
+  useEffect(() => setH(cur === null ? "" : String(cur / 60)), [cur]);
+  const commit = () => {
+    const v = h.trim();
+    if (v === "" && cur !== null) void run(() => api(`/catalog/brands/${encodeURIComponent(b.code)}`, { method: "PATCH", json: { clear_base_budget: true } }), `Budget de base de ${b.name} retiré.`);
+    else if (v !== "" && Number(v) >= 0 && Math.round(Number(v) * 60) !== cur)
+      void run(() => api(`/catalog/brands/${encodeURIComponent(b.code)}`, { method: "PATCH", json: { base_budget_hours: Number(v) } }), `Budget de base de ${b.name} : ${v} h (nouveaux mois uniquement).`);
+  };
+  return (
+    <span className="row" style={{ flexWrap: "nowrap" }}>
+      <Input aria-label={`Budget de base ${b.name} (heures par mois)`} type="number" min={0} step={0.5} value={h} disabled={!canEdit} placeholder="Non renseigné"
+        onChange={(e) => setH(e.target.value)} onBlur={commit} onKeyDown={(e) => { if (e.key === "Enter") commit(); }} style={{ width: "7.5rem" }} />
+      <span className="faint">h</span>
+    </span>
   );
 }

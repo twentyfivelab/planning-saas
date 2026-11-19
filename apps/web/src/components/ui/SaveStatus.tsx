@@ -9,6 +9,7 @@ export function SaveStatus({ state, error, onRetry, confirmed = 0 }: { state: Sa
     <span className="save-status row" role="status" aria-live="polite" data-save-state={state} data-save-confirmed={confirmed}>
       {state === "saving" && <span className="muted">Enregistrement…</span>}
       {state === "saved" && <span className="ok-text"><Icon name="check" size={14} /> Enregistré</span>}
+      {state === "stopped" && <span className="bad-text">Enregistrement arrêté : {error || "ce planning n'existe plus"}</span>}
       {state === "error" && <>
         <span className="bad-text">Échec de l&apos;enregistrement{error ? ` : ${error}` : ""}</span>
         {onRetry && <Button size="sm" onClick={onRetry}>Réessayer</Button>}

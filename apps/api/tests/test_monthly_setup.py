@@ -23,7 +23,7 @@ def t():
     o = login(f"owner@{domain}")
     emps = {e["code"]: e for e in o.get("/employees").json()}
     nov = o.get("/periods").json()[0]["id"]
-    return dict(o=o, auditor=login(f"auditor@{domain}"), emps=emps, nov=nov)
+    return dict(o=o, auditor=login(f"auditor@{domain}"), emps=emps, nov=nov, pw=out["password"])
 
 
 def run(o, pid, partial=False, params="current"):
@@ -173,8 +173,10 @@ def test_6_history_lists_every_month_with_a_real_status_and_archive_is_read_only
     assert o.post(f"/periods/{jan}/unarchive").json()["status"] == "generated"
     t["jan"] = jan
     draft = o.post("/periods/ensure", json={"year": 2027, "month": 3}).json()["id"]
-    assert o.delete(f"/periods/{draft}").status_code == 204  # un brouillon s'abandonne
-    assert o.delete(f"/periods/{jan}").status_code == 409  # un planning généré ne se supprime jamais
+    assert o.delete(f"/periods/{draft}").status_code == 410  # l'ancienne suppression sans mot de passe ni trace est retirée
+    r = o.post(f"/periods/{draft}/delete", json={"password": t["pw"]})  # un brouillon s'abandonne par la suppression protégée
+    assert r.status_code == 200 and r.json()["message"] == "Le planning de mars 2027 a été supprimé avec succès."
+    assert o.post(f"/periods/{jan}/delete", json={"password": "faux"}).status_code == 403 and sched(o, jan)  # jamais sans le bon mot de passe
 
 
 def test_7_editing_a_generated_month_keeps_everything_else(t):

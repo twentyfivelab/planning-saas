@@ -12,6 +12,7 @@ import { Icon, type IconName } from "./ui/Icon";
 import { Button, Badge, Skeleton } from "./ui/primitives";
 import { ThemeToggle } from "./ui/Theme";
 import { ToastProvider } from "./ui/Toast";
+import { DeletePlanningModal } from "./planning/DeletePlanning";
 
 type Me = { id: string; email: string; name: string; role: string; permissions: string[]; csrf_token: string; employee_id?: string | null };
 const MeCtx = createContext<Me | null>(null);
@@ -55,12 +56,48 @@ function LegalBanner() {
   );
 }
 
-/** Historique permanent des plannings mensuels (liste issue de la base, statut réel). */
-function PlanningHistory({ path }: { path: string }) {
+/** Menu « ⋯ » d'une ligne de mois : toujours visible (ordinateur et mobile), accessible au clavier (Échap, clic à l'extérieur). */
+function PeriodMenu({ p, onDelete }: { p: PeriodRow; onDelete: () => void }) {
+  const [open, setOpen] = useState(false);
+  useEffect(() => {
+    if (!open) return;
+    const close = (e: Event) => { if (!(e.target as HTMLElement | null)?.closest?.(`[data-menu="${p.id}"]`)) setOpen(false); };
+    const esc = (e: KeyboardEvent) => { if (e.key === "Escape") setOpen(false); };
+    document.addEventListener("pointerdown", close); document.addEventListener("keydown", esc);
+    return () => { document.removeEventListener("pointerdown", close); document.removeEventListener("keydown", esc); };
+  }, [open, p.id]);
+  return (
+    <span className="nav-menu" data-menu={p.id}>
+      <button type="button" className="nav-menu-btn" aria-label={`Options de ${p.name}`} aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen((x) => !x)}>⋯</button>
+      {open && (
+        <span className="nav-menu-pop glass" role="menu" aria-label={`Options de ${p.name}`}>
+          <button type="button" role="menuitem" className="nav-menu-item danger" autoFocus onClick={() => { setOpen(false); onDelete(); }}>
+            <Icon name="x" size={14} /> Supprimer ce planning</button>
+        </span>)}
+    </span>
+  );
+}
+
+/** Historique permanent des plannings mensuels (liste issue de la base, statut réel). Chaque mois propose « ⋯ » → « Supprimer ce
+ *  planning » aux comptes autorisés, brouillon compris, sans ouvrir le planning. */
+function PlanningHistory({ path, canDelete }: { path: string; canDelete: boolean }) {
   const ps = useApi<PeriodRow[]>("/periods");
   const [month, setMonth] = useMonthState();
   const router = useRouter();
   const rows = ps.data ?? [];
+  const [deleting, setDeleting] = useState<PeriodRow | null>(null);
+  function afterDelete(gone: PeriodRow) {
+    setDeleting(null);
+    const rest = rows.filter((x) => x.id !== gone.id);
+    ps.mutate(rest); // le mois disparaît immédiatement du menu
+    ps.reload(); invalidate();
+    const viewing = (path === "/planning" || path.startsWith("/plannings")) && month === gone.start_date.slice(0, 7);
+    if (viewing) { // il était consulté : un autre mois disponible (le plus proche), sinon la création d'un planning
+      const t0 = new Date(gone.start_date).getTime();
+      const next = [...rest].sort((a, b) => Math.abs(new Date(a.start_date).getTime() - t0) - Math.abs(new Date(b.start_date).getTime() - t0))[0];
+      if (next) { setMonth(next.start_date.slice(0, 7)); router.push("/planning"); } else router.push("/plannings/new");
+    }
+  }
   return (
     <div className="nav-group nav-history" aria-label="Historique des plannings">
       <div className="spread"><p className="nav-title">Historique des plannings</p>
@@ -70,14 +107,16 @@ function PlanningHistory({ path }: { path: string }) {
         {rows.map((p) => {
           const cur = (path === "/planning" || path.startsWith("/plannings")) && month === p.start_date.slice(0, 7);
           return (
-            <li key={p.id}>
+            <li key={p.id} className="nav-period-row" data-testid="period-row" data-period={p.id}>
               <a href={periodHref(p)} className="nav-link nav-period" aria-current={cur ? "page" : undefined}
                 onClick={(e) => { e.preventDefault(); setMonth(p.start_date.slice(0, 7)); router.push(periodHref(p)); }}>
                 <span>{p.name}</span><Badge tone={STATUS_TONE[p.status]}>{p.status_label}</Badge>
               </a>
+              {canDelete && <PeriodMenu p={p} onDelete={() => setDeleting(p)} />}
             </li>);
         })}
       </ul>
+      {deleting && <DeletePlanningModal periodId={deleting.id} open onClose={() => setDeleting(null)} onDeleted={() => afterDelete(deleting)} />}
     </div>
   );
 }
@@ -153,7 +192,7 @@ export function Shell({ children }: { children: ReactNode }) {
                     <Link key={href} href={href} className="nav-link" aria-current={path === href ? "page" : undefined}><Icon name={icon} />{t(key)}{href === "/me" && <UnreadBadge />}</Link>
                   ))}
                 </div>
-                {i === 0 && me.permissions.includes("planning.read") && <PlanningHistory path={path} />}
+                {i === 0 && me.permissions.includes("planning.read") && <PlanningHistory path={path} canDelete={me.permissions.includes("planning.delete")} />}
               </Fragment>
             ); })}
             <div className="stack" style={{ marginTop: "auto" }}>

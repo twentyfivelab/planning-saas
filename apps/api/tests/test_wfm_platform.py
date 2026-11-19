@@ -195,7 +195,7 @@ def test_mission_ponctuelle_coexiste_et_priorite_respectee(t):
     assert o.post(f"/missions/{y['id']}/cancel", json={"release_shifts": True}).json()["released"] == 1
     assert not [k for k in mapping(o, dec) if k.startswith(f"MSN-{y['code']}")]
     assert not [u for u in o.get(f"/periods/{dec}/schedule").json()["uncovered"] if u["slot_key"].startswith(f"MSN-{y['code']}")]
-    o.delete(f"/periods/{dec}") if not sched(o, dec) else None
+    o.post(f"/periods/{dec}/delete", json={"password": PW}) if not sched(o, dec) else None  # suppression protégée (mot de passe, trace)
 
 
 # ---- remplaçants et absence ----

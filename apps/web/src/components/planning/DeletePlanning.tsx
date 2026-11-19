@@ -7,7 +7,7 @@ import { api, ApiError } from "@/lib/api";
 import { invalidate } from "@/lib/invalidate";
 import { errText } from "@/lib/wfm";
 
-type Preview = { period_id: string; name: string; label: string; assignments: number; locked: number; shifts: number;
+type Preview = { period_id: string; name: string; label: string; status?: string; status_label?: string; assignments: number; locked: number; shifts: number;
   versions: { total: number; published: number; validated: number }; runs: number; time_entries: number; reminders: number; blocking: string[]; can_delete: boolean };
 
 /** Suppression d'un planning généré : aperçu de ce qui est retiré, confirmation par le mot de passe du compte connecté (vérifiée par le
@@ -43,6 +43,7 @@ export function DeletePlanningModal({ periodId, open, onClose, onDeleted }: { pe
         {pv && <>
           <dl className="facts" data-testid="delete-summary">
             <div><dt>Mois et année</dt><dd>{pv.label.charAt(0).toUpperCase() + pv.label.slice(1)}</dd></div>
+            {pv.status_label && <div><dt>Statut</dt><dd>{pv.status_label}</dd></div>}
             <div><dt>Affectations</dt><dd className="num">{pv.assignments}{pv.locked ? ` (dont ${pv.locked} verrouillée${pv.locked > 1 ? "s" : ""})` : ""}</dd></div>
             <div><dt>Shifts</dt><dd className="num">{pv.shifts}</dd></div>
             <div><dt>Versions associées</dt><dd className="num">{pv.versions.total}{pv.versions.published ? ` · ${pv.versions.published} publiée(s)` : ""}{pv.versions.validated ? ` · ${pv.versions.validated} validée(s)` : ""}</dd></div>
