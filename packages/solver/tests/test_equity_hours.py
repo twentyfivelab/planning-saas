@@ -79,3 +79,59 @@ def test_part_equitable_redistribue_l_excedent_des_collaborateurs_limites():
     t = water_fill(300, {"a": 100, "b": 100, "c": 100}, {"a": 50, "b": 500, "c": 500})
     assert t["a"] == 50 and abs(t["b"] - 125) <= 1 and abs(t["c"] - 125) <= 1  # l'excédent de « a » revient aux autres
     assert sum(water_fill(10_000, {"a": 1, "b": 1}, {"a": 40, "b": 60}).values()) == 100  # jamais au-delà des capacités
+
+
+def test_cible_commune_plafonnee_par_la_capacite_et_objectif_explicite():
+    """Cible COMMUNE d'heures (et non proportionnelle aux jours possibles) : « restreinte » ne peut travailler que les lundis (4 jours),
+    « libre » tous les jours ; 6 shifts à répartir -> 24 h chacune (la capacité de 32 h de « restreinte » n'est pas atteinte).
+    Avec un objectif explicite de 16 h, « contrat » reçoit 16 h et le reste est réparti à parts égales entre les autres."""
+    from planning_solver.model import Contract
+    mondays = [d for d in DAYS if d.weekday() == 0]
+    slots = [slot(f"s{i}", d) for i, d in enumerate(mondays)] + [slot(f"t{i}", d) for i, d in enumerate([d for d in DAYS if d.weekday() == 1][:2])]
+    emps = [emp("restreinte", unavailable_weekdays={1, 2, 3, 4, 5, 6}), emp("libre")]
+    inp = SolverInput(DAYS[0], DAYS[-1], slots, emps, [], config=cfg())
+    prep = prepare(inp)
+    assert prep.targets["restreinte"] == prep.targets["libre"] == 24 * 60, prep.targets  # même cible, dans la capacité de chacune
+    assert prep.fair_cap["restreinte"] == 32 * 60
+    res = solve(inp)
+    assert hours(res, "restreinte") == hours(res, "libre") == 24
+    # objectif explicite (plafonné par la capacité), le reste en parts égales
+    emps2 = [emp("contrat", contract=Contract(monthly_target_minutes=16 * 60)), emp("a"), emp("b")]
+    slots2 = [slot(f"u{i}", d) for i, d in enumerate(DAYS[:14])]  # 14 shifts = 112 h
+    p2 = prepare(SolverInput(DAYS[0], DAYS[-1], slots2, emps2, [], config=cfg()))
+    assert p2.targets["contrat"] == 16 * 60 and p2.targets["a"] == p2.targets["b"] == 48 * 60, p2.targets
+
+
+def test_cible_plafonnee_par_les_shifts_partages():
+    """Capacité RÉELLEMENT atteignable compte tenu des autres : « p1 », « p2 », « p3 » ne peuvent travailler que sur la marque B (6 shifts,
+    48 h à se partager) ; « x » et « y » sur A (20 shifts, 160 h). Seules, leurs capacités sont identiques (6 jours possibles ou plus),
+    mais une cible égale (208 h / 5 ≈ 42 h) est inatteignable pour les trois premières : leur cible est leur part du groupe (16 h), les autres
+    se partagent A (80 h). Le moteur et l'évaluateur utilisent les mêmes cibles."""
+    from planning_solver.context import realized_targets
+    b_slots = [slot(f"b{i}", DAYS[i], brand="B") for i in range(6)]
+    a_slots = [slot(f"a{i}", DAYS[i], brand="A") for i in range(20)]
+    emps = [emp(f"p{k}", brands=("B",)) for k in (1, 2, 3)] + [emp("x"), emp("y")]
+    inp = SolverInput(DAYS[0], DAYS[-1], b_slots + a_slots, emps, [], config=cfg())
+    prep = prepare(inp)
+    tg, refs = realized_targets(prep, [s.id for s in inp.slots])
+    assert {k: tg[k] // 60 for k in ("p1", "p2", "p3", "x", "y")} == {"p1": 16, "p2": 16, "p3": 16, "x": 80, "y": 80}, tg
+    assert refs["p1"] == refs["x"] == 80 * 60  # référence affichée : la cible commune
+    res = solve(inp)
+    assert sorted(hours(res, k) for k in ("p1", "p2", "p3")) == [16, 16, 16] and hours(res, "x") == hours(res, "y") == 80
+    ev = evaluate(inp, res.assignments)
+    assert ev["fairness"] == 0, ev  # chacun exactement à sa cible atteignable
+
+
+def test_besoins_optionnels_sans_budget_atteignables_pour_la_cible():
+    """« ob » ne peut prendre que des besoins OPTIONNELS sans budget (marque O), « ma » les shifts obligatoires (marque A, 80 h). Le volume
+    décidé (80 h, obligatoires) fixe le total des cibles, mais les besoins optionnels sans budget restent atteignables : cible commune
+    de 40 h chacun (et non 0 h pour « ob »), et le moteur en retient pour l'en rapprocher."""
+    from planning_solver.context import realized_targets
+    mand = [slot(f"m{i}", DAYS[2 * i], brand="A") for i in range(10)]  # un jour sur deux : ni série ni repos en jeu
+    opt = [slot(f"o{i}", DAYS[2 * i], brand="O", mandatory=False) for i in range(10)]
+    inp = SolverInput(DAYS[0], DAYS[-1], mand + opt, [emp("ma", brands=("A",)), emp("ob", brands=("O",))], [], config=cfg())
+    prep = prepare(inp)
+    tg, _ = realized_targets(prep, [s.id for s in mand])
+    assert tg["ma"] == tg["ob"] == 40 * 60, tg
+    res = solve(inp)
+    assert hours(res, "ma") == 80 and hours(res, "ob") == 40

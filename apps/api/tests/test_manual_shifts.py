@@ -69,6 +69,32 @@ def test_day_shifts_lists_every_shift_with_status_and_assignee(t):
         [u for u in t["o"].get(f"/periods/{t['pid']}/schedule").json()["uncovered"] if u["day"] == a["day"]])
 
 
+def test_day_shifts_flags_a_shift_whose_need_is_gone_without_blocking_the_day(t):
+    """Un shift resté dans le planning alors que son besoin n'existe plus (marque archivée depuis, besoin supprimé) : signalé sur CE
+    shift (non attribuable), la liste du jour reste disponible et les autres shifts attribuables (auparavant : 422 pour toute la journée)."""
+    from datetime import date as _date, time as _time
+    from app import models as m
+    from app.db import tenant_session
+    a, code = find_case(t)
+    tid = t["o"].get("/auth/me").json()["tenant_id"]
+    with tenant_session(tid) as db:
+        sh = m.Shift(tenant_id=uuid.UUID(tid), period_id=uuid.UUID(t["pid"]), slot_key=f"BESOIN-DISPARU|{a['day']}", day=_date.fromisoformat(a["day"]),
+                     site_code=a["site"], start_time=_time(10), end_time=_time(17), break_minutes=60, presence_minutes=420, effective_minutes=360)
+        db.add(sh)
+        db.flush()
+        gone = str(sh.id)
+    try:
+        r = t["o"].get(f"/periods/{t['pid']}/day-shifts", params={"day": a["day"], "employee_id": t["emps"][code]["id"]})
+        assert r.status_code == 200, r.text
+        rows = {x["shift_id"]: x for x in r.json()["shifts"]}
+        assert [i["code"] for i in rows[gone]["issues"]] == ["UNKNOWN_NEED"] and rows[gone]["issues"][0]["level"] == "blocking"
+        assert all(i["code"] != "UNKNOWN_NEED" for sid, x in rows.items() if sid != gone for i in x["issues"])  # les autres : contrôles habituels
+        assert assign(t, code, gone).status_code == 422  # toujours refusé à l'attribution
+    finally:
+        with tenant_session(tid) as db:
+            db.execute(m.Shift.__table__.delete().where(m.Shift.__table__.c.id == uuid.UUID(gone)))
+
+
 def test_transfer_moves_the_same_shift_without_double_counting(t):
     a, code = find_case(t)
     before = sched(t)

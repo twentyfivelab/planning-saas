@@ -43,7 +43,7 @@ export function GenerationSummary({ runId }: { runId: string }) {
               {k === "budgets" && s.blocks.budgets.brands.length > 0 && (
                 <ul className="help" style={{ margin: 0, paddingLeft: "1.1rem" }}>{s.blocks.budgets.brands.map((x) => <li key={x.brand}><strong>{x.brand}</strong> : {fmtHM(x.planned_minutes)} sur {fmtHM(x.target_minutes)} ({x.strict ? "plafond strict" : "objectif souple"})</li>)}</ul>)}
               {k === "fairness" && s.blocks.fairness.employees.length > 0 && (
-                <details><summary className="help">Heures par collaborateur (part équitable selon ce que chacun peut réellement faire)</summary>
+                <details><summary className="help">Heures par collaborateur (cible commune, plafonnée par ce que chacun peut réellement atteindre)</summary>
                   <ul className="help" style={{ margin: "var(--sp-1) 0 0", paddingLeft: "1.1rem" }}>{s.blocks.fairness.employees.map((e) => (
                     <li key={e.name}>{e.name} : {fmtHM(e.minutes)} · part équitable {fmtHM(e.target_minutes)} · maximum possible {fmtHM(e.capacity_minutes)}{e.flag ? ` — ${e.flag}` : ""}</li>))}</ul>
                 </details>)}

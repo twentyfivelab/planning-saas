@@ -23,7 +23,8 @@ test.beforeAll(async ({ browser }) => {
   const nov = await periodOf(page, "2026-11");
   const token = await csrf(page);
   if (nov && !(await sched(page, nov.id)).length) await page.request.post(`${API}/periods/${nov.id}/runs`, { headers: { "X-CSRF-Token": token, "Idempotency-Key": `m-${Date.now()}` }, data: { time_limit_s: 30 } });
-  await expect.poll(async () => (await j(page, "/runs"))[0]?.status, { timeout: 60_000 }).toBe("termine");
+  // précondition réelle : novembre a un planning (et non « le dernier calcul du compte est terminé » : un autre scénario peut en annuler un)
+  if (nov) await expect.poll(async () => (await sched(page, nov.id)).length, { timeout: 60_000 }).toBeGreaterThan(0);
   await ctx.close();
 });
 

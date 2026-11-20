@@ -160,7 +160,11 @@ def my_offers(ctx: Ctx = Depends(require("self.read"))):
     if ctx.user.employee_id is None:
         return {"items": []}
     R.expire_due(ctx.db)
-    rows = list(ctx.db.scalars(select(m.ReplacementOffer).where(m.ReplacementOffer.employee_id == ctx.user.employee_id).order_by(m.ReplacementOffer.created_at.desc()).limit(30)))
+    # propositions des plannings supprimés : retirées de « Mon espace » (conservées en base et dans l'historique), comme le planning lui-même
+    rows = list(ctx.db.scalars(select(m.ReplacementOffer).join(m.ReplacementRequest, m.ReplacementRequest.id == m.ReplacementOffer.request_id)
+                               .join(m.PlanningPeriod, m.PlanningPeriod.id == m.ReplacementRequest.period_id)
+                               .where(m.ReplacementOffer.employee_id == ctx.user.employee_id, m.PlanningPeriod.deleted_at.is_(None))
+                               .order_by(m.ReplacementOffer.created_at.desc()).limit(30)))
     items = [_offer_view(ctx.db, o, ctx.db.get(m.ReplacementRequest, o.request_id), mine=True) for o in rows]
     items.sort(key=lambda x: (x["status"] != "pending", x["deadline"] if x["status"] == "pending" else ""))
     return {"items": items}

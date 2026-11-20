@@ -160,7 +160,7 @@ DEFAULT_WEIGHTS: Dict[str, int] = {
     "secondary": 4,  # par heure sur une marque secondaire
     "reinforce": 12,  # par heure en renfort
     "preference": 10,  # par préférence horaire/tag non respectée (x force)
-    "fairness": 3,  # par demi-heure d'écart à la part équitable (context.water_fill)
+    "fairness": 3,  # par demi-heure d'écart à la cible commune atteignable (context.realized_targets)
     "overtime": 20,
     "site_change": 6,
     "balance": 4,

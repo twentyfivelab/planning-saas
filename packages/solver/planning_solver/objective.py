@@ -6,7 +6,7 @@ from __future__ import annotations
 from collections import defaultdict
 from typing import Dict, Iterable, List, Optional, Tuple
 
-from .context import (Prepared, cost_units, coverage_cost, fairness_units, hours_units, individual_penalty, period_of, prepare,
+from .context import (Prepared, cost_units, coverage_cost, fairness_units, hours_units, realized_targets, individual_penalty, period_of, prepare,
                       preference_checks, relation_pairs, overlaps, history_excess)
 from .model import Assignment, DEFAULT_WEIGHTS, REINFORCE, SECONDARY, Slot, SolverInput
 
@@ -27,6 +27,9 @@ class Evaluator:
             if s is not None:
                 self.holder[a.slot_id] = a.employee_id
                 self.mine[a.employee_id].append(s)
+        # cible commune : même règle que le moteur — hiérarchisé, fixée d'après le volume décidé (celui de CE planning) ; sinon (un seul
+        # niveau), l'estimation initiale
+        self.targets = realized_targets(self.prep, list(self.holder))[0] if inp.config.hierarchical else self.prep.targets
         self.weeks: Dict[tuple, list] = defaultdict(list)
         for d in self.prep.days:
             self.weeks[d.isocalendar()[:2]].append(d)
@@ -81,7 +84,7 @@ class Evaluator:
                     out["time_pref"] += W["time_pref"] * max(1, e.preference_strength)
             out["individual"] += W["individual"] * individual_penalty(prep, e) * hours_units(s)
         if options:
-            out["fairness"] += W["fairness"] * fairness_units(_ceil_div(abs(tot - prep.targets[eid]), 30))
+            out["fairness"] += W["fairness"] * fairness_units(_ceil_div(abs(tot - self.targets.get(eid, 0)), 30))
         by_day: Dict[object, List[Slot]] = defaultdict(list)
         for s in lst:
             by_day[s.day].append(s)

@@ -265,7 +265,18 @@ def day_shifts(pid: str, day: date, employee_id: Optional[uuid.UUID] = None, ctx
         a = asg.get(sh.id)
         brands = sorted(allocs.get(a.id, {})) if a else sorted(slots[sh.slot_key].allocations) if sh.slot_key in slots else []
         who = emps.get(a.employee_id) if a else None
-        issues = [] if target is None or (a and a.employee_id == target.id) else _issues(ctx, p, target, sh, a, pre)
+        if target is None or (a and a.employee_id == target.id):
+            issues = []
+        else:
+            try:
+                issues = _issues(ctx, p, target, sh, a, pre)
+            except HTTPException as exc:
+                if exc.status_code != 422:
+                    raise
+                # shift dont le besoin n'existe plus (marque ou boutique archivée, besoin supprimé) : signalé sur CE shift, sans empêcher
+                # l'attribution des autres shifts de la journée (auparavant, toute la liste du jour était refusée)
+                issues = [_issue("UNKNOWN_NEED", "blocking", "Le besoin de ce shift n'existe plus (marque ou boutique archivée, ou besoin supprimé) : "
+                                 "il ne peut pas être attribué. Retirez-le ou rétablissez le besoin.", rule="Besoin existant")]
         rows.append({"shift_id": str(sh.id), "assignment_id": str(a.id) if a else None, "slot_key": sh.slot_key, "site": site_names.get(sh.site_code, sh.site_code), "site_code": sh.site_code,
                      "start": sh.start_time.isoformat(), "end": sh.end_time.isoformat(), "effective_minutes": sh.effective_minutes,
                      "brands": brands, "status": "assigned" if a else "available", "locked": bool(a and a.locked), "manual": sh.slot_key.startswith("MANUAL|"),

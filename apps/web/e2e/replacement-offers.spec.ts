@@ -105,8 +105,9 @@ test("proposer, accepter (double clic) : titulaire conservé pendant l'attente, 
   const after = ((await j(page, `/periods/${pid}/schedule`)).assignments as A[]).filter((a) => a.shift_id === sid);
   expect(after.map((a) => [a.assignment_id, a.employee_id])).toEqual([[holderBefore.assignment_id, candId]]);
   // manager : notification, historique avec auteurs
-  const notes = (await j(page, "/notifications")).items as { kind: string; body: string }[];
-  expect(notes.filter((n) => n.kind === "replacement_update" && n.body.includes(`${candName} a accepté`))).toHaveLength(1);
+  // notifications de CE planning (la base de test conserve celles des passages précédents, éventuellement pour le même collaborateur)
+  const notes = (await j(page, "/notifications")).items as { kind: string; body: string; payload: { period_id?: string } }[];
+  expect(notes.filter((n) => n.kind === "replacement_update" && n.payload.period_id === pid && n.body.includes(`${candName} a accepté`))).toHaveLength(1);
   await page.goto("/history?kind=proposal"); await page.waitForLoadState("networkidle");
   await expect(page.getByTestId("history-event").first()).toContainText(`Proposition acceptée par ${candName}`);
 });

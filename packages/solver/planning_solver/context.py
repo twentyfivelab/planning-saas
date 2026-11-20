@@ -94,8 +94,11 @@ class Prepared:
     suns: List[date]
     optional_brands: Set[str]
     targets: Dict[str, int]  # part équitable (minutes) par collaborateur, pour l'affichage et les explications
-    fair_ref: Dict[str, int]  # référence d'équité (minutes) : objectif contractuel, sinon jours où il peut travailler × 8 h
+    fair_ref: Dict[str, int]  # référence d'équité (minutes) : objectif contractuel explicite, sinon la cible commune de l'équipe
     fair_cap: Dict[str, int]  # charge maximale atteignable (minutes) : un shift par jour, limites de jours, plafond mensuel
+    fair_explicit: Dict[str, int]  # objectif contractuel explicite, plafonné par la capacité
+    fair_contract: Dict[str, int]  # objectif contractuel tel que saisi
+    budgeted_brands: Set[str]  # marques ayant un budget ce mois (leurs besoins optionnels comptent dans le volume visé)
     wmax: float
     category: Dict[str, Optional[str]] = field(default_factory=dict)  # slot -> matin | middle | soir | None
     # mois civils de la période -> jours ; jours et minutes déjà travaillés hors période dans ces mêmes mois (périodes voisines)
@@ -149,24 +152,30 @@ def prepare(inp: SolverInput) -> Prepared:
             o_days[o.employee_id, key].add(o.day)
             o_min[o.employee_id, key] += o.minutes
     optional_brands = {b for s in inp.slots if not s.mandatory for b in s.brands}
-    # Équité : référence individuelle en MINUTES pour tous (objectif contractuel s'il est renseigné, sinon jours où le collaborateur peut
-    # réellement travailler × 8 h). Jamais le poids d'allocation : ni ancienneté ni mérite ne créent de priorité automatique.
+    # Équité : CIBLE COMMUNE d'heures mensuelles pour tous, plafonnée par ce que chacun peut réellement atteindre (un shift par jour sur les
+    # jours où il peut travailler, jours maximum, plafond mensuel), et remplacée par l'objectif contractuel explicite quand il existe
+    # (lui aussi plafonné). Le volume restant est réparti à parts égales entre les autres (remplissage : l'excédent de ceux qui sont
+    # limités revient aux autres). Jamais le poids d'allocation : ni ancienneté ni mérite ne créent de priorité automatique.
     supply = sum(s.effective_minutes for s in inp.slots if s.mandatory)
     supply += sum(b.target_minutes for b in inp.budgets if b.brand in optional_brands)
-    refs, caps = {}, {}
+    caps: Dict[str, int] = {}
+    explicit: Dict[str, int] = {}
     for e in inp.employees:
         c = e.contract
-        # habilitations : les shifts où il n'est qu'en renfort (dernier recours par définition) ne comptent pas dans sa part équitable
+        # habilitations : les shifts où il n'est qu'en renfort (dernier recours par définition) ne comptent pas dans sa capacité attendue
         usual = [s for s in by_emp[e.id] if not all(e.brands.get(b) == REINFORCE for b in s.brands)]
-        eligible_days = len({s.day for s in usual})
-        refs[e.id] = c.monthly_target_minutes if c and c.monthly_target_minutes else eligible_days * FAIR_DAY_MINUTES
         caps[e.id] = max_load_minutes(usual, e)
         if inp.config.monthly_cap_minutes is not None:  # jamais au-delà du plafond mensuel de l'entreprise
             caps[e.id] = min(caps[e.id], sum(max(0, inp.config.monthly_cap_minutes - o_min.get((e.id, k), 0)) for k in months))
-    targets = water_fill(supply, refs, caps)  # part équitable affichée : même proportion de sa référence pour chacun, dans sa capacité
+        if c and c.monthly_target_minutes:
+            explicit[e.id] = min(c.monthly_target_minutes, caps[e.id])
+    contract = {e.id: e.contract.monthly_target_minutes for e in inp.employees if e.id in explicit}
+    # estimation initiale (avant calcul) : besoins obligatoires + budgets ; le moteur la remplace par le volume réellement décidé
+    targets, refs = common_targets(supply, caps, explicit, contract, [e.id for e in inp.employees])
     return Prepared(inp=inp, slots={s.id: s for s in inp.slots}, emps={e.id: e for e in inp.employees}, days=days,
                     starts_by_site=starts_by_site, outside=dict(outside), by_emp=by_emp, eligible=eligible, suns=sundays_in(inp),
-                    optional_brands=optional_brands, targets=targets, fair_ref=refs, fair_cap=caps, wmax=max((e.weight for e in inp.employees), default=0),
+                    optional_brands=optional_brands, targets=targets, fair_ref=refs, fair_cap=caps, fair_explicit=explicit, fair_contract=contract,
+                    budgeted_brands={b.brand for b in inp.budgets}, wmax=max((e.weight for e in inp.employees), default=0),
                     category={s.id: slot_category(s, starts_by_site) for s in inp.slots}, months=dict(months),
                     outside_month_days=dict(o_days), outside_month_minutes=dict(o_min))
 
@@ -257,7 +266,6 @@ def scoped_avoid_pairs(prep: Prepared, eid: str, others: List[str], scope: str):
                             yield a.day, a, o, b
 
 
-FAIR_DAY_MINUTES = 480  # 8 h : unité de la référence « jours où il peut travailler »
 FAIR_TIERS = (32, 80)  # écart (demi-heures) au-delà duquel chaque demi-heure coûte une unité de plus : 16 h, puis 40 h
 
 
@@ -284,9 +292,125 @@ def max_load_minutes(slots, e) -> int:
     return sum(vals[: min(lims)] if lims else vals)
 
 
+def common_targets(supply: int, caps: Dict[str, int], explicit: Dict[str, int], contract: Dict[str, int], ids) -> Tuple[Dict[str, int], Dict[str, int]]:
+    """Cible commune : objectif explicite (plafonné) pour ceux qui en ont un ; le reste du volume réparti à heures égales entre les
+    autres, chacun plafonné par sa capacité (l'excédent des collaborateurs limités revient aux autres). Renvoie (cibles, références)."""
+    pool = {i: 1 for i in ids if i not in explicit and caps.get(i, 0) > 0}
+    shared = water_fill(max(0, supply - sum(explicit.values())), pool, caps) if pool else {}
+    common = max(shared.values(), default=0)
+    targets = {i: explicit.get(i, shared.get(i, 0)) for i in ids}
+    refs = {i: (contract[i] if i in explicit else (common if i in pool else 0)) for i in ids}
+    return targets, refs
+
+
+def counted_minutes(prep: "Prepared", slot_ids) -> int:
+    """Volume qui fixe la cible commune : shifts obligatoires et besoins optionnels des marques ayant un budget (les besoins optionnels
+    sans budget n'ont pas de volume visé : l'équité peut en retenir pour rapprocher chacun de la cible, ils sont alors signalés)."""
+    total = 0
+    for sid in slot_ids:
+        s = prep.slots.get(sid)
+        if s is not None and (s.mandatory or any(b in prep.budgeted_brands for b in s.brands)):
+            total += s.effective_minutes
+    return total
+
+
+def realized_targets(prep: "Prepared", slot_ids) -> Tuple[Dict[str, int], Dict[str, int]]:
+    """Cibles calculées sur le volume réellement décidé (et non sur le volume promis par les budgets, parfois inatteignable), plafonnées
+    par ce que chacun peut réellement atteindre COMPTE TENU DES AUTRES : des collaborateurs qui se partagent les mêmes shifts habituels
+    ne peuvent pas tous atteindre la cible commune si leurs shifts n'y suffisent pas (remplissage max-min par flot, `shared_fill`)."""
+    def counts(s):
+        return s.mandatory or any(b in prep.budgeted_brands for b in s.brands)
+    counted = [sid for sid in slot_ids if (s := prep.slots.get(sid)) is not None and counts(s)]
+    # shifts atteignables : ceux du volume décidé, plus les besoins optionnels sans budget (pas de volume visé : le moteur peut en
+    # retenir pour rapprocher chacun de la cible) ; le total des cibles reste borné par le volume décidé
+    reach = counted + [s.id for s in prep.slots.values() if not counts(s)]
+    ids = list(prep.emps)
+    explicit = prep.fair_explicit
+    pool = [i for i in ids if i not in explicit and prep.fair_cap.get(i, 0) > 0]
+    levels = shared_fill({sid: prep.slots[sid].effective_minutes for sid in reach}, prep.by_emp, prep.fair_cap, pool,
+                         {i: explicit[i] for i in ids if i in explicit}, supply=sum(prep.slots[sid].effective_minutes for sid in counted))
+    common = max((levels.get(i, 0) for i in pool), default=0)
+    targets = {i: explicit.get(i, levels.get(i, 0)) for i in ids}
+    refs = {i: (prep.fair_contract[i] if i in explicit else (common if i in pool else 0)) for i in ids}
+    return targets, refs
+
+
+def shared_fill(slot_minutes: Dict[str, int], usual: Dict[str, List[Slot]], caps: Dict[str, int], pool: List[str], fixed: Dict[str, int],
+                step: int = 30, supply: Optional[int] = None) -> Dict[str, int]:
+    """Répartition max-min des heures par flot : on élève un niveau commun L pour tous ; chacun reçoit min(capacité, L) tant que les shifts
+    réellement retenus le permettent (un shift par jour, uniquement sur ses shifts habituels — le renfort reste un dernier recours). Quand
+    un groupe de collaborateurs qui se partagent les mêmes shifts est saturé, ses membres sont arrêtés à leur part de ce groupe et les autres
+    continuent de monter. Les objectifs contractuels explicites (`fixed`) sont servis d'abord. `supply` borne le total des cibles (volume
+    décidé) quand les shifts atteignables le dépassent. Résultat au pas de `step` minutes."""
+    from ortools.graph.python import max_flow
+
+    slots = list(slot_minutes)
+    sidx = {sid: k for k, sid in enumerate(slots)}
+    who = list(fixed) + [i for i in pool if i not in fixed]
+    days = {i: sorted({s.day for s in usual.get(i, ()) if s.id in sidx}) for i in who}
+    # nœuds : 0 source, 1 puits, collaborateurs, (collaborateur, jour), shifts
+    node, nxt = {}, 2
+    for i in who:
+        node[i] = nxt; nxt += 1
+        for d in days[i]:
+            node[(i, d)] = nxt; nxt += 1
+    base = nxt
+    arcs = []
+    for i in who:
+        per_day: Dict[date, int] = defaultdict(int)
+        for s in usual.get(i, ()):
+            if s.id in sidx:
+                per_day[s.day] = max(per_day[s.day], s.effective_minutes)
+                arcs.append((node[(i, s.day)], base + sidx[s.id], s.effective_minutes))
+        for d, mi in per_day.items():
+            arcs.append((node[i], node[(i, d)], mi))
+    g = max_flow.SimpleMaxFlow()  # graphe construit une fois ; seules les demandes (arcs depuis la source) changent ensuite
+    src = {i: g.add_arc_with_capacity(0, node[i], 0) for i in who}
+    for a, b, c in arcs:
+        g.add_arc_with_capacity(a, b, c)
+    for k, sid in enumerate(slots):
+        g.add_arc_with_capacity(base + k, 1, slot_minutes[sid])
+
+    def served(demand: Dict[str, int]) -> int:
+        for i in who:
+            g.set_arc_capacity(src[i], max(0, demand.get(i, 0)))
+        return g.optimal_flow() if g.solve(0, 1) == g.OPTIMAL else 0
+
+    # objectifs explicites d'abord ; s'ils ne peuvent pas tous être servis, réduits ensemble (même règle de remplissage)
+    done: Dict[str, int] = {}
+    if fixed:
+        lo, hi = 0, max(fixed.values())
+        while lo < hi:
+            mid = (lo + hi + 1) // 2
+            dem = {i: min(v, mid) for i, v in fixed.items()}
+            lo, hi = (mid, hi) if (supply is None or sum(dem.values()) <= supply) and served(dem) == sum(dem.values()) else (lo, mid - 1)
+        done = {i: min(v, lo) for i, v in fixed.items()}
+    active = [i for i in pool if i not in fixed and caps.get(i, 0) > 0]
+    level = 0
+    while active:
+        def ok(L: int, extra: Optional[str] = None) -> bool:
+            dem = {**done, **{i: min(caps[i], L) for i in active}}
+            if extra is not None:
+                dem[extra] = min(caps[extra], L + step)
+            total = sum(dem.values())
+            return (supply is None or total <= supply) and served(dem) == total
+        lo, hi = 0, -(-(max(caps[i] for i in active) - level) // step)
+        while lo < hi:  # niveau commun le plus haut atteignable par tous les collaborateurs encore actifs (pas de `step` minutes)
+            mid = (lo + hi + 1) // 2
+            lo, hi = (mid, hi) if ok(level + mid * step) else (lo, mid - 1)
+        level += lo * step
+        stuck = [i for i in active if caps[i] <= level or not ok(level, i)]
+        if not stuck:  # ne devrait pas arriver : sécurité contre une boucle infinie
+            stuck = list(active)
+        for i in stuck:
+            done[i] = min(caps[i], level)
+        active = [i for i in active if i not in stuck]
+    return done
+
+
 def water_fill(supply: int, refs: Dict[str, int], caps: Dict[str, int]) -> Dict[str, int]:
-    """Part équitable : la même proportion λ de sa référence pour chacun, sans dépasser sa capacité ; l'excédent de ceux qui sont limités
-    revient aux autres (répartition max-min). Total = min(offre, somme des capacités)."""
+    """Remplissage : la même proportion λ de sa référence pour chacun (références égales : les mêmes heures pour tous), sans dépasser sa
+    capacité ; l'excédent de ceux qui sont limités revient aux autres (répartition max-min). Total = min(offre, somme des capacités)."""
     ids = [i for i in refs if refs[i] > 0 and caps.get(i, 0) > 0]
     if not ids:
         return {i: 0 for i in refs}

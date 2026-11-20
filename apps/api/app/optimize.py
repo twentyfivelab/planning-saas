@@ -180,7 +180,11 @@ def _volume_report(inp, before_ids, after_ids) -> dict:
     no_budget = sorted({br for s in inp.slots if not s.mandatory for br in s.brands} - budgeted)
     d, dm = a["optional"] - b["optional"], a["optional_minutes"] - b["optional_minutes"]
     note = None
-    if before_ids and d < 0:
+    if before_ids and d > 0 and no_budget:
+        note = (f"{d} shift(s) optionnel(s) de plus que dans le planning remplacé (+{dm // 60} h) : besoins optionnels sans budget de "
+                f"{', '.join(no_budget)} retenus pour rapprocher les collaborateurs les moins chargés de la cible commune d'heures. "
+                "Ce sont des besoins réels du mois ; vous pouvez les retirer ou saisir un budget pour fixer ce volume.")
+    elif before_ids and d < 0:
         h = -dm // 60
         note = (f"{-d} shift(s) optionnel(s) de moins que dans le planning remplacé ({h} h). "
                 + (f"Les besoins optionnels de {', '.join(no_budget)} n'ont pas de budget ce mois-ci : aucun volume n'est visé pour eux, "
@@ -306,8 +310,11 @@ def run_optimization(tenant_id: str, run_id: str) -> None:
                 mins: dict = {}
                 for x in res.assignments:
                     mins[x.employee_id] = mins.get(x.employee_id, 0) + x.effective_minutes
-                report["fairness"] = {e.id: {"name": e.name, "minutes": mins.get(e.id, 0), "target": fp.targets.get(e.id, 0), "ref": fp.fair_ref.get(e.id, 0),
-                                             "cap": fp.fair_cap.get(e.id, 0), "eligible": len(fp.by_emp.get(e.id, ()))}
+                from planning_solver.context import realized_targets
+                tg, rf = realized_targets(fp, [x.slot_id for x in res.assignments]) if inp.config.hierarchical else (fp.targets, fp.fair_ref)
+                report["fairness"] = {e.id: {"name": e.name, "minutes": mins.get(e.id, 0), "target": tg.get(e.id, 0), "ref": rf.get(e.id, 0),
+                                             "cap": fp.fair_cap.get(e.id, 0), "eligible": len(fp.by_emp.get(e.id, ())),
+                                             "explicit": e.id in fp.fair_explicit}
                                       for e in inp.employees if not e.excluded and e.left_on is None}
             except Exception:  # noqa: BLE001 — diagnostic d'affichage seulement : jamais bloquant pour l'enregistrement
                 log.exception("équité : détail non calculé")

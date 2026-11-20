@@ -338,3 +338,23 @@ def test_version_officielle_inchangee_jusqu_a_la_publication(t):
     p = next(x for x in o.get("/periods").json() if x["id"] == pid)
     assert p["changed_since"] is True  # « modifié depuis la validation » : à republier par le circuit habituel
     assert any("publiez une nouvelle version" in n["body"] for n in notes(o, "replacement_update"))
+
+
+def test_suppression_du_planning_proposition_invalidee_et_retiree_de_mon_espace(t):
+    """Planning supprimé pendant une proposition : la proposition devient « plus valable » (collaborateur prévenu), elle n'apparaît plus
+    dans « Mon espace » et ne peut pas être acceptée ; elle reste en base (historique)."""
+    o, pid, users, by_id = t["o"], t["pid"], t["users"], t["by_id"]
+    a, cands = pick(t)
+    req = launch(o, a["shift_id"], cands[0])
+    c1 = users[by_id[cands[0]]]
+    oid = c1.get("/me/replacement-offers").json()["items"][0]["id"]
+    assert o.post(f"/periods/{pid}/delete", json={"password": PW}).status_code == 200
+    assert c1.get("/me/replacement-offers").json()["items"] == []
+    assert any("planning de ce mois a été supprimé" in n["body"] for n in notes(c1, "replacement_cancelled"))
+    r = c1.post(f"/replacement-offers/{oid}/accept")
+    assert r.status_code in (404, 409), r.text
+    from app.db import tenant_session
+    with tenant_session(o.get("/auth/me").json()["tenant_id"]) as db:
+        st = db.execute(text("SELECT r.status, o.status FROM replacement_requests r JOIN replacement_offers o ON o.request_id = r.id WHERE r.id = :r"),
+                        {"r": req["id"]}).one()
+    assert tuple(st) == ("invalidated", "invalidated")

@@ -1,4 +1,4 @@
-# État des lieux et plan — plateforme destinée à une grande entreprise (19/11/2026)
+# État des lieux et plan — plateforme destinée à une grande entreprise (20/11/2026)
 
 Base : code de la branche `feature/wfm-regles-plafond-identite-rose`, suites de tests (moteur, API, navigateur, unitaires), site local.
 La plateforme n'est pas présentée comme commercialisable : règles juridiques non validées (voir § 6).
@@ -6,7 +6,7 @@ La plateforme n'est pas présentée comme commercialisable : règles juridiques 
 ## 1. État des lieux
 
 **Points solides (vérifiés par des tests)**
-- Moteur CP-SAT hiérarchique (couverture → engagements → optimisation), vérificateur indépendant du résultat avant et après enregistrement, plafond mensuel, jours min/max, repos, habilitations par marque, verrous, équité des heures (part équitable par capacité réelle, sans priorité automatique).
+- Moteur CP-SAT hiérarchique (couverture → engagements → optimisation), vérificateur indépendant du résultat avant et après enregistrement, plafond mensuel, jours min/max, repos, habilitations par marque, verrous, équité des heures (cible commune d'heures plafonnée par ce que chacun peut réellement atteindre, y compris en tenant compte des collègues qui partagent les mêmes shifts, et objectif contractuel explicite ; sans priorité automatique).
 - Multi-entreprise isolé en base (RLS), rôles et périmètre par marque, journal d'audit et historique lisible.
 - Parcours complets : assistant de création de mois, budgets préremplis, génération, modifications manuelles contrôlées (dérogations tracées), propositions de remplacement acceptées par les collaborateurs, suivi de couverture, versions, validation et publication, suppression protégée et récupération d'archive, notifications internes.
 - Protections de fiabilité : enregistrement automatique avec état réel et « Réessayer », pas d'écriture dans un planning supprimé, annulation fiable d'un calcul, aucune double affectation (verrous et index uniques), propositions protégées contre les doubles clics.
@@ -30,7 +30,7 @@ La plateforme n'est pas présentée comme commercialisable : règles juridiques 
 
 | Lot | Objet | Bénéfice | État |
 |---|---|---|---|
-| 0 | Équité mensuelle (correctif en cours) | Heures équilibrées à capacités comparables, cas réels analysés | **Terminé** (cas des 56 h et cas Chloé documentés) |
+| 0 | Équité mensuelle : cible commune d'heures | Mêmes heures pour tous dans la limite de ce que chacun peut réellement faire | **Terminé le 20/11** (comparaison sur toute l'équipe à volume identique dans `docs/suivi-wfm.md` ; arbitrage renfort / équité : décision D7) |
 | 1 | Modifications simultanées et doubles envois | Jamais d'écrasement silencieux ni de double traitement | **Terminé le 19/11** |
 | 2 | Résultat de génération explicable (6 blocs) et ordre des priorités du moteur | Un manager comprend en un coup d'œil ce qui est valide, couvert, équilibré, prouvé | **Terminé le 19/11** |
 | 3 | Performances à 5, 10, 20 managers + temps de génération selon la taille | Capacités chiffrées, objectif 95 % des attributions < 2 s à 10 managers | À faire |
@@ -53,7 +53,7 @@ Après chaque génération enregistrée (page « Générer » et fin de l'assist
 1. **Règles obligatoires** : résultat du contrôle indépendant (nombre d'affectations revérifiées, règles en cause le cas échéant).
 2. **Couverture des besoins** : obligatoires couverts / total, non couverts avec la raison et l'accès aux shifts concernés.
 3. **Budgets et volume attribué** : par marque (planifié / budget, strict ou souple) ; volume obligatoire et optionnel ; toute baisse des optionnels expliquée ; « aucun budget saisi » dit clairement.
-4. **Équité des heures** : part équitable, maximum possible et heures de chacun ; collaborateurs au maximum de ce qu'ils peuvent faire, en renfort uniquement, sans shift possible ou nettement sous leur part.
+4. **Équité des heures** : cible commune, cible atteignable, maximum possible et heures de chacun ; collaborateurs au maximum de ce qu'ils peuvent faire, en renfort uniquement, sans shift possible, nettement sous leur cible ou à part réduite (shifts partagés avec d'autres).
 5. **Shifts à compléter** : obligatoires non couverts et besoins optionnels non attribués, avec accès direct.
 6. **État de l'optimisation** : « meilleure solution prouvée » ou « planning valide et utilisable, optimisation non terminée (durée maximale atteinte) » ; détail par niveau.
 L'ordre des priorités du moteur est expliqué sous les blocs. Tests : API (six blocs, états, chiffres cohérents avec le planning) et navigateur (blocs affichés après une génération).
@@ -82,7 +82,7 @@ L'ordre des priorités du moteur est expliqué sous les blocs. Tests : API (six 
 1. Règles obligatoires (jamais sacrifiées) : disponibilités, habilitations, repos, jours consécutifs et maximum, plafond mensuel, budgets stricts, verrous. Contrôle indépendant du résultat avant et après enregistrement.
 2. Couverture des besoins obligatoires, puis des budgets (volume visé des besoins optionnels).
 3. Engagements : objectifs contractuels, quotas de dimanches, budgets souples.
-4. Optimisation : équité des heures (part équitable), préférences, priorité par marque (prioritaire, secondaire, renfort en dernier recours), équilibre des dimanches et des jours, stabilité.
+4. Optimisation : équité des heures (cible commune atteignable), préférences, priorité par marque (prioritaire, secondaire, renfort en dernier recours), équilibre des dimanches et des jours, stabilité.
 
 Distinctions : habilitation (marque autorisée ou non : stricte) ; niveau sur la marque (prioritaire, secondaire, renfort : préférence d'emploi, jamais une interdiction) ; restriction obligatoire (indisponibilité, sites, horaires imposés : stricte) ; préférence (horaires préférés : souple) ; disponibilité réelle (jours non bloqués ce mois). L'ancienneté et le mérite n'interviennent jamais automatiquement.
 

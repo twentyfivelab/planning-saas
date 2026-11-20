@@ -14,7 +14,7 @@ from typing import Callable, Dict, List, Optional
 
 from ortools.sat.python import cp_model
 
-from .context import (FAIR_TIERS, cost_units, coverage_cost, hours_units, individual_penalty, ineligibility, min_days_need, period_of, prepare,
+from .context import (FAIR_TIERS, counted_minutes, realized_targets, cost_units, coverage_cost, hours_units, individual_penalty, ineligibility, min_days_need, period_of, prepare,
                       preference_checks, relation_pairs, scoped_avoid_pairs, history_excess)
 from .diagnostics import diagnose_uncovered, min_days_blockers, min_days_core_issue, min_days_group_conflicts, missing_data, core_issue
 from .metrics import plan_metrics
@@ -336,17 +336,18 @@ def solve(inp: SolverInput, cancel: Optional[threading.Event] = None, progress: 
                 if cat is not None and cat != e.time_pref:
                     terms["time_pref"].append(W["time_pref"] * max(1, e.preference_strength) * x[e.id, s.id])
 
-    # Équité : écart à la part équitable de chacun (context.water_fill) — même proportion de sa référence pour tous (objectif contractuel,
-    # sinon jours où il peut travailler), dans sa capacité ; l'excédent des collaborateurs limités revient aux autres. Aucun poids
-    # d'allocation : à disponibilités, habilitations et objectifs comparables, la cible est la même.
+    # Équité : écart à la CIBLE COMMUNE de chacun (context.common_targets) — mêmes heures pour tous, plafonnées par ce que chacun peut
+    # réellement atteindre, objectif contractuel explicite le cas échéant. La cible est une variable fixée juste avant le niveau
+    # « optimisation », d'après le volume réellement décidé par les niveaux précédents (jamais d'après un volume promis inatteignable).
+    tgt_var: Dict[str, cp_model.IntVar] = {}
     for e in inp.employees:
-        tgt = prep.targets[e.id]
         if not by_emp[e.id]:
             continue
         tot = sum(x[e.id, s.id] * s.effective_minutes for s in by_emp[e.id])
+        tgt_var[e.id] = tv = m.NewIntVar(0, 1_000_000, f"tgt_{e.id}")
         dev = m.NewIntVar(0, 100000, f"dev_{e.id}")  # demi-heures
-        m.Add(30 * dev >= tot - tgt)
-        m.Add(30 * dev >= tgt - tot)
+        m.Add(30 * dev >= tot - tv)
+        m.Add(30 * dev >= tv - tot)
         terms["fairness"].append(dev)
         for t in FAIR_TIERS:  # progressif : même calcul que context.fairness_units
             extra = m.NewIntVar(0, 100000, f"dev_{e.id}_{t}")
@@ -560,7 +561,26 @@ def solve(inp: SolverInput, cancel: Optional[threading.Event] = None, progress: 
     solver: Optional[cp_model.CpSolver] = None  # dernier solveur ayant une solution
     status = cp_model.UNKNOWN
     proved = True
+    fixed_targets: Dict[str, int] = {}
+
+    def _fix_targets(assigned_ids, freeze: bool) -> None:
+        targets, _refs = realized_targets(prep, assigned_ids) if assigned_ids is not None else (prep.targets, None)
+        for eid, tv in tgt_var.items():
+            m.Add(tv == targets.get(eid, 0))
+            fixed_targets[eid] = targets.get(eid, 0)
+        if freeze and assigned_ids is not None:  # l'équité répartit le volume décidé, sans le changer (le volume reste visible et justifié)
+            counted = [s for s in inp.slots if s.mandatory or any(b in prep.budgeted_brands for b in s.brands)]
+            m.Add(sum(y[s.id] * s.effective_minutes for s in counted) == counted_minutes(prep, assigned_ids))
+
+    if len(groups_lv) == 1:  # un seul niveau (somme pondérée) : cible sur l'estimation initiale
+        _fix_targets(None, False)
     for i, (name, keys) in enumerate(groups_lv):
+        if i == len(groups_lv) - 1 and i > 0:  # dernier niveau : cible commune sur le volume réellement décidé
+            if solver is not None:
+                ids = [sid for (eid, sid), v in x.items() if solver.Value(v)]
+                _fix_targets(ids, proved)  # niveaux précédents prouvés : volume figé ; sinon il peut encore s'améliorer
+            else:
+                _fix_targets(None, False)
         keys = [*keys, *carry]
         expr = sum(scaled[k] for k in keys)
         last = i == len(groups_lv) - 1

@@ -1,21 +1,21 @@
 # Suivi du programme WFM : état réel
 
-Mise à jour : 18 novembre 2026.
+Mise à jour : 20 novembre 2026.
 
 Une fonctionnalité n'est classée « terminée et vérifiée » que si une vérification exécutée la couvre. Les autres sont « partielles » (utilisables, avec des limites) ou « restantes ». Documents liés :
 - `docs/moteur-evaluation.md` (choix du moteur, mesures) ;
 - `docs/identite-visuelle.md` (rose de référence) ;
 - `docs/backup-restore.md`.
 
-## Résultats de tests (19/11/2026)
+## Résultats de tests (20/11/2026)
 
 | Suite | Résultat | Environnement |
 |---|---|---|
-| Moteur, tests de correction (`packages/solver`) | **142 / 142** (19/11, dont 5 tests d'équité des heures) | local ; aussi **127 / 127 sous forte charge** (charge moyenne 44 sur 10 cœurs) et pendant la suite e2e |
+| Moteur, tests de correction (`packages/solver`) | **145 / 145** (20/11, dont 8 tests d'équité des heures) | local ; aussi **127 / 127 sous forte charge** (charge moyenne 44 sur 10 cœurs) et pendant la suite e2e |
 | Moteur, mesures de performance (marqueur `perf`) | à part : `scripts/ops/perf_engine.sh` | conditions consignées dans `docs/mesures-moteur.md` |
-| API (`apps/api`) | **196 / 196** | base PostgreSQL jetable par session (`planning_test_<pid>`) |
+| API (`apps/api`) | **198 / 198** | base PostgreSQL jetable par session (`planning_test_<pid>`) |
 | Interface, unitaires, dont contrastes WCAG AA | **124 / 124** | Vitest |
-| Navigateur e2e | **92 / 92** (suite complète, seule ; le 19/11 aussi 85 / 85 en parallèle de la suite API, charge jusqu'à 16) | pile Docker isolée (`infra/compose.e2e.yaml`, base `planning_e2e`) |
+| Navigateur e2e | **92 / 92** (20/11, suite complète sur la pile reconstruite, seule ; le 19/11 aussi 85 / 85 en parallèle de la suite API, charge jusqu'à 16) | pile Docker isolée (`infra/compose.e2e.yaml`, base `planning_e2e`) |
 | ruff, TypeScript, ESLint | sans erreur | |
 
 Fiabilité du moteur (deux échecs observés sous charge, corrigés à la source, sans relance ni délai allongé) :
@@ -30,7 +30,146 @@ Intermittences corrigées à la source :
 - **Alignement** : la mesure se fait désormais après l'animation d'ouverture.
 - **Dépendance entre tests navigateur (identifiée et corrigée, 19/11)** : le scénario « E. pondérations » recalculait NOVEMBRE avec les paramètres actuels, alors que d'autres scénarios (réaffectation, fiche modifiée, versions) lisent les affectations et les paramètres conservés de novembre ; selon l'ordre, ils voyaient un planning différent. Le scénario utilise désormais un mois dédié (juillet 2027), supprimé à la fin. Cette dépendance est réelle ; elle n'est **pas** établie comme la cause des échecs `reassign`, `team` et `wfm` observés en parallèle de la suite API (voir « Incertitudes ») : ceux-ci restent ouverts.
 
+## Équité : cible commune d'heures mensuelles (20/11/2026) — remplace la règle du 19/11
+
+**Constat** : la correction du 19/11 (section suivante) ne répondait pas exactement à la consigne. Elle donnait à chacun la même *proportion* de ses jours possibles : deux collaborateurs disponibles 12 et 24 jours recevaient des heures dans le rapport 1 à 2, même quand le premier pouvait en faire davantage. La consigne est une **cible commune d'heures**, plafonnée par les capacités réellement atteignables et adaptée aux objectifs individuels explicites.
+
+**Règle appliquée par le moteur** (contrainte du modèle CP-SAT et évaluateur indépendant identique, pas seulement un affichage) :
+1. Volume à répartir : celui **réellement décidé** par le calcul (shifts obligatoires et besoins optionnels des marques ayant un budget). La cible est fixée juste avant le dernier niveau d'optimisation, d'après les shifts retenus, et non d'après le volume promis par les budgets, parfois inatteignable. Ce volume est ensuite gelé quand les niveaux précédents sont prouvés optimaux.
+2. Objectif contractuel explicite : servi d'abord, plafonné par la capacité du collaborateur.
+3. Pour tous les autres, **un même niveau d'heures**, élevé jusqu'à épuisement du volume. Chacun est plafonné par :
+   - **sa capacité seul** : un shift par jour sur les jours où il peut travailler, jours maximum, plafond mensuel ;
+   - **ce qui reste atteignable compte tenu des collègues** qui se partagent les mêmes shifts : répartition max-min par flot. Quand un groupe qui partage un petit nombre de shifts est saturé, ses membres sont arrêtés à leur part du groupe, et les autres continuent de monter.
+   - Shifts atteignables : ceux du volume décidé, plus les besoins optionnels sans budget, que le moteur peut retenir pour rapprocher quelqu'un de la cible. Le total des cibles reste borné par le volume décidé.
+4. Écart à cette cible pénalisé de façon progressive (au-delà de 16 h, puis de 40 h). Les shifts où un collaborateur n'est qu'en renfort ne fondent pas sa capacité (dernier recours), mais restent utilisables.
+5. Aucun poids d'allocation, aucune ancienneté, aucun mérite : ni cible ni priorité automatique.
+
+**Comparaison à volume, budgets et couverture identiques** (copie `planning_copie_equite`).
+- Méthode : on reprend exactement les shifts du planning recalculé par la règle proportionnelle et on les impose ; seule la répartition entre collaborateurs change.
+- Avant : règle proportionnelle (commit 49dd4fb). Après : cible commune.
+- Mêmes shifts et heures par marque identiques (vérifié par le script) ; 0 violation (vérificateur indépendant) ; tous les niveaux prouvés optimaux.
+- Équipe entière ; « maximum atteignable seul » = capacité individuelle.
+
+#### Février 2027 (compte d’essai) — 198 shifts identiques, heures par marque identiques, 0 violation
+
+Écart-type des heures : 35 h (règle proportionnelle) → 27 h (cible commune) ; écart entre le plus et le moins chargé (hors profils sans shift possible) : 64 h → 48 h
+
+| Collaborateur | Maximum atteignable seul | Cible commune (atteignable) | Avant (proportionnelle) | Après (cible commune) |
+|---|---|---|---|---|
+| Pierre | 0 h | 0 h | 0 h | 0 h |
+| Jane | 64 h | 64 h | 56 h | 64 h |
+| Chloé | 88 h | 88 h | 56 h | 72 h |
+| Yasmine | 96 h | 96 h | 56 h | 96 h |
+| Ying | 128 h | 102 h | 72 h | 88 h |
+| Aziza | 144 h | 102 h | 72 h | 96 h |
+| Valérie | 144 h | 102 h | 72 h | 96 h |
+| Abdu | 176 h | 102 h | 120 h | 112 h |
+| Adam | 176 h | 102 h | 120 h | 112 h |
+| Florian | 176 h | 102 h | 120 h | 104 h |
+| Kristina | 176 h | 102 h | 120 h | 104 h |
+| Michael | 176 h | 102 h | 120 h | 112 h |
+| Mila | 176 h | 102 h | 120 h | 104 h |
+| Sabrina | 176 h | 102 h | 120 h | 112 h |
+| Sahra | 176 h | 102 h | 120 h | 104 h |
+| Simona D. | 176 h | 102 h | 120 h | 104 h |
+| Zaki | 176 h | 102 h | 120 h | 104 h |
+
+#### Avril 2027 (démonstration) — 237 shifts identiques, heures par marque identiques, 0 violation
+
+Écart-type des heures : 47 h (règle proportionnelle) → 38 h (cible commune) ; écart entre le plus et le moins chargé (hors profils sans shift possible) : 104 h → 56 h
+
+| Collaborateur | Maximum atteignable seul | Cible commune (atteignable) | Avant (proportionnelle) | Après (cible commune) |
+|---|---|---|---|---|
+| Pierre C. | 0 h | 0 h | 0 h | 0 h |
+| Yasmine D. | 96 h | 96 h | 64 h | 96 h |
+| Chloé D. | 112 h | 112 h | 72 h | 96 h |
+| Jane D. | 144 h | 140 h | 136 h | 144 h |
+| Abdu S. | 176 h | 140 h | 168 h | 152 h |
+| Adam K. | 176 h | 140 h | 168 h | 152 h |
+| Aziza M. | 176 h | 140 h | 128 h | 136 h |
+| Florian A. | 176 h | 140 h | 160 h | 144 h |
+| Jamilatu D. | 176 h | 140 h | 160 h | 144 h |
+| Sabrina L. | 176 h | 140 h | 168 h | 144 h |
+| Sahra H. | 176 h | 140 h | 120 h | 144 h |
+| Simona D. | 176 h | 140 h | 160 h | 144 h |
+| Valérie M. | 176 h | 140 h | 128 h | 136 h |
+| Ying Y. | 176 h | 140 h | 104 h | 120 h |
+| Zaki H. | 176 h | 140 h | 160 h | 144 h |
+
+#### Décembre 2026 (démonstration) — 242 shifts identiques, heures par marque identiques, 0 violation
+
+Écart-type des heures : 25 h (règle proportionnelle) → 18 h (cible commune) ; écart entre le plus et le moins chargé (hors profils sans shift possible) : 64 h → 48 h
+
+| Collaborateur | Maximum atteignable seul | Cible commune (atteignable) | Avant (proportionnelle) | Après (cible commune) |
+|---|---|---|---|---|
+| Pierre C. | 0 h | 0 h | 0 h | 0 h |
+| Simona A. | 64 h | 64 h | 32 h | 64 h |
+| Chloé D. | 96 h | 78 h | 40 h | 80 h |
+| Chloé D. (2) | 104 h | 78 h | 64 h | 80 h |
+| Sylvain Z. | 104 h | 78 h | 40 h | 80 h |
+| Yasmine D. | 112 h | 78 h | 48 h | 80 h |
+| Jane D. | 136 h | 78 h | 72 h | 104 h |
+| Zaki H. | 152 h | 78 h | 64 h | 80 h |
+| Abdu S. | 176 h | 78 h | 96 h | 80 h |
+| Adam K. | 176 h | 78 h | 96 h | 80 h |
+| Anastasia A. | 176 h | 78 h | 96 h | 80 h |
+| Aziza M. | 176 h | 72 h | 64 h | 56 h |
+| Florian A. | 176 h | 78 h | 96 h | 80 h |
+| Hugo S. | 176 h | 72 h | 72 h | 56 h |
+| Jamilatu D. | 176 h | 78 h | 88 h | 80 h |
+| Kristina T. | 176 h | 78 h | 96 h | 80 h |
+| Paul-Joseph D. | 176 h | 78 h | 80 h | 80 h |
+| Rebecca T. | 176 h | 78 h | 96 h | 80 h |
+| Sabrina L. | 176 h | 78 h | 96 h | 80 h |
+| Sahra H. | 176 h | 78 h | 96 h | 80 h |
+| Selin A. | 176 h | 78 h | 96 h | 80 h |
+| Simon F. | 176 h | 72 h | 64 h | 56 h |
+| Simona D. | 176 h | 78 h | 96 h | 80 h |
+| Valérie M. | 176 h | 78 h | 64 h | 64 h |
+| Yanis B. | 176 h | 78 h | 96 h | 80 h |
+| Ying Y. | 176 h | 78 h | 88 h | 96 h |
+
+**Pourquoi certains restent éloignés de la cible** (vérifié transfert par transfert sur la copie, avec le vérificateur indépendant et l'évaluateur du moteur)
+- **Décembre, Aziza M., Hugo S., Simon F.** : leurs seuls shifts possibles sont 27 shifts d'un même groupe (216 h), partagés avec Valérie M. Pour eux, la cible commune de 78 h est inatteignable : leur cible devient 72 h, leur part du groupe. Ils restent à 56 h parce que Valérie M. tient 6 de ces shifts. Pour elle, ce sont des shifts habituels ; ailleurs, elle n'est qu'en renfort.
+  - À volume identique, ils perdent 8 à 16 h par rapport à la règle proportionnelle (64, 72 et 64 h → 56 h). Ces shifts sont allés à des collègues encore plus éloignés de la cible.
+- **Décembre, Valérie M.** : 64 h pour une cible de 78 h. 146 transferts valides vers elle, dont 127 la feraient travailler en renfort : coût +96 (12 par heure), contre un gain d'équité de −24 à −48 (3 par demi-heure d'écart).
+- **Décembre, Jane D.** : 104 h pour une cible de 78 h. Aucun shift ne lui est exclusif, mais ses 25 transferts valides mettraient tous le receveur en renfort (+96 contre −48).
+- Dans ces cas, le moteur applique l'ordre des critères tel qu'il est paramétré : le renfort reste un dernier recours, même au prix d'un écart d'heures de 14 à 26 h. **Décision D7 ci-dessous.**
+
+**Volume normal** (même mois recalculé librement, mêmes paramètres, 30 s ; avant = règle proportionnelle, après = cible commune) :
+
+| Mois | Obligatoires couverts | Optionnels attribués | Heures attribuées | Écart-type des heures | Écart plus / moins chargé | Violations | Niveaux |
+|---|---|---|---|---|---|---|---|
+| Février 2027 | 156/156 → 156/156 | 30 → 36 | 1488 h → 1536 h | 34 h → 26 h | 72 h → 32 h | 0 | tous prouvés (4 s) |
+| Avril 2027 | 167/167 → 167/167 | 70 → 70 | 1896 h → 1896 h | 46 h → 38 h | 96 h → 56 h | 0 | tous prouvés (13 s) |
+| Décembre 2026 | 171/171 → 171/171 | 71 → 71 | 1936 h → 1936 h | 31 h → 18 h | 80 h → 48 h | 0 | tous prouvés (4 s) |
+
+En décembre, la version qui tient compte des shifts partagés donne exactement les mêmes heures que la cible commune sans ce partage, à un shift près : il passe de Simon F. à Jane D., et les deux solutions sont prouvées optimales. Février et avril sont identiques.
+
+**Hausse du volume en février (compte d'essai, aucun budget saisi)** : la cible commune retient 6 besoins optionnels sans budget de plus (+48 h) pour rapprocher les moins chargés de la cible. Ce volume est désormais signalé après la génération (bloc « Budgets et volume » : « N shifts optionnels de plus… »), comme une baisse l'était déjà. Saisir les budgets du mois fixe ce volume indépendamment de l'équité.
+
+**Affichage** : le bloc « Équité des heures » du résultat de génération indique la cible commune, puis pour chacun ses heures, sa cible atteignable et sa capacité. Il signale aussi :
+- au maximum de ce qu'il peut faire ;
+- en renfort uniquement ;
+- nettement sous sa cible ;
+- part réduite, quand le collaborateur partage les mêmes shifts avec d'autres et que la cible commune lui est inatteignable.
+
+**Tests** :
+- cible commune et objectif explicite ; cible plafonnée par des shifts partagés (échoue avec l'ancienne règle) ; besoins optionnels sans budget atteignables pour la cible ;
+- évaluateur = moteur, en mode hiérarchique et à un seul niveau ;
+- note de hausse du volume (API) ;
+- calcul de la cible : 8 à 17 ms sur les mois réels ; 0,3 s sur un cas fictif de 150 collaborateurs et 1 500 shifts.
+- Observation : un petit test symétrique (132 h à répartir en shifts de 8 h, deux solutions équivalentes) prouve son optimum en 1 à 11 s selon le passage. Cette variabilité vient de la recherche parallèle de CP-SAT, pas du calcul de la cible (4 ms). Aucun délai n'a été modifié.
+
+**Limites** :
+- La répartition par flot suppose un shift par jour ; les limites hebdomadaires de jours sont prises en compte par la capacité individuelle seulement.
+- En mode à un seul niveau (non hiérarchique), la cible reste l'estimation initiale (besoins obligatoires + budgets), sans le partage entre collègues.
+- Le classement des remplaçants calcule un changement à volume constant, ce qui est exact pour un transfert.
+- Les profils uniquement en renfort n'ont pas de cible (0 h attendu).
+
 ## Équité des heures mensuelles : analyse et correction du 19/11/2026
+
+*Règle de répartition remplacée le 20/11 par la cible commune (section précédente) ; l'analyse des causes ci-dessous reste valable.*
 
 Analyse faite sur une **copie** de la base (`planning_copie_equite`, restaurée depuis la sauvegarde `backups/copie-equite-20261119-2009.dump`) : plannings actifs, archives et base réelle non modifiés. « Avant » = plannings réellement enregistrés (archives d'avril 2027 et de décembre 2026, planning actif de février 2027 du compte d'essai) ; « après » = même mois recalculé sur la copie avec le moteur corrigé, mêmes paramètres, 30 s.
 
@@ -174,6 +313,22 @@ Aucun shift possible ce mois (aucune de leurs marques n'a de besoin) : Chloé D.
 **Lot 1 (modifications simultanées), deux échecs de tests à cause confirmée, corrigés** : `e2e/rules.spec.ts` (transfert depuis le calendrier) choisissait son cas d'après les seuls jours voisins ; avec un planning généré différent, il a choisi un collaborateur déjà à son maximum de jours par semaine, et l'application a affiché à juste titre l'alerte — le test choisit désormais un cas que le serveur juge sans alerte. `test_demo_flow::test_lock_and_partial…` a révélé une régression réelle du lot 1 (une demande sans effet sur une affectation verrouillée était acceptée au lieu d'être refusée) — le verrou est de nouveau vérifié en premier.
 
 **Données** : les tableaux de ce document nomment désormais les collaborateurs par prénom et initiale. Le commit 33d3c7d (déjà poussé) contenait les noms complets : ils restent dans l'historique de la branche tant qu'une réécriture n'est pas décidée.
+
+## Échecs de la suite complète du 20/11/2026 : causes établies
+
+Quatre échecs (3 navigateur, 1 API) sur la première suite complète avec la cible commune, puis un cinquième au passage suivant. Chaque cause est établie par la trace ou par la base de test, et non par une simple relance.
+- **Défaut réel de l'application, corrigé** : `integration.spec` attendait l'attribution d'un shift qui n'a jamais été envoyée. La trace montre que la fenêtre « Ajouter un jour de travail » avait reçu un 422 « Ce shift n'est pas connu du moteur » : un seul shift du jour, dont le besoin n'existait plus (marque archivée depuis), rendait toute la journée inutilisable.
+  - Désormais, ce shift est signalé seul (« Le besoin de ce shift n'existe plus… », non attribuable) et les autres shifts du jour restent attribuables.
+  - Test API de non-régression, qui échoue sans la correction.
+  - Origine de la donnée : une suite précédente, interrompue avant sa fin. Son test avait archivé sa marque, mais n'avait pas supprimé novembre 2027, que la suite suivante a réutilisé (vérifié dans la base de test : planning créé à 22:57:40, marque archivée à 22:58:12).
+- **`months.spec`** : la préparation attendait que le dernier calcul du compte soit « terminé ». Le scénario précédent en annule un volontairement. Elle attend désormais la vraie précondition : novembre a un planning.
+- **`replacement-offers.spec`** : il comptait toutes les notifications « Michael a accepté ». La base de test conserve celle d'un passage précédent (19/11, 19:39, autre planning), et la nouvelle répartition a fait choisir le même collaborateur. Il ne compte plus que celles de son planning.
+- **`test_monthly_cap_refuses_a_manual_move_beyond_176_hours`** : avec la nouvelle répartition, le collaborateur le plus chargé n'est autorisé que sur Cellcosmet/Nuxe et tient déjà tous ces shifts. Le déplacement choisi était donc refusé, à juste titre, pour une marque non autorisée (422), avant même le contrôle du plafond. Le test prend maintenant le plus chargé parmi ceux qui peuvent recevoir un shift.
+- **Second défaut réel, corrigé** (passage suivant, `replacement-offers.spec`, refus puis annulation) : « Mon espace » listait deux propositions « Annulée » au lieu d'une. La seconde venait d'un planning **supprimé** (passage du 19/11 à 22:20, même collaborateur). En cherchant, un défaut plus grave est apparu : supprimer un planning ne clôturait pas ses propositions en cours. Le collaborateur pouvait donc encore voir « Accepter » sur un planning supprimé ; l'acceptation était bien refusée, mais seulement au moment de cliquer.
+  - Désormais, la suppression rend ces propositions « plus valables » et prévient le collaborateur (« Le planning de ce mois a été supprimé »).
+  - « Mon espace » n'affiche plus les propositions des plannings supprimés ; elles restent en base et dans l'historique.
+  - Test API de non-régression, qui échoue sans la correction.
+Aucun délai allongé, aucune relance automatique.
 
 ## Lenteurs et échecs intermittents : analyse du 19/11/2026
 
@@ -459,6 +614,7 @@ Cinq exécutions complètes de la suite API, dont quatre en parallèle de la sui
 4. **Validation juridique** des règles réglementaires par un spécialiste du droit suisse.
 5. **Identités incertaines** (facultatif) : répartition prénom / nom de deux fiches ; les libellés actuels restent tels quels tant que vous ne la précisez pas.
 6. **Couleur** : le rose est appliqué tel qu'il s'affiche dans votre image (profil Display P3). La valeur brute du fichier, #BB2757 lue en sRGB, serait plus terne. À confirmer après lecture de `docs/identite-visuelle.md`.
+7. **Renfort ou équité des heures** (constaté le 20/11, décembre 2026 de la démonstration) : avec les pondérations actuelles, une heure en renfort coûte 12 et une demi-heure d'écart à la cible 3. Quand le seul moyen de rapprocher quelqu'un de la cible est de faire travailler un collègue en renfort, le moteur garde l'écart : Jane D. 104 h pour 78 h ; Aziza M., Hugo S., Simon F. 56 h pour 72 h ; Valérie M. 64 h pour 78 h. Garder cet ordre (renfort en dernier recours) ou donner plus de poids à l'équité ? Aucun changement appliqué.
 
 Déjà décidé (rappel) : les 106 tenants douteux et l'ancien tenant e2e de la base de développement sont conservés ; le mode sombre reste optionnel ; le plafond de 176 h, les minimums et maximums de jours et l'indépendance des plannings s'appliquent comme convenu.
 

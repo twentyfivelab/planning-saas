@@ -149,7 +149,7 @@ export function VolumeLine({ v }: { v?: VolumeReport }) {
     <div className="stack" style={{ gap: "var(--sp-1)" }} data-testid="volume">
       <p style={{ margin: 0 }}><strong>Volume attribué :</strong> {a.mandatory} shift(s) obligatoire(s) et {a.optional} optionnel(s), {hm(a.minutes)} au total
         {b.mandatory + b.optional > 0 ? <> (planning remplacé : {b.mandatory} obligatoire(s), {b.optional} optionnel(s), {hm(b.minutes)})</> : null}.</p>
-      {v.note && <Callout kind="warn" title={`${-v.delta_optional} shift(s) optionnel(s) de moins (${hm(-v.delta_optional_minutes)})`}>
+      {v.note && <Callout kind={v.delta_optional > 0 ? "info" : "warn"} title={v.delta_optional > 0 ? `${v.delta_optional} shift(s) optionnel(s) de plus (+${hm(v.delta_optional_minutes)})` : `${-v.delta_optional} shift(s) optionnel(s) de moins (${hm(-v.delta_optional_minutes)})`}>
         <span data-testid="volume-note">{v.note}</span> <a href="/planning#besoins-optionnels" style={{ textDecoration: "underline" }}>Voir les besoins optionnels non attribués</a></Callout>}
     </div>
   );

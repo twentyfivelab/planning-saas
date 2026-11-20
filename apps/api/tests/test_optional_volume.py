@@ -44,7 +44,8 @@ def test_baisse_des_optionnels_visible_et_expliquee():
     r = _volume_report(inp, ["a", "b", "c", "d"], ["a", "d"])
     assert (r["before"]["optional"], r["after"]["optional"], r["delta_optional"], r["delta_optional_minutes"]) == (3, 1, -2, -960)
     assert r["optional_without_budget"] == ["Valmont"] and "2 shift(s) optionnel(s) de moins" in r["note"] and "16 h" in r["note"] and "Valmont" in r["note"]
-    assert _volume_report(inp, ["a"], ["a", "b"])["note"] is None  # une hausse n'est pas une baisse à signaler
+    up = _volume_report(inp, ["a"], ["a", "b"])  # une hausse est signalée aussi, avec sa raison
+    assert up["delta_optional"] == 1 and "1 shift(s) optionnel(s) de plus" in up["note"] and "cible commune" in up["note"]
 
 
 def test_besoins_optionnels_listes_places_puis_attribues(t):
