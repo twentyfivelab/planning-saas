@@ -1,7 +1,7 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "@/lib/api";
-import { invalidate, onInvalidate } from "@/lib/invalidate";
+import { invalidate, onInvalidate, PLANNING_VIEWS } from "@/lib/invalidate";
 import { defaultMonthKey, isMonthKey, parseMonthKey, shiftMonthKey } from "@/lib/months";
 
 export type Period = { id: string; name: string; start_date: string; end_date: string; status?: import("@/lib/periods").PeriodStatus; status_label?: string; assignments?: number; wizard_step?: number | null; archived_at?: string | null; changed_since?: boolean };
@@ -20,7 +20,8 @@ export function useApi<T>(path: string | null) {
   const prev = useRef(path);
   useEffect(() => { if (prev.current !== path) { prev.current = path; seq.current++; setData(null); setError(null); } reload(); }, [path, reload]); // nouvelle adresse (autre mois, autre collaborateur) : jamais de données de l'ancienne
   // rechargement silencieux (sans squelette) quand des paramètres changent ailleurs
-  useEffect(() => onInvalidate(() => { if (path) { const mine = ++seq.current; api<T>(path).then((d) => { if (mine === seq.current) { setData(d); setError(null); setLoading(false); } }).catch(() => {}); } }), [path]);
+  // portée « planning » (modification d'affectations par un autre manager) : seules les vues qui en dépendent sont relues
+  useEffect(() => onInvalidate((scope) => { if (path && (scope === "all" || PLANNING_VIEWS.test(path))) { const mine = ++seq.current; api<T>(path).then((d) => { if (mine === seq.current) { setData(d); setError(null); setLoading(false); } }).catch(() => {}); } }), [path]);
   return { data, error, loading, reload, mutate: setData };
 }
 

@@ -37,7 +37,8 @@ test.afterEach(async ({ page }) => { if ((await owner(page)) !== target.employee
 async function openDay(page: Page): Promise<Locator> {
   await page.goto("/planning");
   await page.getByRole("tab", { name: "Jour", exact: true }).click();
-  await expect(page.getByText("Lun 2 nov.", { exact: true })).toBeVisible();
+  // en-tête de la vue « Jour » (annoncé aux lecteurs d'écran) ; d'autres panneaux peuvent citer la même date
+  await expect(page.locator('strong[aria-live="polite"]').filter({ hasText: /^Lun 2 nov\.$/ })).toBeVisible();
   return page.getByLabel(`Collaborateur pour GVA3 06:00–15:00`);
 }
 const dialog = (page: Page) => page.getByRole("dialog", { name: "Confirmer le remplacement ?" });
@@ -100,7 +101,8 @@ test("6. le glisser-déposer demande aussi une confirmation", async ({ page }) =
   await expect(page.getByRole("region", { name: /Planning général/ })).toBeVisible();
   await expect(page.getByRole("group", { name: "Compteur des dimanches" })).toBeVisible(); // mise en page stable avant de glisser
   const cell = (name: string) => page.locator(`.cal-cell[aria-label="${name}, Lun 2 nov."]`);
-  const card = cell(target.employee).locator(`.shift[aria-label^="${target.employee}, Ploom GVA3, GVA3, 06:00 à 15:00"]`).first();
+  // carte repérée par son texte visible (horaire, marque), comme le voit le manager
+  const card = cell(target.employee).locator(".shift").filter({ hasText: "06:00–15:00" }).filter({ hasText: "Ploom GVA3" }).first();
   await card.dragTo(cell(other.name));
   await expect(dialog(page)).toBeVisible();
   await expect(dialog(page)).toContainText(other.name);
@@ -114,7 +116,7 @@ test("6. le glisser-déposer demande aussi une confirmation", async ({ page }) =
 
 test("fiche détaillée : « Réaffecter » passe aussi par la confirmation", async ({ page }) => {
   await page.goto("/planning");
-  await page.locator(`.shift[aria-label^="${target.employee}, Ploom GVA3, GVA3, 06:00 à 15:00"]`).first().click();
+  await page.locator(`.cal-cell[aria-label^="${target.employee}, "]`).locator(".shift").filter({ hasText: "06:00–15:00" }).filter({ hasText: "Ploom GVA3" }).first().click();
   await page.getByLabel("Réaffecter à").selectOption(other.id);
   await page.getByRole("button", { name: "Réaffecter", exact: true }).click();
   await expect(dialog(page)).toBeVisible();

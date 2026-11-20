@@ -5,7 +5,7 @@ import { Badge, Button, Callout, Field, Select } from "@/components/ui/primitive
 import { useApi } from "@/components/hooks";
 import { api } from "@/lib/api";
 import { invalidate } from "@/lib/invalidate";
-import { RELATION_LABEL, RELATION_SCOPE, SKILL_CATEGORY, WEEKDAYS, errText } from "@/lib/wfm";
+import { PRESENCE_HELP, PRESENCE_SCOPE, RELATION_LABEL, RELATION_SCOPE, SKILL_CATEGORY, WEEKDAYS, errText } from "@/lib/wfm";
 
 type Skill = { id: string; code: string; name: string; category: string };
 type Owned = { code: string; name: string; category: string; valid_until: string | null };
@@ -119,15 +119,16 @@ export function EmployeeExtras({ emp, all }: { emp: { id: string; name: string }
         <legend className="h2">Relations avec d&apos;autres collaborateurs</legend>
         <p className="help">Aucun nom n&apos;est inscrit dans le moteur : tout se règle ici.</p>
         {myRels.length > 0 && <ul className="stack" style={{ listStyle: "none", padding: 0, margin: 0, gap: "var(--sp-1)" }}>{myRels.map((r) => (
-          <li key={r.id} className="row"><Badge tone={r.strict ? "accent" : "neutral"}>{r.strict ? "Stricte" : "Préférence"}</Badge><span>{r.kind === "avoid_together" ? `À séparer (${RELATION_SCOPE[r.scope ?? "site_day"]})` : RELATION_LABEL[r.kind] ?? r.kind} : <strong>{r.employee_id === emp.id ? nameOf(r.other_employee_id) : nameOf(r.employee_id)}</strong></span>
+          <li key={r.id} className="row"><Badge tone={r.strict ? "accent" : "neutral"}>{r.strict ? "Stricte" : "Préférence"}</Badge><span>{r.kind === "avoid_together" ? `À séparer (${RELATION_SCOPE[r.scope ?? "site_day"]})` : r.kind === "mentor" || r.kind === "work_together" ? `${RELATION_LABEL[r.kind]} (${PRESENCE_SCOPE[r.scope ?? "site_day"]})` : RELATION_LABEL[r.kind] ?? r.kind} : <strong>{r.employee_id === emp.id ? nameOf(r.other_employee_id) : nameOf(r.employee_id)}</strong></span>
             {canRules && <Button size="sm" variant="ghost" onClick={() => run(() => api(`/relationship-preferences/${r.id}`, { method: "DELETE" }), rels.reload)} aria-label={`Retirer la relation avec ${r.employee_id === emp.id ? nameOf(r.other_employee_id) : nameOf(r.employee_id)}`}>Retirer</Button>}</li>))}</ul>}
         {canRules && (
           <div className="row" style={{ alignItems: "flex-end" }}>
             <Field label="Type de relation">{(p) => <Select {...p} value={kind} onChange={(e) => { setKind(e.target.value); setStrict(false); setScope("site_day"); }}>{Object.entries(RELATION_LABEL).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</Select>}</Field>
             {kind === "avoid_together" && <Field label="Portée">{(p) => <Select {...p} value={scope} onChange={(e) => setScope(e.target.value)}>{Object.entries(RELATION_SCOPE).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</Select>}</Field>}
+            {(kind === "mentor" || kind === "work_together") && <Field label={kind === "mentor" ? "Présence du tuteur" : "Présence du binôme"} help={PRESENCE_HELP[scope]}>{(p) => <Select {...p} value={scope} onChange={(e) => setScope(e.target.value)}>{Object.entries(PRESENCE_SCOPE).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</Select>}</Field>}
             <Field label="Avec">{(p) => <Select {...p} value={other} onChange={(e) => setOther(e.target.value)}><option value="">Choisir…</option>{all.filter((e) => e.id !== emp.id).map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}</Select>}</Field>
             <label className="row"><input type="checkbox" disabled={!canStrict} checked={strict} onChange={(e) => setStrict(e.target.checked)} /> Stricte</label>
-            <Button disabled={!other} icon="plus" onClick={() => run(() => api("/relationship-preferences", { method: "POST", json: { employee_id: emp.id, other_employee_id: other, kind, strict, scope: kind === "avoid_together" ? scope : "site_day" } }), () => { setOther(""); setScope("site_day"); rels.reload(); })}>Ajouter</Button>
+            <Button disabled={!other} icon="plus" onClick={() => run(() => api("/relationship-preferences", { method: "POST", json: { employee_id: emp.id, other_employee_id: other, kind, strict, scope: kind === "avoid_together" || kind === "mentor" || kind === "work_together" ? scope : "site_day" } }), () => { setOther(""); setScope("site_day"); rels.reload(); })}>Ajouter</Button>
           </div>)}
       </fieldset>
       {err && <Callout kind="bad" title="Enregistrement impossible">{err}</Callout>}

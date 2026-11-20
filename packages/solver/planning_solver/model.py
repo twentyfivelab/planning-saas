@@ -63,7 +63,7 @@ class Contract:
 
 
 RELATION_KINDS = ("avoid_together", "work_together", "mentor")
-RELATION_SCOPES = ("site_day", "day", "overlap")  # « horaires opposés » : champ opposite_of (historique)
+RELATION_SCOPES = ("site_day", "day", "overlap", "full")  # « horaires opposés » : champ opposite_of (historique)
 
 
 @dataclass(frozen=True)
@@ -74,8 +74,10 @@ class Relation:
     - mentor : quand ce collaborateur travaille, `other` (expérimenté) est présent le même jour sur le même site
       (plusieurs relations « mentor » = au moins un des tuteurs).
     strict = contrainte dure (avoid_together, mentor) ; sinon préférence pénalisée.
-    scope (avoid_together seulement) : « site_day » même jour sur le même site (défaut) ; « day » même jour, tous sites ;
-    « overlap » horaires qui se chevauchent, tous sites."""
+    scope — avoid_together : « site_day » même jour sur le même site (défaut) ; « day » même jour, tous sites ; « overlap » horaires
+    qui se chevauchent, tous sites. mentor et work_together (même site) : « site_day » présent le même jour (défaut) ; « overlap »
+    CHEVAUCHEMENT SIMPLE (au moins un moment en commun) ; « full » COUVERTURE COMPLÈTE : présent pendant toute la plage du shift du
+    collaborateur accompagné (seul ou à plusieurs tuteurs qui se relaient). Les pauses ne sont pas déduites de la présence."""
     kind: str
     other: str
     strict: bool = False
@@ -188,6 +190,9 @@ DEFAULT_WEIGHTS: Dict[str, int] = {
 LEVELS = (
     ("couverture", ("coverage", "budget")),
     ("engagements", ("overtime", "sunday_quota", "budget_over")),
+    # décision D7 (20/11/2026) : l'équité des heures passe avant la préférence d'éviter le renfort ; « prioritaire », « secondaire » et
+    # « renfort », comme les autres préférences, départagent ensuite des répartitions d'équité égale
+    ("equite", ("fairness",)),
     ("optimisation", None),  # tous les autres critères pondérés
 )
 

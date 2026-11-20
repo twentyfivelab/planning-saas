@@ -13,6 +13,7 @@ from ..limits import guard_monthly_cap, month_minutes
 from ..optimize import enqueue
 from ..period_state import ensure_editable, has_official_version, statuses
 from ..services_bridge import assignments_for_validation, build_input
+from ..readcache import cached_view
 from planning_solver.sundays import sunday_summary
 from planning_solver.timecalc import shift_hours, split_allocation
 from planning_solver.validator import validate
@@ -67,6 +68,7 @@ def create_period(body: PeriodIn, ctx: Ctx = Depends(require("planning.edit"))):
 
 
 @router.get("/periods/{pid}/schedule")
+@cached_view("schedule")
 def schedule(pid: str, ctx: Ctx = Depends(require("planning.brand"))):
     p = get_or_404(ctx, m.PlanningPeriod, pid)
     scope = scope_brands(ctx)
@@ -76,6 +78,8 @@ def schedule(pid: str, ctx: Ctx = Depends(require("planning.brand"))):
     allocs: dict = {}
     for b in ctx.db.scalars(select(m.BrandAllocation)):
         allocs.setdefault(b.assignment_id, {})[b.brand_code] = b.minutes
+    paid = {br.assignment_id for br in ctx.db.scalars(select(m.Break).join(m.Assignment, m.Assignment.id == m.Break.assignment_id)
+                                                          .where(m.Assignment.period_id == p.id, m.Break.paid.is_(True)))}
     assigned = set()
     out = []
     for a in ctx.db.scalars(select(m.Assignment).where(m.Assignment.period_id == p.id)):
@@ -87,6 +91,8 @@ def schedule(pid: str, ctx: Ctx = Depends(require("planning.brand"))):
                     "day": s.day.isoformat(), "site": s.site_code, "site_name": site_names.get(s.site_code, s.site_code), "start": s.start_time.isoformat(),
                     "end": s.end_time.isoformat(), "presence_minutes": s.presence_minutes,
                     "break_minutes": s.break_minutes, "effective_minutes": s.effective_minutes,
+                    # heures payées : travail effectif + pause si elle est payée (réglage du site au moment de l'attribution)
+                    "break_paid": a.id in paid, "paid_minutes": s.effective_minutes + (s.break_minutes if a.id in paid else 0),
                     "employee_id": str(a.employee_id), "employee": emp[a.employee_id].name, "locked": a.locked,
                     "source": a.source, "allocations": allocs.get(a.id, {})})
     out.sort(key=lambda r: (r["day"], r["start"], r["slot_key"]))
@@ -274,6 +280,7 @@ def allowed_times(sid: str, ctx: Ctx = Depends(require("planning.read"))):
 
 
 @router.get("/periods/{pid}/sunday-summary")
+@cached_view("sunday")
 def sunday(pid: str, ctx: Ctx = Depends(require("planning.read"))):
     """Compteur des dimanches calculé sur les vrais shifts et les vrais quotas (jamais une valeur statique)."""
     p = get_or_404(ctx, m.PlanningPeriod, pid)
@@ -346,9 +353,17 @@ def edit_shift(sid: str, body: ShiftPatch, ctx: Ctx = Depends(require("planning.
 
 
 def _conflicts(ctx: Ctx, period_id) -> list:
-    p = ctx.db.get(m.PlanningPeriod, period_id)
-    inp = build_input(ctx.db, p)
-    return validate(inp, assignments_for_validation(ctx.db, inp, p))
+    """Conflits du planning. Calculés une fois par révision et partagés (readcache) : la réponse d'une modification les calcule sur
+    l'état qu'elle vient d'écrire — même empreinte que celle visible après validation (horodatage de transaction) —, si bien que les
+    écrans des autres managers, qui relisent les conflits juste après, ne refont pas ce calcul. Une transaction annulée laisse une clé
+    qui ne correspond plus à aucun état : jamais servie."""
+    from ..readcache import cached
+
+    def compute():
+        p = ctx.db.get(m.PlanningPeriod, period_id)
+        inp = build_input(ctx.db, p)
+        return validate(inp, assignments_for_validation(ctx.db, inp, p))
+    return cached(ctx, f"_conflicts:{period_id}", compute)
 
 
 @router.get("/periods/{pid}/break-coverage")
@@ -364,6 +379,7 @@ def break_coverage(pid: str, ctx: Ctx = Depends(require("planning.read"))):
 
 
 @router.get("/periods/{pid}/conflicts")
+@cached_view("conflicts")
 def conflicts(pid: str, ctx: Ctx = Depends(require("planning.read"))):
     p = get_or_404(ctx, m.PlanningPeriod, pid)
     return {"hard_violations": _conflicts(ctx, p.id)}

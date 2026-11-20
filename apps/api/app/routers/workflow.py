@@ -17,6 +17,7 @@ from ..period_state import ensure_editable
 from ..services_bridge import build_input
 from ..versioning import AUTOMATIC_KINDS, apply_retention, current_map, make_version, retention_candidates, snapshot_map, version_conformity
 from .planning import _conflicts
+from ..services_bridge import break_paid
 
 router = APIRouter(tags=["versions et publication"])
 STATE_LABEL = {"snapshot": "Copie de travail", "in_review": "En cours de validation", "validated": "Validée", "published": "Publiée", "superseded": "Remplacée"}
@@ -256,7 +257,7 @@ def restore(vid: str, ctx: Ctx = Depends(require("planning.edit"))):
             a = m.Assignment(tenant_id=ctx.tenant_id, period_id=v.period_id, shift_id=sh.id, employee_id=e.id, source=x.get("source", "manual"), locked=bool(x.get("locked")))
             ctx.db.add(a)
             ctx.db.flush()
-            ctx.db.add(m.Break(tenant_id=ctx.tenant_id, assignment_id=a.id, minutes=sh.break_minutes, paid=False))
+            ctx.db.add(m.Break(tenant_id=ctx.tenant_id, assignment_id=a.id, minutes=sh.break_minutes, paid=break_paid(ctx.db, sh.site_code)))
             for b, mi in (x.get("allocations") or {}).items():
                 ctx.db.add(m.BrandAllocation(tenant_id=ctx.tenant_id, assignment_id=a.id, brand_code=b, minutes=mi))
             changed += 1

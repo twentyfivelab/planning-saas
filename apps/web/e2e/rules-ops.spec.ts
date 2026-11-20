@@ -44,7 +44,8 @@ test("sites : présence continue (alerte de pause sans relève) et temps de dép
   const [s1, s2] = sites.filter((s) => !s.archived_from);
   await page.goto("/catalog"); await page.waitForLoadState("networkidle");
   const rules = page.getByTestId("site-rules");
-  const box = rules.getByRole("checkbox", { name: s1.name, exact: true });
+  // la case de CE réglage (la section « Pauses payées » liste aussi les sites, sous le même nom)
+  const box = rules.getByRole("group", { name: "Présence continue" }).getByRole("checkbox", { name: s1.name, exact: true });
   await box.check();
   await expect.poll(async () => ((await j(page, "/sites")) as typeof sites).find((s) => s.id === s1.id)!.continuous_presence).toBe(true);
   try {

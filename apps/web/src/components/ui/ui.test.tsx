@@ -15,7 +15,10 @@ const A: Assignment = {
 describe("composants du design system", () => {
   it("ShiftCard : libellé accessible complet (collaborateur, marques, site, horaires, durée, pause, verrouillage, alerte)", () => {
     const html = renderToStaticMarkup(<ShiftCard a={A} alerts={["REST<11h"]} onOpen={() => {}} />);
-    for (const s of ["Jane", "Cellcosmet + Nuxe", "09:00 à 18:00", "8 h effectives", "pause 60 min", "verrouillé", "1 alerte"]) expect(html).toContain(s);
+    for (const s of ["Jane", "Cellcosmet + Nuxe", "09:00–18:00", "8 h effectives", "pause 60 min", "verrouillé", "1 alerte"]) expect(html).toContain(s);
+    // WCAG 2.5.3 : nom tiré du contenu visible (aucun aria-label qui le remplacerait), précisions réservées aux lecteurs d'écran ensuite
+    expect(html).not.toMatch(/<button[^>]*aria-label=/);
+    expect(html).toMatch(/09:00–18:00<\/span>.*Cellcosmet \+ Nuxe.*class="sr-only">, Jane, /);
     expect(html).toContain('data-locked="true"'); expect(html).toContain('data-alert="true"');
   });
   it("ShiftCard : répartition co-branding 50/50 visible, sans doubler les heures", () => {

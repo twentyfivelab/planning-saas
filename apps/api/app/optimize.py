@@ -173,6 +173,66 @@ def _volume(inp, slot_ids) -> dict:
     return out
 
 
+# limites dures représentées seulement dans la capacité seul, ou pas du tout, dans le calcul de la cible (jamais dans le planning : le
+# moteur et le vérificateur indépendant les appliquent toujours)
+FLOW_NOT_REPRESENTED = ("repos minimal entre deux shifts", "jours consécutifs maximum", "minimum de jours")
+
+
+def fairness_report(inp, res) -> dict:
+    """Bilan d'équité d'un calcul. Pour chaque collaborateur : heures RÉELLEMENT attribuées (toutes, y compris les besoins optionnels sans
+    budget, comptées à part), cible, nature de la cible (estimée ou calculée sur le volume décidé), atteinte (démontrée par le planning,
+    ou optimum d'équité prouvé, ou non démontrée) et limites que le calcul de la cible ne représente qu'en partie."""
+    from planning_solver.context import prepare, realized_targets
+    fp = prepare(inp)
+    hier = bool(inp.config.hierarchical)
+    tg, rf = realized_targets(fp, [x.slot_id for x in res.assignments]) if hier else (fp.targets, fp.fair_ref)
+    lv = {x.get("level"): x for x in (res.to_dict().get("levels") or [])}
+    eq_proved = bool((lv.get("equite") or {}).get("proved_optimal")) if hier else bool((lv.get("pondere") or {}).get("proved_optimal"))
+    mins, extra = {}, {}
+    for x in res.assignments:
+        s_ = fp.slots.get(x.slot_id)
+        mins[x.employee_id] = mins.get(x.employee_id, 0) + x.effective_minutes
+        if s_ is not None and not s_.mandatory and not any(b in fp.budgeted_brands for b in s_.brands):
+            extra[x.employee_id] = extra.get(x.employee_id, 0) + x.effective_minutes
+    out = {}
+    for e in inp.employees:
+        if e.excluded or e.left_on is not None:
+            continue
+        opts = fp.by_emp.get(e.id, ())
+        t, mi = tg.get(e.id, 0), mins.get(e.id, 0)
+        half = max((s_.effective_minutes for s_ in opts), default=0) // 2
+        if not opts:
+            status = "aucun shift possible"
+        elif not hier:
+            status = "estimée"
+        elif abs(mi - t) <= half:
+            status = "atteinte"  # démontrée : le planning lui-même l'atteint (à moins d'un demi-shift près)
+        elif eq_proved:
+            status = "optimum prouvé"  # aucune répartition respectant toutes les règles ne réduit davantage les écarts
+        else:
+            status = "non démontrée"
+        partial = []
+        if e.max_days_month or (e.max_days_count and e.max_days_period == "month") or (e.contract and e.contract.monthly_max_minutes):
+            partial.append("limites mensuelles (dans sa capacité seule, pas dans le partage entre collègues)")
+        if e.sunday_quota is not None:
+            partial.append("quota de dimanches")
+        if any(getattr(r, "strict", False) for r in (e.relations or [])):
+            partial.append("relations strictes")
+        out[e.id] = {"name": e.name, "minutes": mi, "unbudgeted_minutes": extra.get(e.id, 0), "target": t, "ref": rf.get(e.id, 0),
+                     "cap": fp.fair_cap.get(e.id, 0), "eligible": len(opts), "explicit": e.id in fp.fair_explicit,
+                     "reinforce_only": bool(opts) and all(all(e.brands.get(b) == "reinforce" for b in s_.brands) for s_ in opts),
+                     "target_status": status, "partially_represented": partial}
+    decided = sum(s_.effective_minutes for sid in {x.slot_id for x in res.assignments} if (s_ := fp.slots.get(sid)) is not None
+                  and (s_.mandatory or any(b in fp.budgeted_brands for b in s_.brands)))
+    meta = {"mode": "hierarchique" if hier else "un_seul_niveau",
+            "target_basis": "volume décidé par le calcul (obligatoires et budgets)" if hier else "estimation avant calcul (obligatoires et budgets du mois)",
+            "decided_minutes": decided if hier else fp.fair_supply, "assigned_minutes": sum(mins.values()), "unbudgeted_minutes": sum(extra.values()),
+            "equity_level_proved": eq_proved, "flow_represents": ["shifts autorisés (renfort compris)", "un shift par jour",
+                                                                  "jours et heures maximum par semaine", "partage des shifts entre collègues"],
+            "flow_not_represented": list(FLOW_NOT_REPRESENTED)}
+    return {"fairness": out, "fairness_meta": meta}
+
+
 def _volume_report(inp, before_ids, after_ids) -> dict:
     """Évolution du volume, présentée à part de l'équité : toute baisse des shifts optionnels est visible et expliquée."""
     b, a = _volume(inp, before_ids), _volume(inp, after_ids)
@@ -192,6 +252,19 @@ def _volume_report(inp, before_ids, after_ids) -> dict:
                    "Les budgets du mois sont atteints avec moins de shifts optionnels. ")
                 + "Vous pouvez compléter les besoins optionnels non attribués à la main depuis le planning.")
     return {"before": b, "after": a, "delta_optional": d, "delta_optional_minutes": dm, "optional_without_budget": no_budget, "note": note}
+
+
+def plan_state(db, period_id) -> dict:
+    """État exact du planning : pour chaque shift, titulaire, horaires, pause et verrou (relu en base, jamais depuis le cache de la session)."""
+    rows = db.execute(select(m.Shift.slot_key, m.Shift.start_time, m.Shift.end_time, m.Shift.break_minutes, m.Assignment.employee_id, m.Assignment.locked)
+                      .outerjoin(m.Assignment, m.Assignment.shift_id == m.Shift.id).where(m.Shift.period_id == period_id)
+                      .execution_options(populate_existing=True)).all()
+    return {k: (str(e) if e else None, st.isoformat(), en.isoformat(), b, bool(lk)) for k, st, en, b, e, lk in rows}
+
+
+def diff_states(a: dict, b: dict) -> list:
+    """Shifts dont l'état diffère entre deux relevés (ajoutés, retirés ou modifiés), triés."""
+    return sorted(k for k in set(a) | set(b) if a.get(k) != b.get(k))
 
 
 def _save_kept(res, before_state: dict, cancelled: bool, deleted: bool = False) -> dict:
@@ -286,6 +359,7 @@ def run_optimization(tenant_id: str, run_id: str) -> None:
             inp.locked = _freeze_outside_scope(inp, prev, locked, config) if run.kind == "local" else locked
             _keep_locks_of_removed(inp)
             base_fp = fingerprint(current_map(db, period.id))
+            start_state = plan_state(db, period.id)  # état exact au démarrage : toute modification pendant le calcul sera détectée
             before_plan = build_input(db, period, config)
             before_violations = set(validate(before_plan, assignments_for_validation(db, before_plan, period)))
             used_locks = dict(inp.locked)
@@ -305,17 +379,8 @@ def run_optimization(tenant_id: str, run_id: str) -> None:
             run.progress = {**(state["progress"] or {}), "phase": "saving", "elapsed_s": res.duration_s, "time_limit_s": inp.config.time_limit_s}
             report = _jsonable({k: v for k, v in res.to_dict().items() if k != "assignments"})
             report["weights_used"] = res.weights
-            try:  # équité expliquée : part équitable, référence et capacité de chacun (mêmes calculs que le moteur)
-                fp = prepare(inp)
-                mins: dict = {}
-                for x in res.assignments:
-                    mins[x.employee_id] = mins.get(x.employee_id, 0) + x.effective_minutes
-                from planning_solver.context import realized_targets
-                tg, rf = realized_targets(fp, [x.slot_id for x in res.assignments]) if inp.config.hierarchical else (fp.targets, fp.fair_ref)
-                report["fairness"] = {e.id: {"name": e.name, "minutes": mins.get(e.id, 0), "target": tg.get(e.id, 0), "ref": rf.get(e.id, 0),
-                                             "cap": fp.fair_cap.get(e.id, 0), "eligible": len(fp.by_emp.get(e.id, ())),
-                                             "explicit": e.id in fp.fair_explicit}
-                                      for e in inp.employees if not e.excluded and e.left_on is None}
+            try:  # bilan d'équité : mêmes cibles que le moteur, toutes les heures réellement attribuées, nature et atteinte de chaque cible
+                report.update(fairness_report(inp, res))
             except Exception:  # noqa: BLE001 — diagnostic d'affichage seulement : jamais bloquant pour l'enregistrement
                 log.exception("équité : détail non calculé")
             report["criteria_scores"] = breakdown(res.objective)  # coût par critère : quels critères ont influencé le choix
@@ -368,8 +433,21 @@ def run_optimization(tenant_id: str, run_id: str) -> None:
                                   slots=[]))
                 run.status, run.finished_at = "erreur", datetime.now(timezone.utc)
                 return
+            # modifications faites PENDANT le calcul (réaffectation, horaires, ajout, retrait, verrou) : jamais écrasées. Les shifts puis les
+            # affectations du mois sont verrouillés (même ordre que les modifications, qui sont attendues si elles sont en cours), puis l'état
+            # est comparé à celui du démarrage ; s'il a changé, le résultat n'est pas enregistré et la raison est donnée (relancer le calcul).
+            changed = []
+            if not cancel.is_set() and not gone:
+                db.execute(select(m.Shift.id).where(m.Shift.period_id == period.id).order_by(m.Shift.id).with_for_update())
+                db.execute(select(m.Assignment.id).where(m.Assignment.period_id == period.id).order_by(m.Assignment.id).with_for_update())
+                changed = diff_states(start_state, plan_state(db, period.id))
+            if changed:
+                report["save"] = {"outcome": "kept_previous", "reason_code": "modified_during_run", "before": before_state, "after": before_state,
+                                  "changes": len(changed), "changed_examples": changed[:5],
+                                  "reason": f"Le planning a été modifié pendant le calcul ({len(changed)} shift(s) : réaffectation, horaires, ajout, retrait "
+                                            "ou verrou) : le résultat n'a pas été enregistré pour ne pas écraser ces modifications. Relancez le calcul pour en tenir compte."}
             # annulation demandée (avant ou pendant la recherche) : la solution partielle n'est JAMAIS enregistrée, le planning existant reste
-            if not cancel.is_set() and not gone and (res.status in ("optimal", "faisable", "partiellement_couvert") or (
+            if not changed and not cancel.is_set() and not gone and (res.status in ("optimal", "faisable", "partiellement_couvert") or (
                     res.status == "interrompu" and res.assignments)):
                 try:
                     with db.begin_nested():  # enregistrement et vérification du planning enregistré : tout ou rien

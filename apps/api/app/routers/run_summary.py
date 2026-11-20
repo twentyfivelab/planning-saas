@@ -14,11 +14,21 @@ PRIORITIES = [
     "plafond mensuel, budgets stricts, affectations verrouillées. Le résultat est revérifié par un contrôle indépendant avant et après l'enregistrement.",
     "Couverture des besoins obligatoires, puis des budgets du mois (volume visé pour les besoins optionnels).",
     "Engagements : objectifs contractuels, quotas de dimanches, budgets souples.",
-    "Optimisation : équité des heures — une cible commune d'heures pour toute l'équipe, plafonnée par ce que chacun peut réellement faire "
-    "(jours possibles, jours maximum, plafond, shifts partagés avec des collègues) et remplacée par l'objectif contractuel explicite le cas échéant ; préférences horaires, "
-    "niveau sur la marque (prioritaire, puis secondaire, le renfort en dernier recours), équilibre des dimanches et des jours, stabilité.",
+    "Équité des heures (niveau propre, décision D7) : une cible commune d'heures pour toute l'équipe, collaborateurs uniquement en renfort "
+    "compris, plafonnée par ce que chacun peut réellement faire (jours possibles, limites de jours et d'heures, plafond, shifts partagés "
+    "avec des collègues) et remplacée par l'objectif contractuel explicite le cas échéant. Un collaborateur autorisé et disponible peut "
+    "recevoir un shift en renfort si cela améliore la répartition.",
+    "Préférences ensuite, pour départager des répartitions d'équité égale : niveau sur la marque (prioritaire, secondaire, renfort), "
+    "préférences horaires, équilibre des dimanches et des jours, stabilité. En réoptimisation partielle, ne pas bouleverser le planning "
+    "existant (stabilité) passe avant l'équité.",
+    "Mode à un seul niveau (option) : tous ces critères sont mis en balance dans une somme pondérée ; l'équité ne passe alors pas "
+    "obligatoirement avant les préférences, et la cible reste une estimation.",
     "Jamais d'avantage automatique selon l'ancienneté ou le mérite : ces ajustements restent manuels.",
 ]
+
+
+LEVEL_LABELS = {"couverture": "couverture", "engagements": "engagements", "equite": "équité des heures",
+                "optimisation": "préférences et autres critères", "pondere": "somme pondérée (un seul niveau)"}
 
 
 def _h(minutes) -> str:
@@ -82,41 +92,57 @@ def run_summary(rid: str, ctx: Ctx = Depends(require("planning.read"))):
                    "text": f"{len(brands)} budget(s) suivi(s)." + (f" Volume attribué : {vol['after']['mandatory']} obligatoire(s), {vol['after']['optional']} optionnel(s), {_h(vol['after']['minutes'])}." if vol else "")}
     budgets.update(title="Budgets et volume attribué", brands=brands, volume=vol)
 
-    # 4) équité des heures (cible commune plafonnée par ce que chacun peut réellement atteindre, compte tenu des autres)
+    # 4) équité des heures : toutes les heures réellement attribuées, cible commune, nature et atteinte de chaque cible
     fair = rep.get("fairness") or {}
+    meta = rep.get("fairness_meta") or {}
+    single = meta.get("mode") == "un_seul_niveau" or (run.config or {}).get("hierarchical") is False
     emps, ratios, limited = [], [], 0
     for _code, f in fair.items():
         ref, cap, mi, tgt = f.get("ref") or 0, f.get("cap") or 0, f.get("minutes") or 0, f.get("target") or 0
         flag = None
         if not f.get("eligible"):
-            flag = "aucun shift possible ce mois (marques sans besoin)"
-        elif ref == 0:
-            flag = "en renfort uniquement sur les marques qui ont des besoins (dernier recours)"
+            flag = "aucun shift possible ce mois (marques sans besoin, indisponible ou hors de l'effectif)"
         elif cap and mi >= cap - 480:
             flag, limited = "au maximum de ce qu'il peut faire", limited + 1
         elif tgt - mi > 16 * 60:
-            flag = "en dessous de sa part équitable"
+            flag = "nettement en dessous de sa cible"
+        elif mi - tgt > 16 * 60:
+            flag = "nettement au-dessus de sa cible"
         elif not f.get("explicit") and ref and tgt < ref - 60:
             flag = "part réduite : partage les mêmes shifts avec d'autres collaborateurs, la cible commune n'est pas atteignable pour lui"
-        ratio = round(mi / ref, 2) if ref else None
+        ratio = round(mi / tgt, 2) if tgt else None
         if ratio is not None and f.get("eligible"):
             ratios.append(ratio)
-        emps.append({"name": f.get("name"), "minutes": mi, "target_minutes": tgt, "capacity_minutes": cap, "ratio": ratio, "flag": flag})
+        emps.append({"name": f.get("name"), "minutes": mi, "unbudgeted_minutes": f.get("unbudgeted_minutes") or 0, "target_minutes": tgt,
+                     "deviation_minutes": mi - tgt, "capacity_minutes": cap, "ratio": ratio, "flag": flag,
+                     "target_status": f.get("target_status") or ("estimée" if single else None), "reinforce_only": bool(f.get("reinforce_only")),
+                     "partially_represented": f.get("partially_represented") or []})
     emps.sort(key=lambda e: (e["ratio"] if e["ratio"] is not None else 9, e["name"] or ""))
     if not saved or not ratios:
         fairness = {"state": "info", "text": "Équité non évaluée (aucun planning enregistré par ce calcul)." if not saved else "Aucun collaborateur à comparer."}
         spread = None
     else:
         spread = {"min": min(ratios), "max": max(ratios)}
-        below = sum(1 for e in emps if e["flag"] == "en dessous de sa part équitable")
-        common = max((f.get("ref") or 0) for f in fair.values()) if fair else 0
-        fairness = {"state": "ok" if spread["max"] - spread["min"] <= 0.25 and not below else "warn",
-                    "text": f"Cible commune : {_h(common)} par collaborateur, plafonnée par ce que chacun peut réellement faire, y compris en tenant compte "
-                            f"des collègues qui se partagent les mêmes shifts (objectif contractuel le cas échéant). "
-                            f"Heures attribuées : entre {round(spread['min'] * 100)} % et {round(spread['max'] * 100)} % de la cible."
-                    + (f" {limited} collaborateur(s) au maximum de ce qu'ils peuvent faire." if limited else "")
-                    + (f" {below} collaborateur(s) nettement en dessous de leur part : voir le détail." if below else "")}
-    fairness.update(title="Équité des heures", employees=emps, spread=spread)
+        off = sum(1 for e in emps if e["flag"] in ("nettement en dessous de sa cible", "nettement au-dessus de sa cible"))
+        common = max((f.get("ref") or 0) for f in fair.values() if not f.get("explicit")) if fair else 0
+        total, unb = int(meta.get("assigned_minutes") or sum(e["minutes"] for e in emps)), int(meta.get("unbudgeted_minutes") or 0)
+        basis = ("Cible ESTIMÉE avant le calcul (besoins obligatoires et budgets du mois) : en mode à un seul niveau, elle n'est pas recalculée "
+                 "sur le volume décidé, et l'équité est mise en balance avec les préférences (renfort compris) au lieu de passer avant elles. "
+                 if single else "Cible calculée sur le volume décidé par le calcul ; l'équité passe avant les préférences de marque. ")
+        proof = ("" if single else ("Aucune répartition respectant toutes les règles ne réduit davantage les écarts (optimum d'équité prouvé). "
+                                    if meta.get("equity_level_proved") else "Optimum d'équité non prouvé dans la durée maximale : une durée plus longue peut encore réduire les écarts. "))
+        fairness = {"state": "ok" if spread["max"] - spread["min"] <= 0.25 and not off else "warn",
+                    "text": f"Cible commune : {_h(common)} par collaborateur, plafonnée par ce que chacun peut réellement faire, compte tenu des "
+                            f"collègues qui se partagent les mêmes shifts (objectif contractuel le cas échéant). " + basis + proof
+                            + f"Bilan sur toutes les heures attribuées : {_h(total)}"
+                            + (f", dont {_h(unb)} de besoins optionnels sans budget" if unb else "") + ". "
+                            + f"Heures attribuées : entre {round(spread['min'] * 100)} % et {round(spread['max'] * 100)} % de la cible de chacun."
+                            + (f" {limited} collaborateur(s) au maximum de ce qu'ils peuvent faire." if limited else "")
+                            + (f" {off} collaborateur(s) à plus de 16 h de leur cible : voir le détail." if off else "")}
+    fairness.update(title="Équité des heures", employees=emps, spread=spread,
+                    basis="estimée" if single else "volume décidé", mode="un seul niveau" if single else "hiérarchisé",
+                    flow_represents=meta.get("flow_represents") or [], flow_not_represented=meta.get("flow_not_represented") or [],
+                    total_minutes=int(meta.get("assigned_minutes") or 0), unbudgeted_minutes=int(meta.get("unbudgeted_minutes") or 0))
 
     # 5) shifts restant à compléter (état actuel du planning)
     from .optional_needs import optional_needs
@@ -128,7 +154,8 @@ def run_summary(rid: str, ctx: Ctx = Depends(require("planning.read"))):
                  "title": "Shifts à compléter", "mandatory_uncovered": unc, "optional_unassigned": opt["total"], "optional_minutes": opt["minutes"]}
 
     # 6) état de l'optimisation
-    levels = [{"level": lv.get("level"), "proved": bool(lv.get("proved_optimal")), "seconds": lv.get("seconds")} for lv in rep.get("levels") or []]
+    levels = [{"level": lv.get("level"), "label": LEVEL_LABELS.get(lv.get("level"), lv.get("level")), "proved": bool(lv.get("proved_optimal")),
+               "seconds": lv.get("seconds")} for lv in rep.get("levels") or []]
     if run.status == "annule":
         optim = {"state": "info", "text": "Calcul annulé : le planning existant n'a pas été modifié."}
     elif not saved:

@@ -21,6 +21,7 @@ from ..deps import Ctx, audit, require
 from ..security import verify_password
 from ..period_state import statuses
 from .months import MONTHS_FR
+from ..services_bridge import break_paid
 
 router = APIRouter(tags=["suppression d'un planning"])
 
@@ -236,7 +237,7 @@ def _rebuild(ctx: Ctx, old: m.PlanningPeriod) -> dict:
         a = m.Assignment(tenant_id=ctx.tenant_id, period_id=new.id, shift_id=sh.id, employee_id=e.id, source=x.get("source") or "manual", locked=bool(x.get("locked")))
         ctx.db.add(a)
         ctx.db.flush()
-        ctx.db.add(m.Break(tenant_id=ctx.tenant_id, assignment_id=a.id, minutes=sh.break_minutes, paid=False))
+        ctx.db.add(m.Break(tenant_id=ctx.tenant_id, assignment_id=a.id, minutes=sh.break_minutes, paid=break_paid(ctx.db, sh.site_code)))
         for b, mi in (x.get("allocations") or {}).items():
             ctx.db.add(m.BrandAllocation(tenant_id=ctx.tenant_id, assignment_id=a.id, brand_code=b, minutes=mi))
         restored += 1

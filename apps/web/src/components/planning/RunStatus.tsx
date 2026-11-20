@@ -15,8 +15,9 @@ export type ParamDiff = { employee: string | null; employee_id?: string; field: 
 const LEVEL: Record<string, string> = {
   couverture: "couverture des besoins",
   engagements: "engagements (objectifs contractuels, quotas de dimanches, minimum de jours, budgets)",
-  optimisation: "équité et préférences",
-  pondere: "optimisation pondérée",
+  equite: "équité des heures (avant les préférences)",
+  optimisation: "préférences (prioritaire, secondaire, renfort, horaires…) et autres critères",
+  pondere: "optimisation pondérée (un seul niveau : équité et préférences mises en balance)",
 };
 const fmtDate = (iso: string | null) => {
   if (!iso) return "—";

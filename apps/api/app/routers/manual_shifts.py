@@ -24,6 +24,7 @@ from ..limits import guard_monthly_cap, month_minutes
 from ..optimize import ensure_frozen
 from ..services_bridge import assignments_for_validation, build_input
 from .planning import _conflicts
+from ..services_bridge import break_paid
 
 router = APIRouter(tags=["gestion manuelle des shifts"])
 
@@ -49,7 +50,7 @@ LABELS = {
     "REST_WEEKDAY": "Jour de repos obligatoire du collaborateur",
     "SITE_NOT_ALLOWED": "Site non autorisé pour ce collaborateur",
     "RELATION_AVOID": "Ces deux collaborateurs ne doivent pas travailler ensemble",
-    "MENTOR_MISSING": "Un tuteur doit être présent le même jour sur ce site",
+    "MENTOR_MISSING": "Le tuteur obligatoire n'est pas présent comme exigé (même jour, en même temps ou pendant toute la plage du shift)",
     "LEGAL_WEEKLY_MAX": "Durée maximale hebdomadaire du régime applicable dépassée",
     "BREAK_TOO_SHORT": "Pause inférieure au référentiel juridique",
     "MONTHLY_CAP": "Plafond mensuel d'heures dépassé",
@@ -336,7 +337,7 @@ def manual_assign(pid: str, body: ManualIn, ctx: Ctx = Depends(require("planning
         a = m.Assignment(tenant_id=ctx.tenant_id, period_id=p.id, shift_id=sh.id, employee_id=e.id, source="manual", locked=True)
         ctx.db.add(a)
         ctx.db.flush()
-        ctx.db.add(m.Break(tenant_id=ctx.tenant_id, assignment_id=a.id, minutes=sh.break_minutes, paid=False))
+        ctx.db.add(m.Break(tenant_id=ctx.tenant_id, assignment_id=a.id, minutes=sh.break_minutes, paid=break_paid(ctx.db, sh.site_code)))
         for brand, minutes in (slot.allocations if slot else {}).items():
             ctx.db.add(m.BrandAllocation(tenant_id=ctx.tenant_id, assignment_id=a.id, brand_code=brand, minutes=minutes))
         action = "assignment.manual_assign"
@@ -555,7 +556,7 @@ def duplicate(aid: str, body: DuplicateIn, ctx: Ctx = Depends(require("planning.
         a = m.Assignment(tenant_id=ctx.tenant_id, period_id=p.id, shift_id=nsh.id, employee_id=e.id, source="manual", locked=True)
         ctx.db.add(a)
         ctx.db.flush()
-        ctx.db.add(m.Break(tenant_id=ctx.tenant_id, assignment_id=a.id, minutes=slot.break_minutes, paid=False))
+        ctx.db.add(m.Break(tenant_id=ctx.tenant_id, assignment_id=a.id, minutes=slot.break_minutes, paid=break_paid(ctx.db, slot.site)))
         for brand, minutes in slot.allocations.items():
             ctx.db.add(m.BrandAllocation(tenant_id=ctx.tenant_id, assignment_id=a.id, brand_code=brand, minutes=minutes))
         ctx.db.add(m.LockedAssignment(tenant_id=ctx.tenant_id, assignment_id=a.id, locked_by=ctx.user.id, reason="duplication"))

@@ -12,9 +12,12 @@ type Summary = {
     coverage: Block & { mandatory: number; covered: number; uncovered: number; uncovered_minutes: number };
     budgets: Block & { brands: { brand: string; target_minutes: number; planned_minutes: number; strict: boolean; state: State }[];
       volume: { after: { mandatory: number; optional: number; minutes: number; optional_minutes: number }; delta_optional: number; delta_optional_minutes: number; note: string | null } | null };
-    fairness: Block & { employees: { name: string; minutes: number; target_minutes: number; capacity_minutes: number; ratio: number | null; flag: string | null }[]; spread: { min: number; max: number } | null };
+    fairness: Block & { employees: { name: string; minutes: number; unbudgeted_minutes: number; target_minutes: number; deviation_minutes: number; capacity_minutes: number;
+      ratio: number | null; flag: string | null; target_status: string | null; reinforce_only: boolean; partially_represented: string[] }[];
+      spread: { min: number; max: number } | null; basis?: string; mode?: string; flow_represents?: string[]; flow_not_represented?: string[];
+      total_minutes?: number; unbudgeted_minutes?: number };
     remaining: Block & { mandatory_uncovered: number; optional_unassigned: number; optional_minutes: number };
-    optimisation: Block & { proved: boolean; levels: { level: string; proved: boolean; seconds: number | null }[] };
+    optimisation: Block & { proved: boolean; levels: { level: string; label?: string; proved: boolean; seconds: number | null }[] };
   };
   priorities: string[];
 };
@@ -43,12 +46,22 @@ export function GenerationSummary({ runId }: { runId: string }) {
               {k === "budgets" && s.blocks.budgets.brands.length > 0 && (
                 <ul className="help" style={{ margin: 0, paddingLeft: "1.1rem" }}>{s.blocks.budgets.brands.map((x) => <li key={x.brand}><strong>{x.brand}</strong> : {fmtHM(x.planned_minutes)} sur {fmtHM(x.target_minutes)} ({x.strict ? "plafond strict" : "objectif souple"})</li>)}</ul>)}
               {k === "fairness" && s.blocks.fairness.employees.length > 0 && (
-                <details><summary className="help">Heures par collaborateur (cible commune, plafonnée par ce que chacun peut réellement atteindre)</summary>
-                  <ul className="help" style={{ margin: "var(--sp-1) 0 0", paddingLeft: "1.1rem" }}>{s.blocks.fairness.employees.map((e) => (
-                    <li key={e.name}>{e.name} : {fmtHM(e.minutes)} · part équitable {fmtHM(e.target_minutes)} · maximum possible {fmtHM(e.capacity_minutes)}{e.flag ? ` — ${e.flag}` : ""}</li>))}</ul>
+                <details><summary className="help">Heures par collaborateur (toutes les heures attribuées, cible commune, écart)</summary>
+                  <div className="table-wrap"><table className="table" data-testid="fairness-table"><thead><tr><th>Collaborateur</th><th className="num">Heures</th>
+                    <th className="num">dont sans budget</th><th className="num">Cible</th><th className="num">Écart</th><th>Cible</th></tr></thead>
+                    <tbody>{s.blocks.fairness.employees.map((e) => (
+                      <tr key={e.name}><td>{e.name}{e.reinforce_only ? " (renfort)" : ""}{e.flag ? <div className="help">{e.flag}</div> : null}
+                        {e.partially_represented.length > 0 && <div className="help">Calcul de la cible : {e.partially_represented.join(", ")} pris en compte en partie seulement</div>}</td>
+                        <td className="num">{fmtHM(e.minutes)}</td><td className="num">{e.unbudgeted_minutes ? fmtHM(e.unbudgeted_minutes) : "—"}</td>
+                        <td className="num">{fmtHM(e.target_minutes)}</td><td className="num">{e.deviation_minutes > 0 ? "+" : e.deviation_minutes < 0 ? "−" : ""}{fmtHM(Math.abs(e.deviation_minutes))}</td>
+                        <td>{e.target_status ?? "—"}</td></tr>))}</tbody></table></div>
+                  {(s.blocks.fairness.flow_not_represented?.length ?? 0) > 0 && (
+                    <p className="help" style={{ margin: "var(--sp-1) 0 0" }}>Calcul de la cible : {s.blocks.fairness.flow_represents?.join(", ")} sont représentés ;
+                      {" "}{s.blocks.fairness.flow_not_represented?.join(", ")} ne le sont pas (le planning les respecte toujours). « Atteinte » : le planning atteint la cible
+                      (à moins d'un demi-shift près) ; « optimum prouvé » : aucune répartition conforme ne réduit davantage les écarts ; « estimée » : mode à un seul niveau.</p>)}
                 </details>)}
               {k === "optimisation" && s.blocks.optimisation.levels.length > 0 && (
-                <p className="help" style={{ margin: 0 }}>{s.blocks.optimisation.levels.map((l) => `${l.level} : ${l.proved ? "prouvé" : "non prouvé"}${l.seconds !== null ? ` (${String(l.seconds).replace(".", ",")} s)` : ""}`).join(" · ")}</p>)}
+                <p className="help" style={{ margin: 0 }}>{s.blocks.optimisation.levels.map((l) => `${l.label ?? l.level} : ${l.proved ? "prouvé" : "non prouvé"}${l.seconds !== null ? ` (${String(l.seconds).replace(".", ",")} s)` : ""}`).join(" · ")}</p>)}
               {b.action && <a className="btn btn-sm" href={b.action.href}>{b.action.label}</a>}
             </article>);
         })}

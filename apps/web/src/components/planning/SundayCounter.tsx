@@ -22,7 +22,7 @@ export function SundayCounter({ counter, summary, draftNote }: { counter: Counte
         <Tile label="À couvrir" value={counter.total} hint={sites} />
         <Tile label="Réservés aux collaborateurs" value={counter.reserved} hint="quotas « objectif exact »" />
         <Tile label="Réellement planifiés" value={counter.planned} hint={counter.unplanned > 0 ? `${counter.unplanned} sans collaborateur` : "tous pourvus"} tone={counter.planned > 0 && counter.unplanned === 0 ? "ok" : undefined} />
-        <Tile label="Restant à attribuer" value={counter.remaining} hint="à couvrir − réservés" tone={counter.remaining > 0 ? undefined : "ok"} />
+        <Tile label="Hors quotas" value={counter.remaining} hint="à couvrir − réservés : répartis par le moteur entre les collaborateurs sans quota" tone={counter.remaining > 0 ? undefined : "ok"} />
       </div>
       {counter.alerts.map((a) => <div key={a.text} style={{ marginTop: "var(--sp-3)" }}><Callout kind={a.level === "warning" ? "warn" : "info"}>{a.text}</Callout></div>)}
       <p className="help" style={{ marginTop: "var(--sp-3)" }}><Icon name="info" size={12} style={{ verticalAlign: "-2px" }} /> Un quota « maximum » plafonne sans réserver ; « objectif exact » réserve. Un collaborateur n&apos;a jamais deux shifts le même dimanche.</p>
@@ -32,7 +32,8 @@ export function SundayCounter({ counter, summary, draftNote }: { counter: Counte
 
 /** Version compacte (planning, tableau de bord) : mêmes chiffres, mis à jour en direct. */
 export function SundayStrip({ counter, onDetails }: { counter: Counter; onDetails?: () => void }) {
-  const items: [string, number][] = [["à couvrir", counter.total], ["réservés", counter.reserved], ["planifiés", counter.planned], ["restant à attribuer", counter.remaining]];
+  // version compacte : ce qui intéresse d'un coup d'œil — combien sont pourvus et combien restent sans collaborateur
+  const items: [string, number][] = [["à couvrir", counter.total], ["planifiés", counter.planned], ["sans collaborateur", counter.unplanned], ["réservés par quota", counter.reserved]];
   return (
     <div className="glass" style={{ padding: "var(--sp-3) var(--sp-4)" }} role="group" aria-label="Compteur des dimanches" aria-live="polite">
       <div className="spread">

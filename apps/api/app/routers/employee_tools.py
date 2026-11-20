@@ -21,6 +21,8 @@ from ..frozen import differences
 from planning_solver.model import fmt_minutes
 from ..approval import override_refusal
 from .planning import _conflicts
+from ..services_bridge import break_paid
+from ..readcache import cached_view
 
 router = APIRouter(tags=["disponibilités et horaires"])
 
@@ -115,7 +117,7 @@ def add_assignment(pid: str, body: AddIn, ctx: Ctx = Depends(require("planning.e
     a = m.Assignment(tenant_id=ctx.tenant_id, period_id=p.id, shift_id=sh.id, employee_id=e.id, source="manual", locked=True)
     ctx.db.add(a)
     ctx.db.flush()
-    ctx.db.add(m.Break(tenant_id=ctx.tenant_id, assignment_id=a.id, minutes=t["break_minutes"], paid=False))
+    ctx.db.add(m.Break(tenant_id=ctx.tenant_id, assignment_id=a.id, minutes=t["break_minutes"], paid=break_paid(ctx.db, sh.site_code)))
     ctx.db.add(m.BrandAllocation(tenant_id=ctx.tenant_id, assignment_id=a.id, brand_code=body.brand_code, minutes=h.effective_minutes))
     ctx.db.add(m.LockedAssignment(tenant_id=ctx.tenant_id, assignment_id=a.id, locked_by=ctx.user.id, reason="ajout manuel"))
     ctx.db.flush()
@@ -205,12 +207,14 @@ def compat_report(ctx: Ctx, p: m.PlanningPeriod, params: str = "plan") -> dict:
 
 
 @router.get("/periods/{pid}/compatibility")
+@cached_view("compat")
 def compat(pid: str, params: Literal["plan", "current"] = "plan", ctx: Ctx = Depends(require("planning.read"))):
     """Incompatibilités détaillées (collaborateur, date, horaires, site, règle, raison ; obligatoire ou préférence)."""
     return compat_report(ctx, get_or_404(ctx, m.PlanningPeriod, pid), params)
 
 
 @router.get("/periods/{pid}/params")
+@cached_view("params")
 def period_params(pid: str, ctx: Ctx = Depends(require("planning.read"))):
     """Paramètres conservés par ce planning et différences avec les paramètres actuels (fiches, règles)."""
     p = get_or_404(ctx, m.PlanningPeriod, pid)

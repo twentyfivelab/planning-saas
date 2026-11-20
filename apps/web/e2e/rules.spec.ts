@@ -121,7 +121,7 @@ test("fiche : préférence horaire souple/stricte enregistrée automatiquement, 
 
 test("compteur des dimanches : 35 → 33 → 30 en direct, sans rechargement ni bouton d'enregistrement", async ({ page }) => {
   await page.goto("/employees");
-  const restant = () => counter(page).getByText("Restant à attribuer").locator("..").locator(".kpi-value");
+  const restant = () => counter(page).getByText("Hors quotas", { exact: true }).locator("..").locator(".kpi-value");
   await expect(restant()).toHaveText("35");
   await expect(counter(page)).toContainText("GVA3 15 · Pilar 10 · GVA9 10");
   await page.evaluate(() => { (window as unknown as { __m: number }).__m = 7; });

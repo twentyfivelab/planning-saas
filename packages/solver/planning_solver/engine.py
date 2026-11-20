@@ -15,7 +15,7 @@ from typing import Callable, Dict, List, Optional
 from ortools.sat.python import cp_model
 
 from .context import (FAIR_TIERS, counted_minutes, realized_targets, cost_units, coverage_cost, hours_units, individual_penalty, ineligibility, min_days_need, period_of, prepare,
-                      preference_checks, relation_pairs, scoped_avoid_pairs, history_excess)
+                      preference_checks, presence_needs, relation_pairs, scoped_avoid_pairs, history_excess)
 from .diagnostics import diagnose_uncovered, min_days_blockers, min_days_core_issue, min_days_group_conflicts, missing_data, core_issue
 from .metrics import plan_metrics
 from .model import (Assignment, DEFAULT_WEIGHTS, Issue, LEVELS, REINFORCE, SECONDARY, Slot, SolverInput, SolverResult)
@@ -338,7 +338,7 @@ def solve(inp: SolverInput, cancel: Optional[threading.Event] = None, progress: 
 
     # Équité : écart à la CIBLE COMMUNE de chacun (context.common_targets) — mêmes heures pour tous, plafonnées par ce que chacun peut
     # réellement atteindre, objectif contractuel explicite le cas échéant. La cible est une variable fixée juste avant le niveau
-    # « optimisation », d'après le volume réellement décidé par les niveaux précédents (jamais d'après un volume promis inatteignable).
+    # « équité », d'après le volume réellement décidé par les niveaux précédents (jamais d'après un volume promis inatteignable).
     tgt_var: Dict[str, cp_model.IntVar] = {}
     for e in inp.employees:
         if not by_emp[e.id]:
@@ -408,6 +408,20 @@ def solve(inp: SolverInput, cancel: Optional[threading.Event] = None, progress: 
         return [x[eid, s.id] for s in by_emp[eid] if s.day == d and s.site == st]
 
     for kind, e, others, strict, scope in relation_pairs(prep):
+        if kind in ("mentor", "work_together") and scope in ("overlap", "full"):
+            # tuteur / binôme : chevauchement simple, ou couverture complète de la plage du shift (plusieurs tuteurs peuvent se relayer)
+            pairs = [(e.id, others)] + ([(others[0], [e.id])] if kind == "work_together" else [])  # binôme : dans les deux sens
+            for who, mates in pairs:
+                for a, needs in presence_needs(prep, who, mates, scope):
+                    if strict and kind == "mentor":
+                        for req in needs:
+                            m.Add(x[who, a.id] <= sum(x[o, b.id] for o, b in req))
+                        continue
+                    v = m.NewBoolVar(f"rel_{kind}_{scope}_{who}_{a.id}")
+                    for req in needs:
+                        m.Add(v >= x[who, a.id] - sum(x[o, b.id] for o, b in req))
+                    terms["family"].append(W["family"] * v)
+            continue
         if kind == "avoid_together" and scope != "site_day":
             # même jour tous sites (une pénalité par jour) ou horaires qui se chevauchent (une par paire de shifts)
             per_day: Dict = {}
@@ -574,8 +588,10 @@ def solve(inp: SolverInput, cancel: Optional[threading.Event] = None, progress: 
 
     if len(groups_lv) == 1:  # un seul niveau (somme pondérée) : cible sur l'estimation initiale
         _fix_targets(None, False)
+    # cible commune fixée juste avant le niveau « équité » (ou le dernier niveau si l'équité est désactivée), d'après le volume décidé
+    fair_idx = next((k for k, (_n, ks) in enumerate(groups_lv) if "fairness" in ks), len(groups_lv) - 1)
     for i, (name, keys) in enumerate(groups_lv):
-        if i == len(groups_lv) - 1 and i > 0:  # dernier niveau : cible commune sur le volume réellement décidé
+        if i == fair_idx and i > 0:  # cible commune sur le volume réellement décidé par les niveaux précédents
             if solver is not None:
                 ids = [sid for (eid, sid), v in x.items() if solver.Value(v)]
                 _fix_targets(ids, proved)  # niveaux précédents prouvés : volume figé ; sinon il peut encore s'améliorer

@@ -13,11 +13,13 @@ from .. import models as m
 from ..deps import Ctx, audit, get_or_404, require
 from ..period_state import ensure_editable
 from ..services_bridge import build_input
+from ..readcache import cached_view
 
 router = APIRouter(tags=["besoins optionnels"])
 
 
 @router.get("/periods/{pid}/optional-needs")
+@cached_view("optional")
 def optional_needs(pid: str, ctx: Ctx = Depends(require("planning.read"))):
     p = get_or_404(ctx, m.PlanningPeriod, pid)
     inp = build_input(ctx.db, p)

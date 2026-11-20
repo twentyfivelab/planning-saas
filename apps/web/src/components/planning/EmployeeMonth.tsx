@@ -17,7 +17,7 @@ type Item = { assignment_id: string; shift_id: string; period_id: string; start:
   effective_minutes: number; site: string; site_name: string; brands: string[]; locked: boolean; source: string };
 type Day = { date: string; weekday: number; assignments: Item[]; off: { kind: string; label: string } | null; partial?: { start: string; end: string; reason: string | null }[] };
 type MonthData = { employee: { id: string; name: string; deleted: boolean }; month: string; label: string; period: { id: string; name: string; archived: boolean } | null;
-  has_plan: boolean; days: Day[]; totals: { effective_minutes: number; days_worked: number; sundays_worked: number; presence_minutes: number; break_minutes: number };
+  has_plan: boolean; days: Day[]; totals: { effective_minutes: number; days_worked: number; sundays_worked: number; presence_minutes: number; break_minutes: number; paid_minutes?: number; paid_break_minutes?: number };
   limits: { monthly_cap_minutes: number | null; min_days_month: number | null; max_days_month: number | null } };
 type Emp = { id: string; name: string; brands?: Record<string, string>; deleted_at?: string | null };
 
@@ -48,14 +48,14 @@ export function EmployeeMonthModal({ employee, initialMonth, onClose, emps }: { 
   const pool = everyone.filter((e) => !e.deleted_at && e.id !== employee?.id);
   // Réaffectation : même point d'entrée que le planning général (confirmation, contrôles, dérogations, rappel « À régulariser »)
   const sched = useApi<{ assignments: Assignment[] }>(sel && d?.period ? `/periods/${d.period.id}/schedule` : null);
-  const reassign = useReassign({ all: sched.data?.assignments ?? [], emps: everyone, refresh: () => { setSel(null); setTo(""); data.reload(); sched.reload(); invalidate(); },
+  const reassign = useReassign({ all: sched.data?.assignments ?? [], emps: everyone, refresh: () => { setSel(null); setTo(""); data.reload(); sched.reload(); invalidate("planning"); },
     getSchedule: async () => (await api<{ assignments: Assignment[] }>(`/periods/${d!.period!.id}/schedule`)).assignments });
   const target = sel ? sched.data?.assignments.find((a) => a.assignment_id === sel.item.assignment_id) : undefined;
   const eligible = useMemo(() => (sel ? pool.filter((e) => sel.item.brands.every((b) => b in (e.brands ?? {}))) : []), [sel, pool]);
 
   async function act(fn: () => Promise<unknown>, msg: string) {
     setBusy(true);
-    try { await fn(); toast.push(msg, "ok"); setSel(null); setConfirmRemove(false); data.reload(); invalidate(); }
+    try { await fn(); toast.push(msg, "ok"); setSel(null); setConfirmRemove(false); data.reload(); invalidate("planning"); }
     catch (e) { toast.push(errText(e), "bad"); }
     finally { setBusy(false); }
   }
@@ -99,7 +99,8 @@ export function EmployeeMonthModal({ employee, initialMonth, onClose, emps }: { 
               <div className="glass-pink emonth-kpi"><span className="label">Jours travaillés</span><strong className="num" data-testid="em-days">{d.totals.days_worked}</strong>
                 <span className="help">{d.limits.min_days_month || d.limits.max_days_month ? `Fiche : min ${d.limits.min_days_month ?? "—"} · max ${d.limits.max_days_month ?? "—"}` : "Une journée compte une fois"}</span></div>
               <div className="glass-pink emonth-kpi"><span className="label">Dimanches travaillés</span><strong className="num" data-testid="em-sundays">{d.totals.sundays_worked}</strong>
-                <span className="help">Présence {hm(d.totals.presence_minutes)} · pauses {hm(d.totals.break_minutes)}</span></div>
+                <span className="help">Présence {hm(d.totals.presence_minutes)} · pauses {hm(d.totals.break_minutes)}</span>
+                {(d.totals.paid_break_minutes ?? 0) > 0 && <span className="help" data-testid="em-paid">Heures payées {hm(d.totals.paid_minutes ?? d.totals.effective_minutes)} (dont pauses payées {hm(d.totals.paid_break_minutes ?? 0)})</span>}</div>
             </div>
             <div className="emonth-legend help"><Badge tone="warn">Indisponible</Badge> <Badge tone="info">Congé</Badge> <span>— : sans affectation</span></div>
             <div className="emonth-grid" role="grid" aria-label={`Calendrier de ${d.label}`}>

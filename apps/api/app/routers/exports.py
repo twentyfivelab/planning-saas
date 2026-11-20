@@ -54,13 +54,14 @@ def _job(ctx: Ctx, kind: str, f: dict):
     audit(ctx, f"export.{kind}", "export", None, {k: str(v) for k, v in f.items() if v})
 
 
-HEAD = ["Date", "Site", "Début", "Fin", "Présence (h)", "Pause (h)", "Effectif (h)", "Collaborateur", "Verrouillé",
+# heures payées = travail effectif + pause si elle est payée (réglage du site, figé sur la pause) ; mêmes valeurs que les compteurs
+HEAD = ["Date", "Site", "Début", "Fin", "Présence (h)", "Pause (h)", "Pause payée", "Effectif (h)", "Payé (h)", "Collaborateur", "Verrouillé",
         "Imputations"]
 
 
 def _line(a):
-    return [a["day"], a["site"], a["start"], a["end"], a["presence_minutes"] / 60, a["break_minutes"] / 60,
-            a["effective_minutes"] / 60, _safe(a["employee"]), "oui" if a["locked"] else "non",
+    return [a["day"], a["site"], a["start"], a["end"], a["presence_minutes"] / 60, a["break_minutes"] / 60, "oui" if a.get("break_paid") else "non",
+            a["effective_minutes"] / 60, a.get("paid_minutes", a["effective_minutes"]) / 60, _safe(a["employee"]), "oui" if a["locked"] else "non",
             "; ".join(f"{k}:{v / 60:g}h" for k, v in a["allocations"].items())]
 
 
@@ -115,13 +116,15 @@ def export_xlsx(pid: str, ctx: Ctx = Depends(require("export.run")), f: dict = D
     for a in rows:
         ws.append(_line(a))
     ws2 = wb.create_sheet("Collaborateurs")
-    ws2.append(["Collaborateur", "Jours", "Heures effectives"])
-    per = defaultdict(lambda: [set(), 0])
+    ws2.append(["Collaborateur", "Jours", "Heures effectives", "Pauses payées (h)", "Heures payées"])
+    per = defaultdict(lambda: [set(), 0, 0, 0])
     for a in rows:
         per[a["employee"]][0].add(a["day"])
         per[a["employee"]][1] += a["effective_minutes"]
-    for k, (d, mins) in sorted(per.items()):
-        ws2.append([_safe(k), len(d), mins / 60])
+        per[a["employee"]][2] += a["break_minutes"] if a.get("break_paid") else 0
+        per[a["employee"]][3] += a.get("paid_minutes", a["effective_minutes"])
+    for k, (d, mins, pb, paid) in sorted(per.items()):
+        ws2.append([_safe(k), len(d), mins / 60, pb / 60, paid / 60])
     ws3 = wb.create_sheet("Budgets")
     ws3.append(["Marque", "Budget (h)", "Planifié (h)", "Restant (h)", "Besoins définis"])
     planned = defaultdict(int)
@@ -196,9 +199,9 @@ def export_pdf(pid: str, ctx: Ctx = Depends(require("export.run")), f: dict = De
     body = [Paragraph(f"Planning {p['name']} ({p['start_date']} → {p['end_date']})", st["Title"]),
             Paragraph("Simulation exploratoire éventuelle : voir l'onglet Hypothèses de l'export Excel. "
                       "Outil d'aide à la décision, pas un conseil juridique.", st["Italic"])]
-    t = Table([["Date", "Site", "Début", "Fin", "Effectif (h)", "Collaborateur"]] +
-              [[a["day"], a["site"], a["start"][:5], a["end"][:5], f"{a['effective_minutes'] / 60:g}",
-                a["employee"]] for a in rows], repeatRows=1)
+    t = Table([["Date", "Site", "Début", "Fin", "Pause", "Effectif (h)", "Payé (h)", "Collaborateur"]] +
+              [[a["day"], a["site"], a["start"][:5], a["end"][:5], f"{a['break_minutes']} min" + (" payée" if a.get("break_paid") else ""),
+                f"{a['effective_minutes'] / 60:g}", f"{a.get('paid_minutes', a['effective_minutes']) / 60:g}", a["employee"]] for a in rows], repeatRows=1)
     from ..brand_style import INK, LINE, PINK, PINK_SOFT
     pink, soft, line, ink = (colors.HexColor("#" + x) for x in (PINK, PINK_SOFT, LINE, INK))
     t.setStyle(TableStyle([("BACKGROUND", (0, 0), (-1, 0), pink), ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),

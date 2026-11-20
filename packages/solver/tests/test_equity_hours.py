@@ -63,14 +63,17 @@ def test_objectif_contractuel_et_collaborateurs_sans_objectif_memes_unites():
     assert min(hours(res, "libre1"), hours(res, "libre2")) >= 100, {e.id: hours(res, e.id) for e in emps}
 
 
-def test_renfort_hors_part_equitable_et_evaluateur_identique():
+def test_renfort_inclus_dans_la_cible_et_evaluateur_identique():
+    """Décision D7 (20/11/2026) : être uniquement en renfort n'exclut pas de la cible commune ; l'équité passe avant la préférence d'éviter
+    le renfort. 20 shifts (160 h) pour deux titulaires et un collaborateur en renfort : mêmes heures pour les trois (à un shift près)."""
     slots = [slot(f"s{i}", d) for i, d in enumerate(DAYS[:20])]
     emps = [emp("titulaire"), emp("titulaire2"), emp("renfort", level=REINFORCE)]
-    inp = SolverInput(DAYS[0], DAYS[-1], slots, emps, [], config=cfg())
+    inp = SolverInput(DAYS[0], DAYS[-1], slots, emps, [], config=SolverConfig(time_limit_s=20, workers=4, hierarchical=True))
     prep = prepare(inp)
-    assert prep.targets["renfort"] == 0 and prep.fair_ref["renfort"] == 0  # dernier recours : aucune part attendue
+    assert prep.targets["renfort"] == prep.targets["titulaire"] > 0 and prep.fair_ref["renfort"] == prep.fair_ref["titulaire"]
     res = solve(inp)
-    assert hours(res, "renfort") == 0 and abs(hours(res, "titulaire") - hours(res, "titulaire2")) <= 8
+    h = sorted(hours(res, e) for e in ("titulaire", "titulaire2", "renfort"))
+    assert h[-1] - h[0] <= 8 and hours(res, "renfort") >= 48, h
     ev = evaluate(inp, res.assignments)
     assert ev.get("fairness", 0) == res.objective.get("fairness", 0)  # même calcul que le moteur
 
@@ -135,3 +138,35 @@ def test_besoins_optionnels_sans_budget_atteignables_pour_la_cible():
     assert tg["ma"] == tg["ob"] == 40 * 60, tg
     res = solve(inp)
     assert hours(res, "ma") == 80 and hours(res, "ob") == 40
+
+
+def test_d7_equite_avant_le_renfort():
+    """Décision D7 : « libre » est prioritaire sur A ; « limitee » prioritaire sur B (4 shifts seulement) et en renfort sur A. Avec
+    l'ancienne pondération (renfort 12 par heure, écart 3 par demi-heure), « limitee » restait à 32 h. Désormais l'équité passe d'abord :
+    elle reçoit des shifts A en renfort jusqu'à des heures égales (à un shift près)."""
+    a_slots = [slot(f"a{i}", DAYS[i], brand="A") for i in range(0, 24)]
+    b_slots = [slot(f"b{i}", DAYS[i], brand="B") for i in (24, 25, 26, 27)]
+    emps = [emp("libre", brands=("A",)), Employee("limitee", "Limitee", {"B": PRIORITY, "A": REINFORCE})]
+    inp = SolverInput(DAYS[0], DAYS[-1], a_slots + b_slots, emps, [], config=cfg())
+    res = solve(inp)
+    assert [lv["level"] for lv in res.levels][-2:] == ["equite", "optimisation"]
+    assert abs(hours(res, "libre") - hours(res, "limitee")) <= 8, (hours(res, "libre"), hours(res, "limitee"))
+
+
+def test_d7_a_equite_egale_le_niveau_de_marque_departage():
+    """À répartition d'heures égale, « prioritaire » est préféré au renfort : chacun prend les shifts de la marque où il est prioritaire."""
+    a_slots = [slot(f"a{i}", DAYS[2 * i], brand="A") for i in range(4)]
+    b_slots = [slot(f"b{i}", DAYS[2 * i + 1], brand="B") for i in range(4)]
+    emps = [Employee("pa", "Pa", {"A": PRIORITY, "B": REINFORCE}), Employee("pb", "Pb", {"B": PRIORITY, "A": REINFORCE})]
+    res = solve(SolverInput(DAYS[0], DAYS[-1], a_slots + b_slots, emps, [], config=cfg()))
+    got = {e: sorted(a.slot_id for a in res.assignments if a.employee_id == e) for e in ("pa", "pb")}
+    assert all(s.startswith("a") for s in got["pa"]) and all(s.startswith("b") for s in got["pb"]) and len(got["pa"]) == len(got["pb"]) == 4, got
+
+
+def test_capacite_avec_limites_hebdomadaires_de_la_fiche():
+    """Capacité seul : jours maximum par semaine et plafond d'heures hebdomadaire du contrat comptent (auparavant ignorés). 28 jours
+    possibles, au plus 3 jours et 20 h par semaine -> 4 semaines x 20 h = 80 h (et non 224 h)."""
+    from planning_solver.context import load_limits
+    e = Employee("w", "W", {"A": PRIORITY}, max_days_per_week=3, contract=Contract(weekly_max_minutes=20 * 60))
+    _days_, weeks, total = load_limits([slot(f"s{i}", d) for i, d in enumerate(DAYS)], e)
+    assert total == 80 * 60 and set(weeks.values()) == {20 * 60}, (total, weeks)

@@ -11,11 +11,12 @@ Une fonctionnalité n'est classée « terminée et vérifiée » que si une vér
 
 | Suite | Résultat | Environnement |
 |---|---|---|
-| Moteur, tests de correction (`packages/solver`) | **145 / 145** (20/11, dont 8 tests d'équité des heures) | local ; aussi **127 / 127 sous forte charge** (charge moyenne 44 sur 10 cœurs) et pendant la suite e2e |
+| Moteur, tests de correction (`packages/solver`) | **151 / 151** (20/11, dont l'équité, D7, tuteur et binôme) | local |
 | Moteur, mesures de performance (marqueur `perf`) | à part : `scripts/ops/perf_engine.sh` | conditions consignées dans `docs/mesures-moteur.md` |
-| API (`apps/api`) | **198 / 198** | base PostgreSQL jetable par session (`planning_test_<pid>`) |
-| Interface, unitaires, dont contrastes WCAG AA | **124 / 124** | Vitest |
-| Navigateur e2e | **92 / 92** (20/11, suite complète sur la pile reconstruite, seule ; le 19/11 aussi 85 / 85 en parallèle de la suite API, charge jusqu'à 16) | pile Docker isolée (`infra/compose.e2e.yaml`, base `planning_e2e`) |
+| API (`apps/api`) | **204 / 204** | base PostgreSQL jetable par session (`planning_test_<pid>`) |
+| Interface, unitaires, dont contrastes WCAG AA | **128 / 128** | Vitest |
+| Navigateur e2e | **104 / 104** (20/11, suite complète sur la pile reconstruite, dont 12 tests d'accessibilité axe WCAG 2.1 AA) | pile Docker isolée (`infra/compose.e2e.yaml`, base `planning_e2e`) |
+| Mesures à plusieurs managers | voir `docs/mesures-managers.md` | pile isolée, données fictives |
 | ruff, TypeScript, ESLint | sans erreur | |
 
 Fiabilité du moteur (deux échecs observés sous charge, corrigés à la source, sans relance ni délai allongé) :
@@ -29,6 +30,172 @@ Intermittences corrigées à la source :
 - **« mouvement réduit »** : la lecture se faisait en deux allers-retours, et le tableau de bord, rechargé par un événement temps réel, pouvait remplacer la carte entre les deux. Un élément détaché donne une durée vide, d'où NaN. Le test lit désormais toutes les cartes en une seule exécution dans la page : 20 passages sur 20, plus les suites complètes.
 - **Alignement** : la mesure se fait désormais après l'animation d'ouverture.
 - **Dépendance entre tests navigateur (identifiée et corrigée, 19/11)** : le scénario « E. pondérations » recalculait NOVEMBRE avec les paramètres actuels, alors que d'autres scénarios (réaffectation, fiche modifiée, versions) lisent les affectations et les paramètres conservés de novembre ; selon l'ordre, ils voyaient un planning différent. Le scénario utilise désormais un mois dédié (juillet 2027), supprimé à la fin. Cette dépendance est réelle ; elle n'est **pas** établie comme la cause des échecs `reassign`, `team` et `wfm` observés en parallèle de la suite API (voir « Incertitudes ») : ceux-ci restent ouverts.
+
+## Tuteur et binôme : simple chevauchement ≠ couverture complète (20/11/2026)
+
+Trois portées, au choix dans la fiche (« Relations »), pour le tuteur comme pour le binôme, toujours sur le même site :
+
+| Portée | Règle | Ce que cela garantit |
+|---|---|---|
+| Même jour, même site (historique) | Présents le même jour | Rien sur les heures : le collaborateur peut être seul une partie de la journée |
+| **En même temps au moins un moment** (simple chevauchement) | Leurs horaires se croisent | Il peut encore être seul avant l'arrivée ou après le départ du tuteur |
+| **Pendant toute la plage de son shift** (couverture complète) | Du début à la fin de chaque shift du collaborateur accompagné, un tuteur est présent ; plusieurs tuteurs peuvent se relayer sans trou | Il n'est jamais seul |
+
+- Tuteur strict : contrainte dure du moteur. Un shift qu'aucun tuteur ne peut couvrir n'est pas attribué au collaborateur accompagné (il reste à couvrir, avec son explication). Le vérificateur indépendant et le contrôle des modifications manuelles appliquent la même règle, avec un message qui dit ce qui manque (« sans tuteur présent pendant toute la plage »). Préférence (binôme ou tuteur souple) : écart pénalisé ; évaluateur identique au moteur.
+- Plusieurs tuteurs : la portée la plus exigeante s'applique.
+- Limites : la présence est celle du shift (début et fin) ; les pauses du tuteur n'en sont pas déduites. La « période nécessitant un accompagnement » est le shift entier du collaborateur accompagné : aucune sous-période n'est paramétrable.
+- Tests :
+  - moteur : chevauchement ≠ couverture complète, relais de deux tuteurs, trou d'une heure, autre site ; génération stricte ; vérificateur et évaluateur identiques ;
+  - API : portée refusée pour un tuteur (« même jour, tous sites ») ; génération sans shift seul ; affectation manuelle refusée avec la règle ; simple chevauchement accepté.
+
+## Pauses payées (20/11/2026)
+
+- Réglage par site (« Sites et marques » → « Pauses payées ») : figé sur chaque pause au moment de l'attribution, donc un changement ultérieur ne modifie jamais les heures passées.
+- **Heures payées = travail effectif + pauses payées.** Le travail effectif reste la base du plafond mensuel et des règles.
+- Mêmes valeurs dans le détail d'un shift (« Pause payée », « Heures payées »), les compteurs du collaborateur (« dont pauses payées »), l'export CSV (colonnes « Pause payée », « Payé (h) »), l'export Excel (récapitulatif « Pauses payées », « Heures payées ») et le PDF.
+- Tests API : planning, compteurs, CSV et Excel concordants ; réglage modifié sans effet sur les heures enregistrées ; mise à jour partielle d'un site sans remise à zéro des autres réglages.
+- Migration 0021 (colonne du site, et index du journal d'audit pour l'empreinte de révision).
+
+## Fiabilité entre managers : nouveaux défauts trouvés et corrigés (20/11/2026)
+
+- **Génération et modifications simultanées** : une modification faite pendant une génération du même mois était écrasée sans avertissement. Désormais elle n'est jamais écrasée : le résultat n'est pas enregistré et la raison est donnée. Démontré par la mesure à plusieurs managers et par un test qui échoue sans la correction.
+- **Interblocage sous forte affluence** (connexions à la base et threads de l'API) : des requêtes bloquées 30 s puis en erreur 500. Corrigé par une limite de requêtes simultanées, avec attente publiée et réponse « réessayez » au-delà de 25 s ; 0 délai dépassé à 40 sessions (voir `docs/mesures-managers.md`).
+- **Limitation des tentatives de connexion** partagée entre les processus de l'API (Redis) : sans cela, plusieurs processus auraient multiplié la limite.
+
+## Décision D7 appliquée : l'équité des heures avant la préférence d'éviter le renfort (20/11/2026)
+
+**Décision** : l'équité des heures mensuelles passe avant la préférence d'éviter le renfort. Un collaborateur autorisé et disponible peut recevoir un shift sur une marque où il est en renfort si cela améliore la répartition. Être uniquement en renfort ne prive plus automatiquement de cible.
+
+**Ce qui a changé dans le moteur** (et dans le vérificateur indépendant, identique) :
+- **Niveau « équité » propre**, après « couverture » et « engagements », avant « préférences et autres critères ». Les règles obligatoires, habilitations, objectifs contractuels, plafonds, budgets et règles de repos restent intouchés (contraintes dures ou niveaux précédents). « Prioritaire », « secondaire » et « renfort », comme les préférences horaires, l'équilibre des dimanches et des jours, ne départagent plus que des répartitions d'équité égale.
+  - En réoptimisation partielle, ne pas bouleverser le planning existant (stabilité) reste avant l'équité.
+- **Collaborateurs uniquement en renfort inclus dans la cible commune.** Exclusions explicites respectées : hors de l'effectif du mois, contrat terminé, retiré de l'équipe, fiche inactive, ainsi que limites de jours et indisponibilités.
+  - **L'application ne connaît aucun réglage « usage ponctuel » ou « hors répartition »** : rien de tel n'a pu être configuré. Pour qu'un collaborateur reste ponctuel aujourd'hui, il faut le retirer de l'effectif du mois ou limiter ses jours. Un réglage dédié peut être ajouté sur décision.
+- **Capacité seul complétée** : elle compte tous les shifts autorisés (renfort compris) et toutes les limites dures de la fiche. Auparavant ignorés : jours maximum par semaine, repos hebdomadaire obligatoire, plafonds d'heures hebdomadaires du contrat et du régime, plafond mensuel du contrat.
+- **Partage entre collègues** : le calcul par flot représente désormais aussi les limites hebdomadaires de jours et d'heures (étage par semaine).
+
+**Vérification à volume, budgets et couverture identiques** (copie `planning_copie_equite`).
+- Méthode : mêmes shifts que le planning enregistré, imposés ; seule la répartition change. Avant : commit ddb62be ; après : décision D7.
+- Résultat : heures par marque identiques, 0 violation (vérificateur indépendant), tous les niveaux prouvés optimaux.
+
+#### Février 2027 (compte d’essai) — 198 shifts identiques, heures par marque identiques, 0 violation ; niveaux : couverture prouvé, equite prouvé, optimisation prouvé
+
+| Indicateur | Avant D7 | Après D7 |
+|---|---|---|
+| Écart-type des heures | 27 h | 8 h |
+| Somme des écarts à la cible (valeur absolue) | 90 h | 21 h |
+| Plus grand écart à la cible | 16 h | 7 h |
+| Collaborateurs à plus de 16 h de leur cible | 0 | 0 |
+| Écart plus / moins chargé (hors sans shift) | 48 h | 32 h |
+| Heures en renfort | 80 h | 192 h |
+| Coût « balance » | 136 | 128 |
+| Coût « days_balance » | 42 | 36 |
+| Coût « history » | 175 | 140 |
+| Coût « preference » | 60 | 100 |
+| Coût « reinforce » | 960 | 2304 |
+| Coût « site_change » | 12 | 0 |
+| Coût « sunday_balance » | 24 | 24 |
+
+#### Avril 2027 (démonstration) — 237 shifts identiques, heures par marque identiques, 0 violation ; niveaux : couverture prouvé, equite prouvé, optimisation prouvé
+
+| Indicateur | Avant D7 | Après D7 |
+|---|---|---|
+| Écart-type des heures | 38 h | 10 h |
+| Somme des écarts à la cible (valeur absolue) | 93 h | 42 h |
+| Plus grand écart à la cible | 20 h | 6 h |
+| Collaborateurs à plus de 16 h de leur cible | 1 | 0 |
+| Écart plus / moins chargé (hors sans shift) | 56 h | 40 h |
+| Heures en renfort | 136 h | 272 h |
+| Coût « balance » | 172 | 152 |
+| Coût « days_balance » | 57 | 51 |
+| Coût « preference » | 50 | 80 |
+| Coût « reinforce » | 1632 | 3264 |
+| Coût « site_change » | 12 | 18 |
+| Coût « sunday_balance » | 24 | 18 |
+
+#### Décembre 2026 (démonstration) — 242 shifts identiques, heures par marque identiques, 0 violation ; niveaux : couverture prouvé, engagements prouvé, equite prouvé, optimisation prouvé
+
+| Indicateur | Avant D7 | Après D7 |
+|---|---|---|
+| Écart-type des heures | 18 h | 4 h |
+| Somme des écarts à la cible (valeur absolue) | 132 h | 84 h |
+| Plus grand écart à la cible | 26 h | 5 h |
+| Collaborateurs à plus de 16 h de leur cible | 2 | 0 |
+| Écart plus / moins chargé (hors sans shift) | 48 h | 16 h |
+| Heures en renfort | 56 h | 224 h |
+| Coût « balance » | 112 | 104 |
+| Coût « days_balance » | 39 | 30 |
+| Coût « preference » | 10 | 10 |
+| Coût « reinforce » | 2368 | 4096 |
+| Coût « site_change » | 24 | 24 |
+| Coût « sunday_balance » | 24 | 24 |
+
+| Collaborateur | Cible avant | Heures avant | Écart avant | Cible après | Heures après | Écart après | dont renfort après |
+|---|---|---|---|---|---|---|---|
+| Anastasia A. | 78 h 30 | 80 h | +1 h 30 | 75 h | 72 h | −3 h | 0 h |
+| Chloé D. | 78 h 30 | 80 h | +1 h 30 | 75 h | 72 h | −3 h | 0 h |
+| Florian A. | 78 h 30 | 80 h | +1 h 30 | 75 h | 72 h | −3 h | 0 h |
+| Jamilatu D. | 78 h 30 | 80 h | +1 h 30 | 75 h | 72 h | −3 h | 0 h |
+| Kristina T. | 78 h 30 | 80 h | +1 h 30 | 75 h | 72 h | −3 h | 0 h |
+| Pierre C. | 0 h | 0 h | 0 h | 75 h | 72 h | −3 h | 72 h |
+| Rebecca T. | 78 h 30 | 80 h | +1 h 30 | 75 h | 72 h | −3 h | 0 h |
+| Sahra H. | 78 h 30 | 80 h | +1 h 30 | 75 h | 72 h | −3 h | 8 h |
+| Selin A. | 78 h 30 | 80 h | +1 h 30 | 75 h | 72 h | −3 h | 0 h |
+| Simona D. | 78 h 30 | 80 h | +1 h 30 | 75 h | 72 h | −3 h | 0 h |
+| Sylvain Z. | 78 h 30 | 80 h | +1 h 30 | 75 h | 72 h | −3 h | 0 h |
+| Valérie M. | 78 h 30 | 64 h | −14 h 30 | 75 h | 72 h | −3 h | 72 h |
+| Yanis B. | 78 h 30 | 80 h | +1 h 30 | 75 h | 72 h | −3 h | 72 h |
+| Aziza M. | 72 h | 56 h | −16 h | 72 h | 72 h | 0 h | 0 h |
+| Hugo S. | 72 h | 56 h | −16 h | 72 h | 72 h | 0 h | 0 h |
+| Simon F. | 72 h | 56 h | −16 h | 72 h | 72 h | 0 h | 0 h |
+| Simona A. | 64 h | 64 h | 0 h | 64 h | 64 h | 0 h | 0 h |
+| Abdu S. | 78 h 30 | 80 h | +1 h 30 | 75 h | 80 h | +5 h | 0 h |
+| Adam K. | 78 h 30 | 80 h | +1 h 30 | 75 h | 80 h | +5 h | 0 h |
+| Chloé D. (2) | 78 h 30 | 80 h | +1 h 30 | 75 h | 80 h | +5 h | 0 h |
+| Jane D. | 78 h 30 | 104 h | +25 h 30 | 75 h | 80 h | +5 h | 0 h |
+| Paul-Joseph D. | 78 h 30 | 80 h | +1 h 30 | 75 h | 80 h | +5 h | 0 h |
+| Sabrina L. | 78 h 30 | 80 h | +1 h 30 | 75 h | 80 h | +5 h | 0 h |
+| Yasmine D. | 78 h 30 | 80 h | +1 h 30 | 75 h | 80 h | +5 h | 0 h |
+| Ying Y. | 78 h 30 | 96 h | +17 h 30 | 75 h | 80 h | +5 h | 0 h |
+| Zaki H. | 78 h 30 | 80 h | +1 h 30 | 75 h | 80 h | +5 h | 0 h |
+
+Lecture de décembre :
+- Plus personne n'est à plus de 16 h de sa cible : avant, Jane D. +25 h 30 et Ying Y. +17 h 30.
+- Aziza M., Hugo S. et Simon F. atteignent leur cible (56 → 72 h) ; Valérie M. passe de 64 à 72 h.
+- Le déséquilibre ne part pas ailleurs : tout le monde termine entre −3 h et +5 h de la cible. Les 12 collaborateurs qui passent de 80 à 72 h restent à 3 h de la nouvelle cible.
+- **Pierre C.** (uniquement en renfort, aucune exclusion configurée) passe de 0 à 72 h, toutes en renfort. Avec lui, la cible commune descend de 78 h 30 à 75 h.
+- **Contreparties mesurées** :
+  - heures en renfort : 56 → 224 h en décembre, 80 → 192 h en février, 136 → 272 h en avril ;
+  - préférences horaires un peu moins respectées (coût « preference » : février 60 → 100, avril 50 → 80, décembre inchangé) ;
+  - changements de site : février 12 → 0, avril 12 → 18, décembre inchangé.
+
+**Volume normal** (mois recalculé librement, mêmes paramètres, 30 s) :
+
+| Mois | Obligatoires couverts | Optionnels attribués | Heures attribuées | Écart-type | Plus grand écart à la cible | Violations | Niveaux |
+|---|---|---|---|---|---|---|---|
+| Février 2027 | 156/156 → 156/156 | 37 → 23 | 1544 → 1432 h | 26 → 6 h | 34 → 15 h | 0 | tous prouvés (2 s) |
+| Avril 2027 | 167/167 → 167/167 | 70 → 70 | 1896 → 1896 h | 38 → 10 h | 20 → 6 h | 0 | tous prouvés (5 s) |
+| Décembre 2026 | 171/171 → 171/171 | 71 → 71 | 1936 → 1936 h | 18 → 4 h | 26 → 5 h | 0 | tous prouvés (4 s) |
+
+**Février (aucun budget saisi) : 14 besoins optionnels de moins (−112 h).** Avec Pierre C. inclus, la cible commune baisse, et il faut moins de besoins optionnels sans budget pour en rapprocher les collaborateurs Valmont. Le volume des besoins sans budget suit l'équité : il n'est fixé que si un budget est saisi. Cette baisse est signalée après la génération (bloc « Budgets et volume »).
+
+**Limites traitées** :
+- **Cible estimée / cible démontrée.** Chaque collaborateur a un statut dans le bilan :
+  - « atteinte » : le planning lui-même atteint la cible, à moins d'un demi-shift près ; c'est la démonstration qu'elle est atteignable ;
+  - « optimum prouvé » : cible non atteinte, mais le niveau équité est prouvé optimal, donc aucune répartition respectant toutes les règles ne réduit davantage les écarts ;
+  - « non démontrée » : niveau équité non prouvé dans la durée maximale ;
+  - « estimée » : mode à un seul niveau.
+- **Ce que le calcul de la cible représente** : shifts autorisés, un shift par jour, jours et heures maximum par semaine, partage entre collègues. **Ce qu'il ne représente pas** : repos minimal entre deux shifts, jours consécutifs maximum, minimum de jours.
+  - Il ne représente qu'en partie les limites mensuelles (dans la capacité seule, pas dans le partage), le quota de dimanches et les relations strictes. C'est indiqué pour chaque collaborateur concerné.
+  - Le planning, lui, respecte toujours toutes ces règles (moteur et vérificateur indépendant).
+- **Mode à un seul niveau** (option des pondérations) : somme pondérée. L'équité est mise en balance avec les préférences, renfort compris, au lieu de passer avant elles ; la cible reste l'estimation d'avant le calcul (besoins obligatoires et budgets, avec le partage entre collègues). Le résumé de génération et l'ordre des priorités le disent.
+- **Bilan sur toutes les heures réellement attribuées**, y compris les besoins optionnels sans budget. Ils sont comptés à part, par collaborateur et au total, et le total du bilan est égal au total du planning (test API).
+
+**Tests ajoutés** :
+- moteur : équité avant le renfort ; départage par le niveau de marque à équité égale ; collaborateur en renfort inclus dans la cible ; capacité avec limites hebdomadaires. Les trois premiers traduisent la nouvelle règle et échouent sur le moteur précédent ; le départage, déjà correct, passait aussi avant ;
+- API : bilan sur toutes les heures, besoins sans budget comptés à part, nature de la cible, mode à un seul niveau.
+
+**Observation** : lors de la comparaison, le moteur *précédent* a mis 101 s sur avril (durée maximale 30 s), sans prouver l'optimum. Ce mois prenait 13 à 16 s aux passages précédents ; le nouveau moteur prend 5 s. Ce dépassement de la durée maximale est à expliquer (lot 3, mesures des temps de génération).
 
 ## Équité : cible commune d'heures mensuelles (20/11/2026) — remplace la règle du 19/11
 
@@ -134,7 +301,7 @@ Intermittences corrigées à la source :
   - À volume identique, ils perdent 8 à 16 h par rapport à la règle proportionnelle (64, 72 et 64 h → 56 h). Ces shifts sont allés à des collègues encore plus éloignés de la cible.
 - **Décembre, Valérie M.** : 64 h pour une cible de 78 h. 146 transferts valides vers elle, dont 127 la feraient travailler en renfort : coût +96 (12 par heure), contre un gain d'équité de −24 à −48 (3 par demi-heure d'écart).
 - **Décembre, Jane D.** : 104 h pour une cible de 78 h. Aucun shift ne lui est exclusif, mais ses 25 transferts valides mettraient tous le receveur en renfort (+96 contre −48).
-- Dans ces cas, le moteur applique l'ordre des critères tel qu'il est paramétré : le renfort reste un dernier recours, même au prix d'un écart d'heures de 14 à 26 h. **Décision D7 ci-dessous.**
+- Dans ces cas, le moteur applique l'ordre des critères tel qu'il est paramétré : le renfort reste un dernier recours, même au prix d'un écart d'heures de 14 à 26 h. **Décision D7 : prise le 20/11, voir la section précédente.**
 
 **Volume normal** (même mois recalculé librement, mêmes paramètres, 30 s ; avant = règle proportionnelle, après = cible commune) :
 
@@ -614,7 +781,7 @@ Cinq exécutions complètes de la suite API, dont quatre en parallèle de la sui
 4. **Validation juridique** des règles réglementaires par un spécialiste du droit suisse.
 5. **Identités incertaines** (facultatif) : répartition prénom / nom de deux fiches ; les libellés actuels restent tels quels tant que vous ne la précisez pas.
 6. **Couleur** : le rose est appliqué tel qu'il s'affiche dans votre image (profil Display P3). La valeur brute du fichier, #BB2757 lue en sRGB, serait plus terne. À confirmer après lecture de `docs/identite-visuelle.md`.
-7. **Renfort ou équité des heures** (constaté le 20/11, décembre 2026 de la démonstration) : avec les pondérations actuelles, une heure en renfort coûte 12 et une demi-heure d'écart à la cible 3. Quand le seul moyen de rapprocher quelqu'un de la cible est de faire travailler un collègue en renfort, le moteur garde l'écart : Jane D. 104 h pour 78 h ; Aziza M., Hugo S., Simon F. 56 h pour 72 h ; Valérie M. 64 h pour 78 h. Garder cet ordre (renfort en dernier recours) ou donner plus de poids à l'équité ? Aucun changement appliqué.
+7. ~~Renfort ou équité des heures~~ : **décidé le 20/11** — l'équité passe avant la préférence d'éviter le renfort (section « Décision D7 appliquée »).
 
 Déjà décidé (rappel) : les 106 tenants douteux et l'ancien tenant e2e de la base de développement sont conservés ; le mode sombre reste optionnel ; le plafond de 176 h, les minimums et maximums de jours et l'indépendance des plannings s'appliquent comme convenu.
 

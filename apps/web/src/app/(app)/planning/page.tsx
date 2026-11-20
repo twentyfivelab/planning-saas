@@ -93,7 +93,8 @@ export default function PlanningPage() {
   const [duplicating, setDuplicating] = useState<Assignment | null>(null);
   const [empMonth, setEmpMonth] = useState<{ id: string; name: string } | null>(null);
   // un seul rechargement : `invalidate` relit en silence toutes les données affichées (planning, conflits, dimanches, rappels…)
-  const refresh = () => invalidate();
+  // modifications du CONTENU du planning (réaffecter, verrouiller, horaires, retirer…) : seules les vues qui en dépendent sont relues
+  const refresh = () => invalidate("planning");
   const [adding, setAdding] = useState<{ emp: Emp; day: string } | null>(null);
   const [picking, setPicking] = useState<{ emp: Emp; day: string } | null>(null);
   const [removing, setRemoving] = useState<Assignment | null>(null);
@@ -528,7 +529,8 @@ function ShiftModal({ a, onClose, canEdit, emps, alerts, onReassign, onLock, onT
             <Badge tone={a.source === "manual" ? "info" : "neutral"}>{a.source === "manual" ? "Modifié manuellement" : "Proposé par le solveur"}</Badge>
           </div>
           <dl style={{ margin: 0, display: "grid", gap: "var(--sp-3)", gridTemplateColumns: "repeat(auto-fit, minmax(7rem, 1fr))" }}>
-            {[["Présence", fmtHM(a.presence_minutes)], ["Pause non travaillée", `${a.break_minutes} min`], ["Travail effectif", fmtHM(a.effective_minutes)]].map(([k, v]) => (
+            {[["Présence", fmtHM(a.presence_minutes)], [a.break_paid ? "Pause payée" : "Pause non travaillée", `${a.break_minutes} min`], ["Travail effectif", fmtHM(a.effective_minutes)],
+              ...(a.break_paid ? [["Heures payées", fmtHM(a.paid_minutes ?? a.effective_minutes)]] : [])].map(([k, v]) => (
               <div key={k} className="surface-2" style={{ padding: "var(--sp-3)" }}><dt className="muted" style={{ fontSize: "var(--text-xs)" }}>{k}</dt><dd className="kpi-value" style={{ margin: 0, fontSize: "var(--text-xl)" }}>{v}</dd></div>
             ))}
           </dl>

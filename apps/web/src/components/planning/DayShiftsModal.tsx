@@ -151,7 +151,7 @@ export function RemoveDialog({ a, onClose, onDone }: { a: { assignment_id: strin
   async function remove() {
     if (!a) return; setBusy(true); setErr("");
     try { await api(`/assignments/${a.assignment_id}?force=${a.locked}${a.employee_id ? `&expected_employee_id=${a.employee_id}` : ""}`, { method: "DELETE" }); toast.push(`Shift retiré du planning de ${a.employee}. Il est de nouveau disponible.`, "ok"); onDone(); }
-    catch (e: unknown) { const d = parseDetail(e); setErr(d?.message ?? (e instanceof Error ? e.message : "Retrait impossible")); if (d?.code === "stale" || d?.code === "gone") invalidate(); }
+    catch (e: unknown) { const d = parseDetail(e); setErr(d?.message ?? (e instanceof Error ? e.message : "Retrait impossible")); if (d?.code === "stale" || d?.code === "gone") invalidate("planning"); }
     finally { setBusy(false); }
   }
   return (

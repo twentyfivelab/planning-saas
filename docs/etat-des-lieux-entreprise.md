@@ -21,10 +21,10 @@ La plateforme n'est pas présentée comme commercialisable : règles juridiques 
 - Planning dense avec de nombreux collaborateurs et marques : lisibilité, filtres et en-têtes à revoir (lot 5).
 
 **Limites techniques connues**
-- API en un seul processus : sous forte charge, les lectures lourdes simultanées se ralentissent (mesuré, voir `docs/suivi-wfm.md`) ; validation à plusieurs managers à faire (lot 3).
+- Capacité mesurée sur un portable unique (voir `docs/mesures-managers.md`) : objectif atteint à 10 managers sans être garanti ; 20 managers et plus exigent un serveur dédié et plusieurs instances (décision D1).
 - Temps du moteur : grands mois non prouvés optimaux en 30 s (solution valide, optimisation non terminée) ; au-delà de 150 collaborateurs non mesuré.
 - Pas de connexion d'entreprise (SSO) ni d'authentification renforcée ; interface en français seulement.
-- Données de démonstration issues de vraies données : une démonstration doit utiliser des données entièrement fictives (lot 6).
+- Démonstration : entreprise entièrement fictive disponible (`scripts/ops/demo_seed.py`) ; ne pas présenter les entreprises issues de données réelles.
 
 ## 2. Lots, par ordre d'importance
 
@@ -33,12 +33,12 @@ La plateforme n'est pas présentée comme commercialisable : règles juridiques 
 | 0 | Équité mensuelle : cible commune d'heures | Mêmes heures pour tous dans la limite de ce que chacun peut réellement faire | **Terminé le 20/11** (comparaison sur toute l'équipe à volume identique dans `docs/suivi-wfm.md` ; arbitrage renfort / équité : décision D7) |
 | 1 | Modifications simultanées et doubles envois | Jamais d'écrasement silencieux ni de double traitement | **Terminé le 19/11** |
 | 2 | Résultat de génération explicable (6 blocs) et ordre des priorités du moteur | Un manager comprend en un coup d'œil ce qui est valide, couvert, équilibré, prouvé | **Terminé le 19/11** |
-| 3 | Performances à 5, 10, 20 managers + temps de génération selon la taille | Capacités chiffrées, objectif 95 % des attributions < 2 s à 10 managers | À faire |
-| 4 | Parcours essentiels simplifiés (créer, budgets, disponibilités, générer, comprendre, modifier, remplacer, historique, publier) | Prise en main sans connaître le moteur | À faire |
-| 5 | Qualité visuelle et accessibilité (planning dense, clavier, couleur non seule porteuse d'information, tablette, « Mon espace ») | Présentation professionnelle | À faire |
-| 6 | Données de démonstration fictives et parcours de présentation | Démonstration sans données personnelles | À faire |
-| 7 | Exigences entreprise : préparation, sauvegarde/restauration vérifiée, compteurs et exports cohérents | Dossier pour une multinationale | À faire |
-| 8 | Tuteur et binôme (chevauchement ≠ couverture complète) | Accompagnement des nouveaux | Prévu après les lots 2 à 7 |
+| 3 | Performances à 5, 10, 20 managers | Capacités chiffrées, objectif 95 % des attributions < 2 s à 10 managers | **Terminé le 20/11** : 5 défauts trouvés et corrigés (dont un interblocage et un écrasement pendant une génération). À 10 managers, 100 %, 98,4 % et 100 % sous 2 s, mais 83,8 % sur un 4e passage : atteint, non garanti sur la machine de test. Côté serveur seul, 40 sessions à 100 % sous 2 s. À 20 managers à l'écran, 13,5 % (machine de test et 4 processus saturés). Voir `docs/mesures-managers.md` |
+| 4 | Parcours essentiels simplifiés | Prise en main sans connaître le moteur | **Partiel** : libellés clarifiés (compteur des dimanches, tableau de bord, statut des calculs, bandeau juridique), couleurs des marques propres à chaque entreprise, résultat de génération expliqué ; parcours de démonstration vérifié de bout en bout. Pas de test d'utilisabilité avec de vrais nouveaux managers |
+| 5 | Qualité visuelle et accessibilité | Présentation professionnelle | **Terminé pour les écrans essentiels** : audit automatique WCAG 2.1 A/AA (axe) sur 11 écrans sans violation grave ni critique ; focus jamais masqué dans le planning ; nom accessible des cartes = texte visible ; aucun débordement horizontal en largeurs bureau, tablette et téléphone. Audit manuel par un spécialiste non réalisé |
+| 6 | Données de démonstration fictives et parcours de présentation | Démonstration sans données personnelles | **Terminé** : `scripts/ops/demo_seed.py` (entreprise entièrement fictive, par l'API), `demo/parcours-demonstration.md` (5 minutes) |
+| 7 | Exigences entreprise | Dossier pour une multinationale | **Terminé pour ce qui ne dépend pas d'un choix extérieur** : exercice de reprise chronométré sur environnement jetable (`scripts/ops/restore_drill.sh`) ; pauses payées dans les compteurs et exports ; limites de connexion partagées entre processus. SSO, MFA et hébergement : voir § 4 |
+| 8 | Tuteur et binôme (chevauchement ≠ couverture complète) | Accompagnement des nouveaux | **Terminé le 20/11** : trois portées (même jour, simple chevauchement, couverture complète avec relais possible), moteur, vérificateur, contrôles manuels et fiche |
 
 ## 3. Lot 1 — modifications simultanées (terminé)
 
@@ -74,8 +74,8 @@ L'ordre des priorités du moteur est expliqué sous les blocs. Tests : API (six 
 | Formats de dates | Partiel | Format suisse (fr-CH) ; à paramétrer par entreprise | Phase ultérieure |
 | Exports | Disponible | PDF, Excel, CSV, ICS | Oui |
 | Intégration RH et paie | Partiel | Import des collaborateurs (CSV/Excel) ; connecteurs RH/paie prévus | Phase ultérieure |
-| Pauses payées ou non dans les compteurs | Partiel | La pause est enregistrée (payée ou non) mais les compteurs ne distinguent pas encore les pauses payées (lot 7) | À clarifier avant la présentation |
-| Sauvegarde et restauration | Disponible | Sauvegarde vérifiée à la création ; restauration sur base isolée par script ; à refaire et chronométrer (lot 7) | Oui |
+| Pauses payées ou non dans les compteurs | Disponible | Réglage par site, figé sur chaque pause ; heures payées = travail effectif + pauses payées, identiques dans le planning, les compteurs et les exports CSV, Excel et PDF | Oui |
+| Sauvegarde et restauration | Disponible | Exercice de reprise complet chronométré sur un serveur jetable : sauvegarde, restauration, migrations, API, connexion, données identiques (voir `docs/backup-restore.md`) | Oui |
 
 ## 5. Ordre des priorités du moteur (résumé, détaillé au lot 2)
 

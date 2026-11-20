@@ -7,7 +7,10 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from .config import settings
 
-engine = create_engine(settings.database_url, pool_pre_ping=True)
+# pool : au moins autant de connexions que de requêtes simultanées admises par processus (main.InflightLimit), plus une marge pour les
+# sessions courtes (jeton de session) ; 4 processus × 16 = 64 connexions au plus, sous la limite de PostgreSQL (100)
+engine = create_engine(settings.database_url, pool_pre_ping=True, pool_size=settings.db_pool_size, max_overflow=settings.db_max_overflow,
+                       pool_timeout=settings.db_pool_timeout_s)
 SessionLocal = sessionmaker(engine, expire_on_commit=False)
 
 

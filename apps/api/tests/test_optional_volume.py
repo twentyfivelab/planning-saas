@@ -109,4 +109,61 @@ def test_resultat_en_six_blocs(t):
     assert b["optimisation"]["proved"] in (True, False)
     if not b["optimisation"]["proved"]:
         assert "Planning valide et utilisable, mais optimisation non terminée" in b["optimisation"]["text"]
-    assert len(s["priorities"]) == 5 and "ancienneté" in s["priorities"][-1]
+    assert "ancienneté" in s["priorities"][-1] and any(p.startswith("Équité des heures (niveau propre") for p in s["priorities"])
+    assert any("un seul niveau" in p for p in s["priorities"])  # différence du mode à un seul niveau dite explicitement
+
+
+def test_bilan_d_equite_toutes_les_heures_et_nature_des_cibles(t):
+    """Bilan d'équité : TOUTES les heures attribuées (y compris les besoins optionnels sans budget, comptés à part), cible calculée sur le
+    volume décidé (mode hiérarchisé), atteinte de chaque cible ; en mode à un seul niveau, cible « estimée » et différence expliquée."""
+    o, pid, run = t["o"], t["pid"], t["run"]
+    rows = o.get(f"/periods/{pid}/schedule").json()["assignments"]
+    f = o.get(f"/runs/{run['id']}/summary").json()["blocks"]["fairness"]
+    assert f["total_minutes"] == sum(a["effective_minutes"] for a in rows)
+    assert f["unbudgeted_minutes"] == sum(a["effective_minutes"] for a in rows if "Valmont" in a["allocations"])  # optionnel sans budget
+    assert sum(e["minutes"] for e in f["employees"]) == f["total_minutes"]
+    assert sum(e["unbudgeted_minutes"] for e in f["employees"]) == f["unbudgeted_minutes"]
+    assert f["basis"] == "volume décidé" and f["mode"] == "hiérarchisé" and "Bilan sur toutes les heures attribuées" in f["text"]
+    assert all(e["target_status"] in ("atteinte", "optimum prouvé", "non démontrée") for e in f["employees"])
+    assert all(e["deviation_minutes"] == e["minutes"] - e["target_minutes"] for e in f["employees"])
+    assert "repos minimal entre deux shifts" in f["flow_not_represented"] and "partage des shifts entre collègues" in f["flow_represents"]
+    # mode à un seul niveau (option des pondérations) : cible estimée, équité mise en balance avec les préférences
+    assert o.put("/settings/weights", json={"hierarchical": False}).status_code == 200
+    try:
+        r = o.post(f"/periods/{pid}/runs", json={"time_limit_s": 8, "params": "current"}, headers={"Idempotency-Key": uuid.uuid4().hex})
+        run2 = o.get(f"/runs/{r.json()['run_id']}").json()
+        f2 = o.get(f"/runs/{run2['id']}/summary").json()["blocks"]["fairness"]
+        assert f2["basis"] == "estimée" and f2["mode"] == "un seul niveau" and "Cible ESTIMÉE" in f2["text"]
+        assert all(e["target_status"] in ("estimée", "aucun shift possible") for e in f2["employees"])
+    finally:
+        assert o.put("/settings/weights", json={"hierarchical": True}).status_code == 200
+
+
+def test_modification_pendant_la_generation_jamais_ecrasee(t, monkeypatch):
+    """Lot 3 (20/11/2026, démontré par la mesure à plusieurs managers) : une réaffectation faite PENDANT une génération du même mois était
+    écrasée sans avertissement à l'enregistrement du résultat. Désormais elle est conservée : le résultat n'est pas enregistré, la
+    raison est donnée (« modifié pendant le calcul »), et aucune version n'est créée."""
+    import app.optimize as opt
+    o, pid, emps = t["o"], t["pid"], t["emps"]
+    real = opt.solve
+    rows = o.get(f"/periods/{pid}/schedule").json()["assignments"]
+    a = next(x for x in rows if not x["locked"])
+    busy = {x["employee_id"] for x in rows if x["day"] == a["day"]}
+    to = next(e for e in emps.values() if e["id"] not in busy)
+    versions = len(o.get(f"/periods/{pid}/versions").json())
+
+    def edited_during_search(inp, cancel=None, on_progress=None):
+        res = real(inp, cancel, on_progress)
+        r = o.put(f"/assignments/{a['assignment_id']}", json={"employee_id": to["id"], "expected_employee_id": a["employee_id"]})
+        assert r.status_code == 200, r.text  # un manager modifie le planning pendant le calcul
+        return res
+    monkeypatch.setattr(opt, "solve", edited_during_search)
+    r = o.post(f"/periods/{pid}/runs", json={"time_limit_s": 8, "confirm_replace": True}, headers={"Idempotency-Key": uuid.uuid4().hex})
+    run = o.get(f"/runs/{r.json()['run_id']}").json()
+    assert run["save"]["outcome"] == "kept_previous" and run["save"]["reason_code"] == "modified_during_run", run["save"]
+    assert "pour ne pas écraser ces modifications" in run["save"]["reason"] and run["save"]["changes"] >= 1
+    now = next(x for x in o.get(f"/periods/{pid}/schedule").json()["assignments"] if x["assignment_id"] == a["assignment_id"])
+    assert now["employee_id"] == to["id"]  # la modification du manager est conservée
+    assert len(o.get(f"/periods/{pid}/versions").json()) == versions
+    s = o.get(f"/runs/{run['id']}/summary").json()["blocks"]["optimisation"]
+    assert "modifié pendant le calcul" in s["text"]

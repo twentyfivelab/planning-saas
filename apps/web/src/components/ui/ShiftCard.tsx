@@ -13,22 +13,26 @@ export function ShiftCard({ a, size = "sm", alerts = [], dragging, draggable, on
   const shares = splitShares(a.allocations);
   const kind = shiftKind(a.start, a.end);
   const brands = Object.keys(a.allocations).join(" + ");
-  const label = `${a.employee}, ${brands}, ${a.site}, ${timeShort(a.start)} à ${timeShort(a.end)}, ${fmtHM(a.effective_minutes)} effectives, pause ${a.break_minutes} min${a.locked ? ", verrouillé" : ""}${alerts.length ? `, ${alerts.length} alerte(s)` : ""}`;
+  // nom accessible = le texte visible lui-même (WCAG 2.5.3 : une commande vocale qui dit ce qu'elle voit active la carte), suivi de
+  // précisions réservées aux lecteurs d'écran (collaborateur, durée, pause, verrouillage, alertes) ; aucun aria-label qui le remplacerait
+  const siteShown = !a.site.split("/").every((p) => brands.includes(p));
+  const details = `${showEmployee ? "" : `, ${a.employee}`}${siteShown ? "" : `, ${a.site}`}, ${fmtHM(a.effective_minutes)} effectives, pause ${a.break_minutes} min${a.locked ? ", verrouillé" : ""}${alerts.length ? `, ${alerts.length} alerte(s)` : ""}`;
   return (
     <button type="button" className={`shift ${size === "lg" ? "shift-lg" : ""}`} style={brandVars(brand)} draggable={draggable} data-dragging={dragging || undefined}
-      data-assignment={a.assignment_id} data-locked={a.locked || undefined} data-alert={alerts.length > 0 || undefined} aria-label={label} title={alerts.join("\n") || undefined}
+      data-assignment={a.assignment_id} data-locked={a.locked || undefined} data-alert={alerts.length > 0 || undefined} title={alerts.join("\n") || undefined}
       onClick={() => onOpen(a)} onDragStart={(e) => { e.dataTransfer.setData("text/plain", a.assignment_id); e.dataTransfer.effectAllowed = "move"; onDragStart?.(a); }} onDragEnd={onDragEnd}>
       <span className="shift-time">
         <span>{timeShort(a.start)}–{timeShort(a.end)}</span>
-        <span className="shift-flags">
+        <span className="shift-flags" aria-hidden="true">
           {a.locked && <Tooltip text="Verrouillé : conservé lors d'une réoptimisation"><Icon name="lock" size={12} /></Tooltip>}
           {alerts.length > 0 && <Icon name="alert" size={12} style={{ color: "var(--warn)" }} />}
         </span>
       </span>
-      {showEmployee && <span style={{ fontWeight: 600 }}>{a.employee}</span>}
+      {" "}{showEmployee && <span style={{ fontWeight: 600 }}>{a.employee}</span>}{" "}
       <span className="shift-meta">
-        <span>{brands}</span>{!a.site.split("/").every((p) => brands.includes(p)) && <span>{a.site_name ?? a.site}</span>}
+        <span>{brands}</span>{" "}{siteShown && <span>{a.site_name ?? a.site}</span>}
       </span>
+      <span className="sr-only">{details}</span>
       <span className="shift-meta num" aria-hidden="true">
         <span className="nowrap">{fmtHM(a.effective_minutes)} · pause {a.break_minutes >= 60 && a.break_minutes % 60 === 0 ? `${a.break_minutes / 60} h` : `${a.break_minutes} min`}</span>{size === "lg" && <span>{KIND_LABEL[kind]}</span>}
       </span>

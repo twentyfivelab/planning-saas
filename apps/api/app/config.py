@@ -19,6 +19,14 @@ class Settings(BaseSettings):
     app_env: str = "production"
     max_upload_bytes: int = 2_000_000
     login_rate_limit: int = 10  # tentatives / minute / IP+email
+    # limitation des tentatives : « redis » (partagée entre les processus de l'API, obligatoire dès qu'il y en a plusieurs) ou « memory »
+    rate_limit_backend: str = "memory"
+    # requêtes simultanées par processus d'API (≤ connexions du pool, voir main.InflightLimit) ; attente maximale avant « 503 réessayez »
+    max_inflight_requests: int = 12
+    inflight_wait_s: float = 25.0
+    db_pool_size: int = 10
+    db_max_overflow: int = 6
+    db_pool_timeout_s: float = 10.0
 
 
 settings = Settings()

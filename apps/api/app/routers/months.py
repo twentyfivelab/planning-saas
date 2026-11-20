@@ -13,6 +13,7 @@ from planning_solver.sundays import sunday_summary
 from .. import models as m
 from ..deps import Ctx, audit, get_or_404, require
 from ..services_bridge import assignments_for_validation, build_input
+from ..readcache import cached_view
 from .crud import serialize
 
 router = APIRouter(tags=["mois et années"])
@@ -61,6 +62,7 @@ def ensure_period(body: MonthIn, ctx: Ctx = Depends(require("planning.edit"))):
 
 
 @router.get("/calendar")
+@cached_view("calendar")
 def month_calendar(year: int = Query(ge=2000, le=2100), month: int = Query(ge=1, le=12), ctx: Ctx = Depends(require("planning.read"))):
     """Calendrier et besoins du mois, calculés à partir des besoins réellement configurés (aucune valeur propre à un mois précis)."""
     first, last = month_bounds(year, month)

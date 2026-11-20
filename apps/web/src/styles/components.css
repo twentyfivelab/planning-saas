@@ -351,7 +351,8 @@ dialog.modal:not(.modal-confirm) { width: min(40rem, calc(100vw - 1.5rem)); }
 
 /* ---- planning général : défilement horizontal, colonne des noms fixe ---- */
 .hgrid-bar { margin-bottom: var(--sp-2); gap: var(--sp-3); flex-wrap: wrap; }
-.hgrid-scroll { overflow: auto; max-height: 74vh; overscroll-behavior-x: contain; scroll-snap-type: x proximity; scroll-padding-left: 9.5rem; }
+.hgrid-scroll { overflow: auto; max-height: 74vh; overscroll-behavior-x: contain; scroll-snap-type: x proximity; scroll-padding: 2.75rem 5.5rem 0.25rem 9.5rem; }
+/* une carte atteinte au clavier (focus) ou par défilement n'est jamais masquée par les parties fixes (en-tête des jours, noms, totaux) : WCAG 2.4.11 */
 .hgrid-head .cal-h:not(.cal-name-h):not(.cal-total-h) { scroll-snap-align: start; } /* au doigt, le défilement s'arrête sur un début de jour : aucune carte à moitié masquée sous les noms */
 .hgrid-scroll:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
 .hgrid { width: max-content; min-width: 100%; }

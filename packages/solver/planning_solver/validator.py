@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from datetime import date, timedelta
 from typing import Dict, List, Optional
 
+from .context import PRESENCE_ORDER, presence_ok
 from .model import Assignment, Slot, SolverInput, fmt_minutes, month_label
 from .sundays import sundays_in
 from .timecalc import shift_bounds, shift_hours
@@ -287,8 +288,17 @@ def violations(inp: SolverInput, assignments: List[Assignment]) -> List[Violatio
     for eid, lst in per_emp.items():
         e = emps[eid]
         tutors = [r for r in e.relations if r.kind == "mentor" and r.strict and r.other in emps]
+        t_scope = max((getattr(r, "scope", "site_day") for r in tutors), key=lambda x: PRESENCE_ORDER.get(x, 0)) if tutors else "site_day"
+        if tutors and t_scope in ("overlap", "full"):  # chevauchement simple, ou couverture complète de la plage du shift
+            for a in lst:
+                sa = slots[a.slot_id]
+                held = [slots[b.slot_id] for r in tutors for b in per_emp.get(r.other, ()) if slots[b.slot_id].day == sa.day]
+                if not presence_ok(sa, held, t_scope):
+                    need = "pendant toute la plage" if t_scope == "full" else "en même temps (chevauchement)"
+                    add("MENTOR_MISSING", f"MENTOR_MISSING: {e.name} le {sa.day} {sa.start:%H:%M}-{sa.end:%H:%M} à {sa.site} sans tuteur présent {need}",
+                        eid, [a.slot_id])
         for d, site in sorted(where[eid]):
-            if tutors and not any((d, site) in where.get(r.other, ()) for r in tutors):
+            if tutors and t_scope == "site_day" and not any((d, site) in where.get(r.other, ()) for r in tutors):
                 add("MENTOR_MISSING", f"MENTOR_MISSING: {e.name} le {d} à {site} sans tuteur présent", eid, at(eid, d, site))
             for r in e.relations:
                 if r.kind == "avoid_together" and r.strict and getattr(r, "scope", "site_day") == "site_day" and (d, site) in where.get(r.other, ()) and (

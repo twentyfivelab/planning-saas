@@ -343,6 +343,11 @@ def _outside_shifts(db: Session, period: m.PlanningPeriod) -> List[OutsideShift]
             if a.employee_id in codes and not (period.start_date <= sh.day <= period.end_date)]
 
 
+def break_paid(db: Session, site_code: str) -> bool:
+    """Pause payée sur ce site ? (réglage du site, figé sur la pause à sa création)."""
+    return bool(next((x.paid_breaks for x in _all(db, m.Site) if x.code == site_code), False))
+
+
 def current_assignments(db: Session, period: m.PlanningPeriod) -> Tuple[Dict[str, str], Dict[str, str]]:
     """(previous, locked) : slot_key -> employee code."""
     codes = {e.id: e.code for e in _all(db, m.Employee)}
@@ -421,7 +426,7 @@ def persist_result(db: Session, tenant_id, period: m.PlanningPeriod, inp: Solver
         db.add(row)
         db.flush()
         if sh.break_minutes:
-            db.add(m.Break(tenant_id=tenant_id, assignment_id=row.id, minutes=sh.break_minutes, paid=False))
+            db.add(m.Break(tenant_id=tenant_id, assignment_id=row.id, minutes=sh.break_minutes, paid=break_paid(db, sh.site_code)))
         for b, mins in a.allocations.items():
             db.add(m.BrandAllocation(tenant_id=tenant_id, assignment_id=row.id, brand_code=b, minutes=mins))
     # shifts devenus sans affectation et non obligatoires : supprimés

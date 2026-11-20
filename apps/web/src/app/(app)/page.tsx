@@ -16,6 +16,9 @@ import { Pilotage } from "@/components/planning/Pilotage";
 type Schedule = { assignments: Assignment[]; uncovered: unknown[] };
 type Issue = { code: string; severity: string; message: string };
 type Run = { id: string; status: string; result_status: string | null; mode: string | null; duration_s: number | null };
+const RESULT_LABEL: Record<string, string> = { optimal: "Meilleure solution prouvée", faisable: "Planning valide", partiellement_couvert: "Valide, couverture incomplète",
+  interrompu: "Interrompu (temps insuffisant)", infaisable: "Impossible avec les règles actuelles" };
+const RUN_LABEL: Record<string, string> = { en_attente: "En attente", en_cours: "En cours", termine: "Terminé", annule: "Annulé", erreur: "Erreur" };
 
 export default function Dashboard() {
   const { period, loading: pl } = usePeriod();
@@ -78,8 +81,8 @@ export default function Dashboard() {
               <p className="kpi-sub">{violations ? "Voir Alertes pour le détail" : "Aucune violation détectée par le vérificateur"}</p>
             </Card>
             <Card eyebrow="Dernière génération" title="Statut" lift>
-              <p className="kpi-value" style={{ fontSize: "var(--text-lg)", textTransform: "capitalize" }}>{last?.result_status?.replace(/_/g, " ") ?? last?.status ?? "Aucune"}</p>
-              <div className="row" style={{ marginTop: "var(--sp-2)" }}>{last?.mode === "simulation_exploratoire" && <Badge tone="warn" icon="alert">Exploratoire · non validable</Badge>}{last?.duration_s != null && <Badge>{last.duration_s} s</Badge>}</div>
+              <p className="kpi-value" style={{ fontSize: "var(--text-lg)" }}>{last ? (RESULT_LABEL[last.result_status ?? ""] ?? RUN_LABEL[last.status] ?? last.status) : "Aucune"}</p>
+              <div className="row" style={{ marginTop: "var(--sp-2)" }}>{last?.mode === "simulation_exploratoire" && <Badge tone="warn" icon="alert">Données incomplètes · non publiable</Badge>}{last?.duration_s != null && <Badge>calcul en {last.duration_s.toFixed(1).replace(".", ",")} s</Badge>}</div>
             </Card>
           </div>
 

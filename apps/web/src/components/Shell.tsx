@@ -4,7 +4,7 @@ import { usePathname, useRouter } from "next/navigation";
 import { Fragment, createContext, useContext, useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import { API_BASE, CLIENT_ID, api, setCsrf } from "@/lib/api";
-import { invalidate, onInvalidate } from "@/lib/invalidate";
+import { invalidate, onInvalidate, PLANNING_ACTIONS } from "@/lib/invalidate";
 import { useApi, useMonthState } from "./hooks";
 import { STATUS_TONE, periodHref, type PeriodRow } from "@/lib/periods";
 import { t } from "@/lib/i18n";
@@ -13,6 +13,7 @@ import { Button, Badge, Skeleton } from "./ui/primitives";
 import { ThemeToggle } from "./ui/Theme";
 import { ToastProvider } from "./ui/Toast";
 import { DeletePlanningModal } from "./planning/DeletePlanning";
+import { setBrandOrder } from "@/lib/brand";
 
 type Me = { id: string; email: string; name: string; role: string; permissions: string[]; csrf_token: string; employee_id?: string | null };
 const MeCtx = createContext<Me | null>(null);
@@ -36,10 +37,10 @@ const allowed = (me: Me, href: string, perm: string) => {
 };
 
 function LegalBanner() {
-  const [open, setOpen] = useState(true);
+  const [open, setOpen] = useState(false);
   useEffect(() => {
-    // replié par défaut sur petit écran (le résumé reste visible), ouvert sur ordinateur ; le choix de l'utilisateur prime
-    try { const v = localStorage.getItem("legal-collapsed"); setOpen(v === null ? window.innerWidth >= 900 : v !== "1"); } catch {}
+    // replié par défaut (le résumé reste toujours visible ; le détail s'ouvre d'un clic) ; le choix de l'utilisateur prime
+    try { const v = localStorage.getItem("legal-collapsed"); setOpen(v === null ? false : v !== "1"); } catch {}
   }, []);
   const toggle = () => { const n = !open; setOpen(n); try { localStorage.setItem("legal-collapsed", n ? "0" : "1"); } catch {} };
   return (
@@ -47,8 +48,8 @@ function LegalBanner() {
       <div className="spread">
         <div className="row">
           <Icon name="alert" size={16} style={{ color: "var(--warn)" }} />
-          <strong>Simulation exploratoire · non commercialisable en l'état</strong>
-          <Badge tone="warn">Hypothèses non validées</Badge>
+          <strong>Règles légales à faire valider · non commercialisable en l'état</strong>
+          <Badge tone="warn">Aide à la décision</Badge>
         </div>
         <Button size="sm" variant="ghost" aria-expanded={open} aria-controls="legal-detail" onClick={toggle}>{open ? "Replier" : "Détails"}</Button>
       </div>
@@ -138,22 +139,40 @@ export function Shell({ children }: { children: ReactNode }) {
     api<Me>("/auth/me").then((m) => { setCsrf(m.csrf_token); setMe(m); }).catch(() => router.replace("/login"));
   }, [router]);
   useEffect(() => setOpen(false), [path]);
+  // couleurs des marques : ordre du catalogue de l'entreprise, connu AVANT l'affichage des pages (jamais une carte grise puis colorée)
+  const [brandsReady, setBrandsReady] = useState(false);
+  useEffect(() => {
+    if (!me) return;
+    if (!me.permissions.includes("referential.read")) { setBrandsReady(true); return; }
+    api<{ code: string }[]>("/brands").then((b) => setBrandOrder(b.map((x) => x.code))).catch(() => {}).finally(() => setBrandsReady(true));
+  }, [me]);
   // un collaborateur ou un responsable de marque arrive sur son espace, pas sur le tableau de bord de planification
   useEffect(() => { if (me && path === "/" && !me.permissions.includes("planning.read")) router.replace(me.permissions.includes("planning.brand") ? "/brand" : "/me"); }, [me, path, router]);
   // Synchronisation entre managers : flux temps réel (Server-Sent Events) — chaque modification validée ailleurs est annoncée en
-  // moins d'une seconde. Filet de sécurité : empreinte `/revision` interrogée toutes les 6 s seulement si le flux est coupé.
+  // moins d'une seconde et affichée au plus 2,5 s après (rechargements regroupés). Filet de sécurité : empreinte `/revision` interrogée toutes les 6 s seulement si le flux est coupé.
   useEffect(() => {
     if (!me) return;
-    let last: string | null = null, dirty = false, live = false, stop = false, remote = false, localAt = 0;
-    // jamais de rechargement sous les yeux de l'utilisateur pendant qu'une fenêtre est ouverte : on attend sa fermeture
-    const flush = () => { if (dirty && !document.querySelector("dialog[open]")) { dirty = false; remote = true; invalidate(); remote = false; } };
+    let last: string | null = null, dirty = false, live = false, stop = false, remote = false, localAt = 0, lastRemote = 0;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let wide = false; // une annonce reçue touche autre chose que le contenu du planning : relecture complète
+    // Modifications des AUTRES managers regroupées : au plus un rechargement toutes les 2,5 s par écran (mesure du 20/11 : un rechargement
+    // complet à chaque annonce faisait croître la charge comme le carré du nombre de managers et saturait l'API dès 10 managers).
+    // Jamais de rechargement sous les yeux de l'utilisateur pendant qu'une fenêtre est ouverte : on attend sa fermeture.
+    const GAP = 2500;
+    const flush = () => {
+      if (!dirty || stop || document.querySelector("dialog[open]")) return;
+      const wait = lastRemote + GAP - Date.now();
+      if (wait > 0) { if (!timer) timer = setTimeout(() => { timer = null; flush(); }, wait); return; }
+      const scope = wide ? "all" : "planning";
+      dirty = false; wide = false; lastRemote = Date.now(); remote = true; invalidate(scope); remote = false;
+    };
     // rechargement déclenché par CET onglet (après sa propre modification) : sa propre annonce temps réel ne le relance pas une 2e fois
     const offLocal = onInvalidate(() => { if (!remote) localAt = Date.now(); });
     const tick = async (absorb = false) => {
       if (document.hidden || stop) return;
       try {
         const r = await api<{ revision: string }>("/revision");
-        if (last !== null && r.revision !== last && !absorb) dirty = true;
+        if (last !== null && r.revision !== last && !absorb) { dirty = true; wide = true; }
         last = r.revision;
       } catch { /* hors ligne : on réessaie */ }
       flush();
@@ -163,10 +182,11 @@ export function Shell({ children }: { children: ReactNode }) {
       es = new EventSource(`${API_BASE}/events`, { withCredentials: true });
       es.addEventListener("ready", () => { live = true; });
       es.addEventListener("change", (ev) => {
-        let origin: string | null = null;
-        try { origin = (JSON.parse((ev as MessageEvent).data) as { origin?: string | null }).origin ?? null; } catch { /* ancien format : rechargement */ }
+        let origin: string | null = null; let actions: string[] | null = null;
+        try { const d = JSON.parse((ev as MessageEvent).data) as { origin?: string | null; actions?: string[] }; origin = d.origin ?? null; actions = d.actions ?? null; } catch { /* ancien format : rechargement */ }
         if (origin === CLIENT_ID && Date.now() - localAt < 3000) { void tick(true); return; } // déjà rechargé par l'écran lui-même
-        dirty = true; flush(); void tick();
+        if (!actions || !actions.length || actions.length >= 20 || actions.some((a) => !PLANNING_ACTIONS.test(a))) wide = true;
+        dirty = true; flush(); // regroupé (voir `flush`) ; l'empreinte n'est relue que si le flux est coupé
       });
       es.onerror = () => { live = false; };
     } catch { es = null; }
@@ -175,10 +195,10 @@ export function Shell({ children }: { children: ReactNode }) {
     const closeWatch = setInterval(flush, 500); // applique dès la fermeture d'une fenêtre
     const vis = () => { if (!document.hidden) void tick(); };
     document.addEventListener("visibilitychange", vis);
-    return () => { stop = true; offLocal(); es?.close(); clearInterval(poll); clearInterval(closeWatch); document.removeEventListener("visibilitychange", vis); };
+    return () => { stop = true; offLocal(); es?.close(); clearInterval(poll); clearInterval(closeWatch); if (timer) clearTimeout(timer); document.removeEventListener("visibilitychange", vis); };
   }, [me]);
 
-  if (!me) {
+  if (!me || (me.permissions.includes("referential.read") && !brandsReady)) {
     return <div className="app" aria-busy="true" role="status"><div className="glass card"><Skeleton h="2rem" w="60%" /></div><div className="page"><Skeleton h="3rem" w="40%" /><Skeleton h="10rem" /><span className="sr-only">Chargement</span></div></div>;
   }
   return (

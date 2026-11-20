@@ -7,7 +7,7 @@ from collections import defaultdict
 from typing import Dict, Iterable, List, Optional, Tuple
 
 from .context import (Prepared, cost_units, coverage_cost, fairness_units, hours_units, realized_targets, individual_penalty, period_of, prepare,
-                      preference_checks, relation_pairs, overlaps, history_excess)
+                      preference_checks, presence_ok, relation_pairs, overlaps, history_excess)
 from .model import Assignment, DEFAULT_WEIGHTS, REINFORCE, SECONDARY, Slot, SolverInput
 
 
@@ -124,6 +124,11 @@ class Evaluator:
             return w * len(a & b)
         if kind == "avoid_together:day":
             return w * len({s.day for s in mine.get(eid, [])} & {s.day for o in others for s in mine.get(o, [])})
+        if kind in ("mentor:overlap", "mentor:full", "work_together:overlap", "work_together:full"):
+            base_kind, scope = kind.split(":")
+            pairs = [(eid, others)] + ([(others[0], [eid])] if base_kind == "work_together" else [])
+            return w * sum(1 for who, mates in pairs for s in mine.get(who, [])
+                           if not presence_ok(s, [t for o in mates for t in mine.get(o, []) if t.day == s.day], scope))
         if kind == "avoid_together:overlap":
             return w * sum(1 for s in mine.get(eid, []) for o in others for t in mine.get(o, []) if overlaps(s, t))
         a = {(s.day, s.site) for s in mine.get(eid, [])}

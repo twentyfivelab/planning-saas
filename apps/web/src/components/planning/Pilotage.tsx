@@ -30,9 +30,9 @@ export function Pilotage({ periodId }: { periodId: string }) {
           <p className="kpi-value num">{d.people.working_today} <span className="muted" style={{ fontSize: "var(--text-md)" }}>au travail</span></p>
           <p className="kpi-sub">{d.people.active} actifs · {d.people.planned} planifiés ce mois · {d.people.available_today} disponibles · {d.people.unavailable_today} indisponibles</p>
         </Card>
-        <Card eyebrow="À traiter" title="Remplacements en attente" lift>
+        <Card eyebrow="À traiter" title="Absences à remplacer et shifts non couverts" lift>
           <p className="kpi-value num">{d.planning.pending_replacements + d.planning.uncovered}</p>
-          <p className="kpi-sub">{d.planning.pending_replacements} titulaire(s) indisponible(s) · {d.planning.uncovered} shift(s) non couvert(s), {fmtH(d.planning.uncovered_minutes)}</p>
+          <p className="kpi-sub">{d.planning.pending_replacements} shift(s) dont le titulaire est indisponible · {d.planning.uncovered} shift(s) sans collaborateur ({fmtH(d.planning.uncovered_minutes)})</p>
         </Card>
       </div>
       <div className="grid-2">

@@ -41,6 +41,46 @@ class SecurityHeaders:
 app.add_middleware(SecurityHeaders)
 
 
+class InflightLimit:
+    """Requêtes en cours limitées par processus, AVANT tout thread et toute connexion à la base (mesure à plusieurs managers du 20/11/2026).
+    Sans cette limite, sous forte affluence, les connexions étaient prises par des requêtes en attente d'un thread pendant que tous les
+    threads attendaient une connexion : plus rien n'avançait pendant 30 s, puis erreur 500 (« QueuePool limit reached »), processeur au
+    repos. Les requêtes au-delà de la limite attendent leur tour sans rien bloquer ; temps d'attente publié (Server-Timing « queue »).
+    Le flux temps réel (/events, connexion longue sans base de données) et /health ne sont pas comptés."""
+
+    def __init__(self, app):
+        import asyncio
+        self.app = app
+        self.sem = asyncio.Semaphore(settings.max_inflight_requests)
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http" or scope.get("path") in ("/events", "/health"):
+            return await self.app(scope, receive, send)
+        import asyncio
+        import time
+        t0 = time.perf_counter()
+        try:
+            await asyncio.wait_for(self.sem.acquire(), timeout=settings.inflight_wait_s)
+        except asyncio.TimeoutError:
+            body = b'{"detail":"Serveur momentan\xc3\xa9ment satur\xc3\xa9 : r\xc3\xa9essayez dans quelques secondes. Rien n\'a \xc3\xa9t\xc3\xa9 modifi\xc3\xa9."}'
+            await send({"type": "http.response.start", "status": 503, "headers": [(b"content-type", b"application/json"), (b"retry-after", b"2")]})
+            await send({"type": "http.response.body", "body": body})
+            return
+        wait_ms = (time.perf_counter() - t0) * 1000
+
+        async def tagged(message):
+            if message["type"] == "http.response.start":
+                message = {**message, "headers": [*message.get("headers", []), (b"server-timing", f"queue;dur={wait_ms:.0f}".encode())]}
+            await send(message)
+        try:
+            await self.app(scope, receive, tagged)
+        finally:
+            self.sem.release()
+
+
+app.add_middleware(InflightLimit)
+
+
 class RequestTiming:
     """Diagnostic des lenteurs : en-tête « Server-Timing: app;dur=… » (durée de traitement côté serveur, lisible par le navigateur et les
     tests) et journal des requêtes au-delà de SLOW_REQUEST_MS (méthode, modèle de route, durée ; jamais de données ni d'identifiants)."""

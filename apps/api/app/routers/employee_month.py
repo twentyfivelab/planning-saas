@@ -33,11 +33,13 @@ def employee_month(eid: str, month: str, ctx: Ctx = Depends(require("planning.re
     if rows:
         for b in ctx.db.scalars(select(m.BrandAllocation).where(m.BrandAllocation.assignment_id.in_([a.id for a, _s in rows]))):
             allocs[b.assignment_id][b.brand_code] = b.minutes
+    paid = {br.assignment_id for br in ctx.db.scalars(select(m.Break).where(m.Break.assignment_id.in_([a.id for a, _s in rows]), m.Break.paid.is_(True)))} if rows else set()
     by_day: dict = defaultdict(list)
     for a, sh in rows:
         by_day[sh.day].append({"assignment_id": str(a.id), "shift_id": str(sh.id), "period_id": str(a.period_id), "start": sh.start_time.isoformat()[:5],
                                "end": sh.end_time.isoformat()[:5], "break_minutes": sh.break_minutes, "presence_minutes": sh.presence_minutes,
                                "effective_minutes": sh.effective_minutes, "site": sh.site_code, "site_name": site_names.get(sh.site_code, sh.site_code),
+                               "break_paid": a.id in paid, "paid_minutes": sh.effective_minutes + (sh.break_minutes if a.id in paid else 0),
                                "brands": sorted(allocs.get(a.id, {})), "allocations": allocs.get(a.id, {}), "locked": a.locked, "source": a.source})
     unav = list(ctx.db.scalars(select(m.Unavailability).where(m.Unavailability.employee_id == e.id)))
     dated = {u.on_date: u.reason for u in unav if u.on_date and first <= u.on_date <= last}
@@ -78,6 +80,9 @@ def employee_month(eid: str, month: str, ctx: Ctx = Depends(require("planning.re
         "days": days,
         "totals": {"effective_minutes": eff, "days_worked": len(worked), "sundays_worked": sum(1 for x in worked if x["weekday"] == 6),
                    "presence_minutes": sum(a["presence_minutes"] for x in worked for a in x["assignments"]),
-                   "break_minutes": sum(a["break_minutes"] for x in worked for a in x["assignments"])},
+                   "break_minutes": sum(a["break_minutes"] for x in worked for a in x["assignments"]),
+                   # heures payées = travail effectif + pauses payées ; le plafond mensuel et les règles portent sur le travail effectif
+                   "paid_break_minutes": sum(a["break_minutes"] for x in worked for a in x["assignments"] if a["break_paid"]),
+                   "paid_minutes": sum(a["paid_minutes"] for x in worked for a in x["assignments"])},
         "limits": {"monthly_cap_minutes": tenant_cap(ctx.db, ctx.tenant_id), "min_days_month": e.min_days_month, "max_days_month": e.max_days_month},
     }

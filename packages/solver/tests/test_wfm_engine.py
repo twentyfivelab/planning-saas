@@ -65,7 +65,7 @@ def test_evaluateur_identique_au_solveur_a_l_optimum():
 def test_evaluateur_chaque_niveau_de_la_hierarchie():
     inp = rich_instance(hierarchical=True)
     res = solve(inp)
-    assert [lv["level"] for lv in res.levels] == ["couverture", "engagements", "optimisation"]
+    assert [lv["level"] for lv in res.levels] == ["couverture", "engagements", "equite", "optimisation"]  # D7 : équité avant le reste
     assert res.proved_optimal and all(lv["proved_optimal"] for lv in res.levels)
     terms = evaluate(inp, res.assignments)
     for lv in res.levels:

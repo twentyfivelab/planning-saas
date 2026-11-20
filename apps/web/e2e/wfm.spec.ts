@@ -172,7 +172,7 @@ test("le tableau de bord présente le pilotage du mois", async ({ page }) => {
   await page.goto("/"); await toNovember(page);
   await page.reload(); await page.waitForLoadState("networkidle");
   const p = page.getByTestId("pilotage");
-  await expect(p).toContainText("Remplacements en attente");
+  await expect(p).toContainText("Absences à remplacer et shifts non couverts");
   await expect(p).not.toContainText("Écart aux objectifs"); // carte d'équité retirée de l'interface
   await expect(p).not.toContainText("Coût et marge");
   await expect(page.getByRole("table", { name: "Répartition par collaborateur" })).toBeVisible();

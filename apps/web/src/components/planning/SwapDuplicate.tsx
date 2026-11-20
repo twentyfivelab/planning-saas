@@ -22,7 +22,7 @@ export function useConfirmed() {
     try { const r = await api<T>(url, { method: "POST", json: { ...body, force } }); setRefused(null); return r; }
     catch (e) {
       const d = e instanceof ApiError ? (e.detail as Refused | undefined) : undefined;
-      if (d && typeof d === "object" && (d as { code?: string }).code === "stale") { setErr(errText(e)); invalidate(); } // modifié ailleurs : situation actualisée
+      if (d && typeof d === "object" && (d as { code?: string }).code === "stale") { setErr(errText(e)); invalidate("planning"); } // modifié ailleurs : situation actualisée
       else if (d && typeof d === "object" && Array.isArray(d.issues)) setRefused(d); else setErr(errText(e));
       return null;
     } finally { setBusy(false); }
@@ -60,7 +60,7 @@ export function SwapModal({ a, periodId, all, onClose, onDone }: { a: Assignment
   async function go(force: boolean) {
     if (!a || !target) return;
     const r = await op.send<{ forced: boolean }>(`/periods/${periodId}/swap`, { a: a.assignment_id, b: target.assignment_id, expected_a: a.employee_id, expected_b: target.employee_id, reason: reason || null }, force);
-    if (r) { toast.push(`Échange enregistré : ${a.employee} ↔ ${target.employee}${r.forced ? " (dérogation tracée)" : ""}.`, r.forced ? "warn" : "ok"); invalidate(); onDone(); }
+    if (r) { toast.push(`Échange enregistré : ${a.employee} ↔ ${target.employee}${r.forced ? " (dérogation tracée)" : ""}.`, r.forced ? "warn" : "ok"); invalidate("planning"); onDone(); }
   }
   return (
     <Modal open={!!a} onClose={() => !op.busy && onClose()} title="Échanger deux shifts" description={a ? `${a.employee} · ${label(a)}` : undefined}>
@@ -102,7 +102,7 @@ export function DuplicateModal({ a, period, onClose, onDone }: { a: Assignment |
   async function go(force: boolean) {
     if (!a) return;
     const r = await op.send<{ created: unknown[]; forced: boolean }>(`/assignments/${a.assignment_id}/duplicate`, { days, reason: reason || null }, force);
-    if (r) { toast.push(`${r.created.length} copie(s) créée(s) pour ${a.employee}${r.forced ? " (dérogation tracée)" : ""}.`, r.forced ? "warn" : "ok"); invalidate(); onDone(); }
+    if (r) { toast.push(`${r.created.length} copie(s) créée(s) pour ${a.employee}${r.forced ? " (dérogation tracée)" : ""}.`, r.forced ? "warn" : "ok"); invalidate("planning"); onDone(); }
   }
   return (
     <Modal open={!!a} onClose={() => !op.busy && onClose()} title="Dupliquer ce shift" description={a ? `${a.employee} · ${label(a)}` : undefined}>

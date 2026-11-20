@@ -13,3 +13,8 @@ playwright-report/
 *.tsbuildinfo
 # sauvegardes locales de la base (données personnelles, empreintes de mots de passe) : jamais dans Git
 backups/
+# accès de démonstration générés localement (jamais versionnés)
+*.local.txt
+# mesures et captures locales (résumés versionnés dans docs/)
+apps/web/load/results/
+apps/web/load/screens/

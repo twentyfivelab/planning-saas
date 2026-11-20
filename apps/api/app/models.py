@@ -126,6 +126,8 @@ class Site(TenantOwned, Base):
     archived_from: Mapped[Optional[date]] = mapped_column(Date)  # 1er mois sans ce site ; les mois antérieurs restent intacts
     # présence continue exigée : une pause sans relève (personne d'autre présent sur le site) est signalée dans la couverture
     continuous_presence: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    # pauses payées sur ce site (règle de l'entreprise ou du client) : figé sur chaque pause à sa création (Break.paid)
+    paid_breaks: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     __table_args__ = (UniqueConstraint("tenant_id", "code"),)
 
 

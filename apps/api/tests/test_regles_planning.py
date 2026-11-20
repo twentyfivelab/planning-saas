@@ -294,3 +294,31 @@ def test_resultat_d_enregistrement_et_temps_mesures_de_chaque_etape(t):
     o.put(f"/employees/{a['employee_id']}/unavailable-dates", json={"dates": []})
     who = next(e for e in emps.values() if e["id"] == a["employee_id"])
     assert who
+
+
+def test_tuteur_chevauchement_simple_ou_couverture_complete(t):
+    """Tuteur strict : « horaires qui se chevauchent » (simple chevauchement) ≠ « pendant toute la plage de son shift » (couverture
+    complète). Le tuteur (ben) ne tient que des shifts Beta 12:00-18:00 à l'aéroport ; ana (Alpha 09:00-18:00) serait seule de 9 h à 12 h."""
+    o, emps, pid = t["o"], t["emps"], t["pids"][NOV]
+    assert o.post("/catalog/brands", json={"name": "Beta"}).status_code == 201
+    assert o.post("/catalog/animations", json={"site_code": "AERO", "brand_code": "Beta", "start": "12:00", "end": "18:00", "weekdays": [0, 1, 2, 3, 4, 5, 6],
+                                               "headcount": 1, "from_month": "2026-10"}).status_code == 201
+    ana, ben = emps["ana"]["id"], emps["ben"]["id"]
+    assert o.put(f"/employees/{ben}", json={**{k: emps["ben"][k] for k in ("code", "name")}, "brands": {"Beta": "priority"}}).status_code == 200
+    # portée refusée pour un tuteur (« même jour, tous sites » ne s'applique qu'aux collaborateurs à séparer)
+    assert o.post("/relationship-preferences", json={"employee_id": ana, "other_employee_id": ben, "kind": "mentor", "strict": True, "scope": "day"}).status_code == 422
+    r = o.post("/relationship-preferences", json={"employee_id": ana, "other_employee_id": ben, "kind": "mentor", "strict": True, "scope": "full"})
+    assert r.status_code == 201 and r.json()["scope"] == "full", r.text
+    run(o, pid, params="current")
+    a = rows(o, pid)
+    assert not [x for x in a if x["employee_id"] == ana and x["site"] == "AERO"]  # jamais seule une partie de son shift
+    target = next(x for x in a if x["site"] == "AERO" and "Alpha" in x["allocations"] and x["employee_id"] != ana)
+    m = o.post(f"/periods/{pid}/manual-assign", json={"employee_id": ana, "shift_id": target["shift_id"]})
+    assert m.status_code == 409 and any(i["code"] == "MENTOR_MISSING" for i in m.json()["detail"]["issues"]), m.text
+    # simple chevauchement : autorisé dès que le tuteur est là en même temps (il arrive à 12 h) — portée distincte, explicitement nommée
+    assert o.delete(f"/relationship-preferences/{r.json()['id']}").status_code in (200, 204)
+    assert o.post("/relationship-preferences", json={"employee_id": ana, "other_employee_id": ben, "kind": "mentor", "strict": True, "scope": "overlap"}).status_code == 201
+    run(o, pid, params="current")
+    a = rows(o, pid)
+    mine = [x for x in a if x["employee_id"] == ana and x["site"] == "AERO"]
+    assert mine and all(any(y["employee_id"] == ben and y["day"] == x["day"] and y["site"] == "AERO" for y in a) for x in mine)

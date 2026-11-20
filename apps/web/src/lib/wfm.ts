@@ -39,6 +39,17 @@ export const MISSION_STATUS: Record<string, { label: string; tone: "neutral" | "
 export const PRIORITY_LABEL: Record<number, string> = { 1: "Basse", 2: "Modérée", 3: "Normale", 4: "Haute", 5: "Critique" };
 export const SKILL_CATEGORY: Record<string, string> = { competence: "Compétence", formation: "Formation", langue: "Langue", certification: "Certification", qualification: "Qualification" };
 export const RELATION_SCOPE: Record<string, string> = { site_day: "même jour, même site", day: "même jour, tous sites", overlap: "horaires qui se chevauchent, tous sites" };
-export const RELATION_LABEL: Record<string, string> = { opposite_shifts: "Horaires opposés", avoid_together: "À séparer", work_together: "Binôme (même jour, même site)", mentor: "Tuteur présent (même jour, même site)" };
+export const RELATION_LABEL: Record<string, string> = { opposite_shifts: "Horaires opposés", avoid_together: "À séparer", work_together: "Binôme", mentor: "Tuteur présent" };
+/** Portée du tuteur et du binôme (même site) : simple chevauchement ≠ présence pendant toute la plage du shift accompagné. */
+export const PRESENCE_SCOPE: Record<string, string> = {
+  site_day: "même jour, même site",
+  overlap: "en même temps au moins un moment (simple chevauchement)",
+  full: "pendant toute la plage de son shift (couverture complète)",
+};
+export const PRESENCE_HELP: Record<string, string> = {
+  site_day: "Présents le même jour sur le même site, même à des heures différentes : le collaborateur peut se retrouver seul une partie de la journée.",
+  overlap: "Leurs horaires se croisent au moins un moment : le collaborateur peut encore être seul avant l'arrivée ou après le départ du tuteur.",
+  full: "Le tuteur (ou plusieurs tuteurs qui se relaient) est présent du début à la fin de chaque shift du collaborateur accompagné : il n'est jamais seul.",
+};
 export const WEEKDAYS = ["Lun", "Mar", "Mer", "Jeu", "Ven", "Sam", "Dim"];
 export const SOFT_LABEL: Record<string, string> = { preferences: "Préférences individuelles", preferences_horaires: "Préférences horaires", renforts: "Shifts en renfort", quotas_dimanches_non_atteints: "Objectifs de dimanches non atteints", horaires_opposes: "Horaires opposés non respectés" };

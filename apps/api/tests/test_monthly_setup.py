@@ -102,10 +102,18 @@ def test_3_month_exception_on_max_days_leaves_other_months_unchanged(t):
     for a in rows:
         weeks.setdefault(dt.date.fromisoformat(a["day"]).isocalendar()[:2], set()).add(a["day"])
     assert rows and max(len(v) for v in weeks.values()) <= 3 and not any(a["day"] in dates for a in rows)
+    # novembre n'a pas reçu l'exception : un 4e jour dans une semaine où elle en a déjà 3 ne déclenche aucune alerte « jours maximum »
+    # (vérifié par le contrôle du serveur, et non d'après la répartition choisie par le moteur, qui peut lui en donner moins)
+    nov_rows = sched(o, t["nov"])
     nov_weeks: dict = {}
-    for a in [a for a in sched(o, t["nov"]) if a["employee"] == "Mila"]:
+    for a in [a for a in nov_rows if a["employee"] == "Mila"]:
         nov_weeks.setdefault(dt.date.fromisoformat(a["day"]).isocalendar()[:2], set()).add(a["day"])
-    assert max(len(v) for v in nov_weeks.values()) > 3  # novembre n'a pas reçu l'exception
+    wk = max(nov_weeks, key=lambda k: len(nov_weeks[k]))
+    free = sorted({a["day"] for a in nov_rows if dt.date.fromisoformat(a["day"]).isocalendar()[:2] == wk} - nov_weeks[wk])
+    assert free, "aucun autre jour avec un shift dans cette semaine"
+    if len(nov_weeks[wk]) >= 3:
+        d = o.get(f"/periods/{t['nov']}/day-shifts", params={"day": free[0], "employee_id": mila["id"]}).json()
+        assert not any(i["code"] == "MAX_DAYS_WEEK" for r in d["shifts"] for i in r["issues"]), d
     assert o.put(f"/employees/{mila['id']}/month-params/2026-12", json={"max_days_set": True, "max_days_count": 9, "max_days_period": "week"}).status_code == 422
 
 

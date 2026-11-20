@@ -30,6 +30,7 @@ class SiteIn(S):
     name: str = Field(max_length=200)
     open_weekdays: List[int] = []
     continuous_presence: bool = False  # pause sans relève signalée dans la couverture
+    paid_breaks: bool = False  # pauses payées sur ce site (figé sur chaque pause à sa création)
     _v = field_validator("open_weekdays")(_weekdays)
 
 
@@ -270,14 +271,18 @@ class RelationshipIn(S):
     kind: str = Field("opposite_shifts", pattern="^(opposite_shifts|avoid_together|work_together|mentor)$")
     note: Optional[str] = Field(None, max_length=200)
     strict: bool = False
-    scope: str = Field("site_day", pattern="^(site_day|day|overlap)$")
+    # à séparer : site_day | day | overlap ; tuteur et binôme (même site) : site_day | overlap (chevauchement simple) | full (couverture complète)
+    scope: str = Field("site_day", pattern="^(site_day|day|overlap|full)$")
 
     @model_validator(mode="after")
     def _rel(self):
         if self.employee_id == self.other_employee_id:
             raise ValueError("une relation concerne deux collaborateurs différents")
-        if self.scope != "site_day" and self.kind != "avoid_together":
-            raise ValueError("la portée « même jour, tous sites » ou « horaires qui se chevauchent » s'applique aux collaborateurs à séparer")
+        allowed = {"avoid_together": ("site_day", "day", "overlap"), "mentor": ("site_day", "overlap", "full"),
+                   "work_together": ("site_day", "overlap", "full")}.get(self.kind, ("site_day",))
+        if self.scope not in allowed:
+            raise ValueError("portée non prévue pour ce type de relation : « à séparer » (même jour, même site / même jour, tous sites / horaires "
+                             "qui se chevauchent) ; « tuteur » et « binôme » (même jour, même site / horaires qui se chevauchent / toute la plage du shift)")
         if self.strict and self.kind not in ("avoid_together", "mentor"):
             raise ValueError("seules les relations « à séparer » et « tuteur » peuvent être strictes")
         return self

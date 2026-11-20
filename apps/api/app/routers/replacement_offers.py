@@ -13,6 +13,7 @@ from .. import models as m
 from .. import replacements as R
 from ..deps import Ctx, audit, get_or_404, require
 from ..period_state import ensure_editable, has_official_version
+from ..services_bridge import break_paid
 
 router = APIRouter(tags=["propositions de remplacement"])
 
@@ -230,7 +231,7 @@ def accept(oid: str, ctx: Ctx = Depends(require("self.read"))):
         a = m.Assignment(tenant_id=ctx.tenant_id, period_id=p.id, shift_id=sh.id, employee_id=e.id, source="manual", locked=True)
         ctx.db.add(a)
         ctx.db.flush()
-        ctx.db.add(m.Break(tenant_id=ctx.tenant_id, assignment_id=a.id, minutes=sh.break_minutes, paid=False))
+        ctx.db.add(m.Break(tenant_id=ctx.tenant_id, assignment_id=a.id, minutes=sh.break_minutes, paid=break_paid(ctx.db, sh.site_code)))
         for brand, minutes in (slot.allocations if slot else {}).items():
             ctx.db.add(m.BrandAllocation(tenant_id=ctx.tenant_id, assignment_id=a.id, brand_code=brand, minutes=minutes))
     ctx.db.add(m.LockedAssignment(tenant_id=ctx.tenant_id, assignment_id=a.id, locked_by=ctx.user.id, reason="remplacement accepté"))
