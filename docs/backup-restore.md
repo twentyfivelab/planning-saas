@@ -33,16 +33,16 @@ scripts/ops/restore_drill.sh fichier.dump
 
 Tout est supprimé à la fin (`KEEP=1` pour garder l'environnement). La base de l'application et ses volumes ne sont jamais modifiés, et aucune donnée ne quitte la machine.
 
-**Résultat du 20/11/2026** (base locale : 107 entreprises, 454 collaborateurs, 48 plannings dont 7 supprimés avec 1 175 affectations archivées, 4 854 affectations, 96 versions) — réussi, données identiques :
+**Résultat du 20/11/2026, version finale** (schéma 0021 ; base locale : 108 entreprises, 479 collaborateurs, 50 plannings dont 7 supprimés avec 1 175 affectations archivées, 5 334 affectations, 99 versions) — réussi : données identiques, connexion réelle à l'application restaurée, plannings lus par l'API égaux à la base :
 
 | Étape | Durée |
 |---|---|
-| Sauvegarde | 1,0 s |
-| Serveur neuf | 4,0 s |
-| Restauration | 0,8 s |
-| Migrations | 0,9 s |
-| API prête | 2,5 s |
-| Contrôles | 1,4 s |
-| **Total** | **10,6 s** |
+| Sauvegarde | 0,4 s |
+| Serveur neuf | 3,5 s |
+| Restauration | 0,6 s |
+| Migrations | 0,6 s |
+| API prête | 1,2 s |
+| Contrôles (dont connexion) | 1,4 s |
+| **Total** | **7,7 s** |
 
-Limite : base de petite taille (2,7 Mo compressés) ; la durée de restauration croît avec le volume et doit être remesurée sur l'environnement de production choisi (décision D1).
+Limite : base de petite taille (2,9 Mo compressés) ; la durée de restauration croît avec le volume et doit être remesurée sur l'environnement de production choisi (décision D1).
